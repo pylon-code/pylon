@@ -88,7 +88,7 @@ export interface AntigravityUsageRecord {
   readonly model: string;
   readonly totals: AntigravityTokenTotals;
   readonly reportedCostUsd: null;
-  readonly fast: false;
+  readonly speed: "standard";
   readonly contextSnapshot?: AntigravityContextSnapshot | undefined;
 }
 
@@ -712,7 +712,7 @@ export function parseAntigravityGenMetadataBlob(
         reasoningTokens: thinkingOutputTokens,
       },
       reportedCostUsd: null,
-      fast: false,
+      speed: "standard",
       ...(contextSnapshot ? { contextSnapshot } : {}),
     };
 

@@ -567,6 +567,99 @@ describe("UsageService", () => {
       }).pipe(Effect.scoped),
   );
 
+  it.live(
+    "upgrades a v4 cache: reprices live Codex tiers, keeps deleted rollouts, leaves v4 intact",
+    () =>
+      Effect.gen(function* () {
+        const { home, settings } = yield* setup;
+        const sessions = NodePath.join(home, "codex", "sessions");
+        const rollout = (sessionId: string, outputTokens: number) =>
+          [
+            { type: "session_meta", payload: { id: sessionId } },
+            { type: "turn_context", payload: { model: "gpt-6-astra" } },
+            {
+              type: "event_msg",
+              payload: {
+                type: "thread_settings_applied",
+                thread_settings: { service_tier: "ultrafast" },
+              },
+            },
+            {
+              type: "event_msg",
+              timestamp: "2026-08-01T10:00:00Z",
+              payload: {
+                type: "token_count",
+                info: { last_token_usage: { input_tokens: 0, output_tokens: outputTokens } },
+              },
+            },
+          ]
+            .map((line) => encodeUnknownJsonString(line))
+            .join("\n") + "\n";
+        const live = NodePath.join(sessions, "live.jsonl");
+        const deleted = NodePath.join(sessions, "deleted.jsonl");
+        yield* Effect.promise(async () => {
+          await NodeFSP.mkdir(sessions, { recursive: true });
+          await NodeFSP.writeFile(live, rollout("live", 10));
+          await NodeFSP.writeFile(deleted, rollout("deleted", 20));
+        });
+
+        yield* Effect.gen(function* () {
+          const { stateDir } = yield* ServerConfig.ServerConfig;
+          const cachePath = NodePath.join(stateDir, "usage-scan-cache-v5.json");
+          const legacyPath = NodePath.join(stateDir, "usage-scan-cache.json");
+          yield* (yield* UsageService.make).readSummary(WINDOW);
+
+          // Rewrite the cache as a v4 server left it: every Codex record at
+          // speed 0 (standard), and no tier in the reducer state.
+          const legacy = yield* Effect.promise(async () => {
+            const document = decodeUnknownJsonString(await NodeFSP.readFile(cachePath, "utf8")) as {
+              files: Record<string, { r: unknown[][]; cs: { speed?: unknown } | null }>;
+            };
+            for (const file of Object.values(document.files)) {
+              file.r = file.r.map((row) => [...row.slice(0, 10), 0]);
+              // Claude transcripts in the shared fixture home carry no reducer state.
+              if (file.cs !== null) delete file.cs.speed;
+            }
+            const text = encodeUnknownJsonString({ ...document, version: 4 });
+            await NodeFSP.writeFile(legacyPath, text);
+            await NodeFSP.rm(cachePath);
+            await NodeFSP.rm(deleted);
+            return text;
+          });
+
+          const summary = yield* (yield* UsageService.make).readSummary(WINDOW);
+          // The live rollout re-parses at the ultrafast rate (10 x 6); the
+          // deleted one keeps its saved v4 usage at the standard rate (20 x 1).
+          assert.strictEqual(totalOutputTokens(summary), 30);
+          assert.strictEqual(
+            summary.buckets.reduce((sum, bucket) => sum + bucket.costUsd, 0),
+            80,
+          );
+          // A v4 server sharing this state directory still finds its own cache.
+          assert.strictEqual(
+            yield* Effect.promise(() => NodeFSP.readFile(legacyPath, "utf8")),
+            legacy,
+          );
+        }).pipe(
+          Effect.provide(
+            serviceLayers({
+              prefix: "usage-service-v4-upgrade-test",
+              home,
+              settings,
+              ratesDocument: {
+                "gpt-6-astra": {
+                  input_cost_per_token: 0,
+                  output_cost_per_token: 1,
+                  input_cost_per_token_ultrafast: 0,
+                  output_cost_per_token_ultrafast: 6,
+                },
+              },
+            }),
+          ),
+        );
+      }).pipe(Effect.scoped),
+  );
+
   it.live("preserves saved tokens, costs and sessions after transcript cleanup and restart", () =>
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;
@@ -671,7 +764,8 @@ describe("UsageService", () => {
 
       yield* Effect.gen(function* () {
         const config = yield* ServerConfig.ServerConfig;
-        const cachePath = NodePath.join(config.stateDir, "usage-scan-cache.json");
+        const cachePath = NodePath.join(config.stateDir, "usage-scan-cache-v5.json");
+        const legacyPath = NodePath.join(config.stateDir, "usage-scan-cache.json");
         const first = yield* UsageService.make;
         const before = yield* first.readSummary(WINDOW);
         assert.strictEqual(totalOutputTokens(before), 10);
@@ -689,7 +783,9 @@ describe("UsageService", () => {
             entry.r = entry.r.map((row) => row.slice(0, 10));
             entry.t = entry.t.map((row) => row.slice(0, 10));
           }
-          await NodeFSP.writeFile(cachePath, encodeUnknownJsonString(cache));
+          // A v3 server only ever wrote the legacy file name.
+          await NodeFSP.writeFile(legacyPath, encodeUnknownJsonString(cache));
+          await NodeFSP.rm(cachePath);
           await NodeFSP.rm(deletedTranscript);
         });
 
@@ -702,7 +798,7 @@ describe("UsageService", () => {
         const persisted = decodeUnknownJsonString(
           yield* Effect.promise(() => NodeFSP.readFile(cachePath, "utf8")),
         ) as { version: number; files: Record<string, { fr?: number }> };
-        assert.strictEqual(persisted.version, 4);
+        assert.strictEqual(persisted.version, 5);
         assert.isDefined(persisted.files[liveCachePath]);
         assert.isUndefined(persisted.files[liveCachePath]?.fr);
         assert.strictEqual(persisted.files[deletedCachePath]?.fr, 1);
@@ -737,7 +833,7 @@ describe("UsageService", () => {
         const settingsService = yield* ServerSettings.ServerSettingsService;
         const service = yield* UsageService.make;
         yield* service.readSummary(WINDOW);
-        const cachePath = NodePath.join(config.stateDir, "usage-scan-cache.json");
+        const cachePath = NodePath.join(config.stateDir, "usage-scan-cache-v5.json");
         const oldDir = NodePath.join(home, "claude", "projects");
         assert.include(yield* Effect.promise(() => NodeFSP.readFile(cachePath, "utf8")), oldDir);
 

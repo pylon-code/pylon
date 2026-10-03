@@ -6,6 +6,8 @@ import {
   usagePriceTableChanges,
   usagePriceTableErrors,
   type UsagePriceDraft,
+  PREFILLED_PRICE_DRAFT_ID,
+  withoutSupersededPrefill,
 } from "./usagePriceTable";
 import type { UsagePriceTarget } from "./usagePriceTargets";
 
@@ -207,5 +209,25 @@ describe("price table rows", () => {
       "model:fresh",
       "new:1",
     ]);
+  });
+});
+
+describe("prefilled Set price draft", () => {
+  const prefill = (values: Record<string, string> = {}) => ({
+    id: PREFILLED_PRICE_DRAFT_ID,
+    model: "custom-model",
+    isNew: true as const,
+    values,
+  });
+
+  it("yields to an existing row once prices load, unless it was edited", () => {
+    // Prices not loaded yet: the prefilled row shows.
+    expect(withoutSupersededPrefill([prefill()], [])).toHaveLength(1);
+    // Prices loaded with an override for that model: edit the existing row instead.
+    expect(withoutSupersededPrefill([prefill()], ["custom-model"])).toEqual([]);
+    // Typed rates are never discarded; the duplicate-row error explains instead.
+    expect(
+      withoutSupersededPrefill([prefill({ inputCostPerMillionTokens: "2" })], ["custom-model"]),
+    ).toHaveLength(1);
   });
 });

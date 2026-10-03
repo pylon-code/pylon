@@ -10,7 +10,12 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
-import { isModelCostUnknown, mergeUsage, type EnvironmentUsage } from "./usageMerge.ts";
+import {
+  isModelCostUnknown,
+  mergeUsage,
+  narrowUsageSummary,
+  type EnvironmentUsage,
+} from "./usageMerge.ts";
 
 const decodeSummary = Schema.decodeUnknownSync(UsageSummary);
 const encodeSummary = Schema.encodeSync(UsageSummary);
@@ -580,6 +585,117 @@ describe("mergeUsage", () => {
     expect(merged.models.filter(isModelCostUnknown).map((model) => model.model)).toEqual([
       "unknown-model",
     ]);
+  });
+
+  it("narrows per-source buckets so a one-model slice excludes other models", () => {
+    const a = bucket({ model: "model-a", costUsd: 1 });
+    const b = bucket({ model: "model-b", costUsd: 5 });
+    const full = summary(
+      [a, b],
+      [{ provider: "claude", hostId: "mac", homePath: "/a/.claude", buckets: [a, b] }],
+    );
+    const onlyA = (usage: typeof full) =>
+      mergeUsage(
+        [
+          environment(
+            "env-a",
+            narrowUsageSummary(usage, (entry) => entry.model === "model-a"),
+          ),
+        ],
+        USAGE_CONTRACT_VERSION,
+      );
+
+    // v7+ servers: the merge reads the per-source buckets.
+    expect(onlyA(full).costUsd).toBe(1);
+    expect(onlyA(full).models.map((model) => model.model)).toEqual(["model-a"]);
+    // Older servers without per-source buckets narrow through the provider-wide list.
+    const legacy = summary([a, b], [{ provider: "claude", hostId: "mac", homePath: "/a/.claude" }]);
+    expect(onlyA(legacy).costUsd).toBe(1);
+    expect(narrowUsageSummary(legacy, () => true).sources[0]).not.toHaveProperty("buckets");
+  });
+
+  it("splits cost by category and speed, counting older servers as unsplit standard cost", () => {
+    const merged = mergeUsage(
+      [
+        environment(
+          "env-a",
+          summary(
+            [
+              bucket({
+                costUsd: 10,
+                categoryCostUsd: { input: 1, cacheRead: 2, cacheWrite: 3, output: 4 },
+                fastCostUsd: 6,
+                speedPremiumUsd: 3,
+              }),
+              bucket({
+                provider: "codex",
+                model: "unknown-model",
+                costUsd: 0,
+                costSource: "unpriced",
+                unpricedRecords: 5,
+              }),
+              // Reported cost on one record, no rates for the other four.
+              bucket({
+                provider: "codex",
+                model: "partly-reported",
+                costUsd: 0,
+                unpricedRecords: 4,
+              }),
+            ],
+            [
+              { provider: "claude", hostId: "mac", homePath: "/a/.claude" },
+              { provider: "codex", hostId: "mac", homePath: "/a/.codex" },
+            ],
+          ),
+        ),
+        environment(
+          "env-b",
+          summary(
+            [bucket({ costUsd: 5 })],
+            [{ provider: "claude", hostId: "linux", homePath: "/b/.claude" }],
+            USAGE_MERGE_COMPATIBLE_SINCE,
+          ),
+        ),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged.categoryCost).toEqual({
+      input: 1,
+      cacheRead: 2,
+      cacheWrite: 3,
+      output: 4,
+      unsplit: 5,
+    });
+    expect(merged.speedCost).toEqual({ standard: 9, fast: 6, ultrafast: 0, premium: 3 });
+    expect(merged.models.map(({ model, unpricedTokens }) => [model, unpricedTokens])).toEqual([
+      ["claude-fable-5", 0],
+      ["unknown-model", 1160],
+      ["partly-reported", 928],
+    ]);
+  });
+
+  it("orders models by cost descending", () => {
+    const merged = mergeUsage(
+      [
+        environment(
+          "env-a",
+          summary(
+            [
+              bucket({ provider: "claude", model: "lower-cost", costUsd: 4 }),
+              bucket({ provider: "codex", model: "higher-cost", costUsd: 9 }),
+            ],
+            [
+              { provider: "claude", hostId: "mac", homePath: "/a/.claude" },
+              { provider: "codex", hostId: "mac", homePath: "/a/.codex" },
+            ],
+          ),
+        ),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged.models.map((model) => model.model)).toEqual(["higher-cost", "lower-cost"]);
   });
 
   it("keeps two machines apart when hostname and home path collide", () => {

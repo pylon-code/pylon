@@ -24,6 +24,26 @@ export function isEmptyUsagePriceDraft(draft: UsagePriceDraft) {
   );
 }
 
+/** Row id of the draft a "Set price" shortcut opens the table with. */
+export const PREFILLED_PRICE_DRAFT_ID = "new:initial";
+
+/**
+ * Hides the prefilled draft while it is untouched and its model already has a
+ * custom row. Prices can load after the dialog opens, so this is decided on
+ * every render rather than once when the draft is created.
+ */
+export function withoutSupersededPrefill(
+  drafts: readonly UsagePriceDraft[],
+  customModels: readonly string[],
+): readonly UsagePriceDraft[] {
+  return drafts.filter(
+    (draft) =>
+      draft.id !== PREFILLED_PRICE_DRAFT_ID ||
+      !customModels.includes(draft.model.trim()) ||
+      Object.values(draft.values).some((value) => (value ?? "").trim() !== ""),
+  );
+}
+
 function modelPrice(target: UsagePriceTarget, model: string) {
   return target.prices && Object.hasOwn(target.prices, model) ? target.prices[model] : undefined;
 }

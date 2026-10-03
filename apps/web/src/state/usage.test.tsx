@@ -3,7 +3,7 @@ import { act, useLayoutEffect } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { useUsage, type EnvironmentUsageStatus, type UsageView } from "./usage";
+import { mergeAnsweredUsage, useUsage, type EnvironmentUsageStatus, type UsageView } from "./usage";
 
 const testState = vi.hoisted(() => ({ environments: [] as EnvironmentUsageStatus[] }));
 const rateRefresh = vi.hoisted(() => ({
@@ -229,5 +229,28 @@ describe("usage environment selection", () => {
     expect(latest.merged.costUsd).toBe(10);
     expect(latest.isPending).toBe(false);
     expect(latest.isPartial).toBe(false);
+  });
+});
+
+describe("mergeAnsweredUsage", () => {
+  it("narrows per-source buckets to one model, as the model dialog does", () => {
+    const base = environment("a", 1);
+    const summary = base.summary!;
+    const modelA = summary.buckets[0]!;
+    const modelB = { ...modelA, model: "b", costUsd: 5 };
+    const status: EnvironmentUsageStatus = {
+      ...base,
+      summary: {
+        ...summary,
+        buckets: [modelA, modelB],
+        // v7+ servers attribute buckets per source; the merge reads these.
+        sources: summary.sources.map((source) => ({ ...source, buckets: [modelA, modelB] })),
+      },
+    };
+
+    expect(mergeAnsweredUsage([status]).costUsd).toBe(6);
+    const onlyA = mergeAnsweredUsage([status], (bucket) => bucket.model === "a");
+    expect(onlyA.costUsd).toBe(1);
+    expect(onlyA.models.map((model) => model.model)).toEqual(["a"]);
   });
 });

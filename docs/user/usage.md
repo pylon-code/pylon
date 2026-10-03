@@ -8,7 +8,11 @@ desktop when the terminal is not focused. Customize `usage.open` in
 
 **Usage** combines Codex, Claude Code, Grok Build, Antigravity, and local OpenCode session history from your connected
 environments. It shows token use, cache savings, provider shares, model breakdowns, and estimated
-API-equivalent cost. These estimates are not your subscription bill.
+API-equivalent cost, split by token type and by speed. These estimates are not your subscription bill.
+**Premium** is what Fast and Ultrafast requests cost above standard rates. Servers that predate
+speed tracking report no speed split, so all of their cost counts as Standard. Cost that cannot be
+split, such as a provider-reported cost for a model without public rates, shows as **Other**.
+Select a model under **Breakdown** to see its trend, cache hit rate, and cost per million tokens.
 
 Totals depend on the history available on each server. Grok turns without a saved completed-turn
 record are missing from the totals.
@@ -48,6 +52,8 @@ On web or desktop, open the environment dropdown on **Usage**, then choose **Mod
 edit, or reset a model's estimated price. **Apply to** starts with your current Usage filter; choose
 all environments or individual destinations. Enter the exact model ID and USD rates per million input
 and output tokens, including for models without public pricing.
+When a model on **Usage** has no known price, select it under **Breakdown** and choose
+**Set price** to open this table with that model added.
 
 Cache read and cache write rates are optional and use the input rate when blank. Enter `0` for tokens
 that are free. Saved prices replace automatic pricing for all of that environment's history and are
