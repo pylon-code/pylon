@@ -1624,6 +1624,13 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         yield* git(cwd, ["add", "."]);
         yield* git(cwd, ["update-index", "--chmod=+x", "mode-only.sh"]);
         yield* git(cwd, ["commit", "-m", "rename and add files"]);
+        // Changes compares the merge-base with the working tree, so the executable bit must
+        // also be on disk where Git trusts file modes.
+        if ((yield* HostProcessPlatform) !== "win32") {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const pathService = yield* Path.Path;
+          yield* fileSystem.chmod(pathService.join(cwd, "mode-only.sh"), 0o755);
+        }
         const preview = yield* driver.getReviewDiffPreview({
           cwd,
           baseRef: initialBranch,
