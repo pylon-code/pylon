@@ -96,14 +96,24 @@ const providerTotals = (codex: number, claude: number) =>
     ["claude", { costUsd: claude, totalTokens: claude * 1_000 }],
   ] as const);
 
+const tokensOf = (uncachedInputTokens: number) => ({
+  uncachedInputTokens,
+  cachedInputTokens: 0,
+  cacheCreationTokens: 0,
+  outputTokens: 0,
+  reasoningTokens: 0,
+});
+
 const modelTotals = Object.freeze([
   {
     model: "expensive-model",
     provider: "claude" as const,
     costUsd: 10,
     totalTokens: 100,
+    tokens: tokensOf(100),
     records: 1,
     unpricedRecords: 0,
+    unpricedTokens: 0,
     costShare: 10 / 16,
   },
   {
@@ -111,8 +121,10 @@ const modelTotals = Object.freeze([
     provider: "codex" as const,
     costUsd: 5,
     totalTokens: 1_000,
+    tokens: tokensOf(1_000),
     records: 1,
     unpricedRecords: 0,
+    unpricedTokens: 0,
     costShare: 5 / 16,
   },
   {
@@ -120,8 +132,10 @@ const modelTotals = Object.freeze([
     provider: "codex" as const,
     costUsd: 1,
     totalTokens: 1_000,
+    tokens: tokensOf(1_000),
     records: 1,
     unpricedRecords: 0,
+    unpricedTokens: 0,
     costShare: 1 / 16,
   },
   {
@@ -129,8 +143,10 @@ const modelTotals = Object.freeze([
     provider: "codex" as const,
     costUsd: 0,
     totalTokens: 500,
+    tokens: tokensOf(500),
     records: 2,
     unpricedRecords: 2,
+    unpricedTokens: 500,
     costShare: 0,
   },
 ]);

@@ -73,6 +73,16 @@ vi.mock("./UsageLimitsPooled", () => ({ UsageLimitsSection: () => null }));
 vi.mock("./usageProviders", () => ({
   PROVIDER_LABEL: { opencode: "OpenCode", codex: "Codex" },
   useProviderColors: () => ({ opencode: "#000", codex: "#fff" }),
+  useUsageMixColors: () => ({
+    input: "#111",
+    cacheRead: "#222",
+    cacheWrite: "#333",
+    output: "#444",
+    other: "#555",
+    standard: "#666",
+    fast: "#777",
+    ultrafast: "#888",
+  }),
 }));
 
 import { UsageRouteScreen } from "./UsageRouteScreen";
