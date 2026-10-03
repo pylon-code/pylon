@@ -18,13 +18,9 @@ const attachment = { name: "notes.txt", mimeType: "text/plain" };
 afterEach(() => vi.unstubAllGlobals());
 
 describe("pasted attachment authorization and download", () => {
-  for (const cancellation of [
-    "remove chip",
-    "unmount",
-    "replace source epoch",
-    "deadline",
-  ] as const) {
-    it(`releases pending draft work when ${cancellation} interrupts unresolved authorization`, async () => {
+  it.each(["remove chip", "unmount", "replace source epoch", "deadline"] as const)(
+    "releases pending draft work when %s interrupts unresolved authorization",
+    async (cancellation) => {
       const target = scopeThreadRef(
         EnvironmentId.make("import-cancellation"),
         ThreadId.make(cancellation),
@@ -90,8 +86,8 @@ describe("pasted attachment authorization and download", () => {
       await rejected;
       expect(pendingDraftWork.has(cancellation)).toBe(false);
       expect(fetch).not.toHaveBeenCalled();
-    });
-  }
+    },
+  );
 
   it("discards a capability from an old connection and authorizes again before downloading", async () => {
     let current = originalConnection;

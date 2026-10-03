@@ -50,40 +50,38 @@ const keys = [
 ];
 
 describe("Prime signed publications on Electron", () => {
-  for (const key of keys) {
-    it(`verifies Sigstore ${key.name} and rejects modified data and signatures`, () => {
-      const data = Buffer.from("signed Prime publication");
-      const signature = NodeCrypto.sign(key.algorithm, data, key.privateKey);
-      const modified = Buffer.from(signature);
-      modified[0] ^= 1;
-      requireExplicitDigest();
-      for (const publicKey of [
-        key.publicKey,
-        key.publicKey.export({ type: "spki", format: "pem" }),
-      ]) {
-        expect(sigstoreCrypto.verify(data, publicKey, signature)).toBe(true);
-        expect(
-          sigstoreCrypto.verify(Buffer.from("different publication"), publicKey, signature),
-        ).toBe(false);
-        expect(sigstoreCrypto.verify(data, publicKey, modified)).toBe(false);
-      }
-    });
-
-    it(`verifies TUF ${key.name} and rejects modified metadata`, () => {
-      const metadata = { version: 1, role: "root", expires: "2030-01-01T00:00:00Z" };
-      const options =
-        key.name === "RSA" ? { padding: NodeCrypto.constants.RSA_PKCS1_PSS_PADDING } : {};
-      const signature = NodeCrypto.sign(key.algorithm, Buffer.from(canonicalize(metadata)), {
-        key: key.privateKey,
-        ...options,
-      }).toString("hex");
-      requireExplicitDigest();
-      expect(verifySignature(metadata, { key: key.publicKey, ...options }, signature)).toBe(true);
+  it.each(keys)("verifies Sigstore $name and rejects modified data and signatures", (key) => {
+    const data = Buffer.from("signed Prime publication");
+    const signature = NodeCrypto.sign(key.algorithm, data, key.privateKey);
+    const modified = Buffer.from(signature);
+    modified[0] ^= 1;
+    requireExplicitDigest();
+    for (const publicKey of [
+      key.publicKey,
+      key.publicKey.export({ type: "spki", format: "pem" }),
+    ]) {
+      expect(sigstoreCrypto.verify(data, publicKey, signature)).toBe(true);
       expect(
-        verifySignature({ ...metadata, version: 2 }, { key: key.publicKey, ...options }, signature),
+        sigstoreCrypto.verify(Buffer.from("different publication"), publicKey, signature),
       ).toBe(false);
-    });
-  }
+      expect(sigstoreCrypto.verify(data, publicKey, modified)).toBe(false);
+    }
+  });
+
+  it.each(keys)("verifies TUF $name and rejects modified metadata", (key) => {
+    const metadata = { version: 1, role: "root", expires: "2030-01-01T00:00:00Z" };
+    const options =
+      key.name === "RSA" ? { padding: NodeCrypto.constants.RSA_PKCS1_PSS_PADDING } : {};
+    const signature = NodeCrypto.sign(key.algorithm, Buffer.from(canonicalize(metadata)), {
+      key: key.privateKey,
+      ...options,
+    }).toString("hex");
+    requireExplicitDigest();
+    expect(verifySignature(metadata, { key: key.publicKey, ...options }, signature)).toBe(true);
+    expect(
+      verifySignature({ ...metadata, version: 2 }, { key: key.publicKey, ...options }, signature),
+    ).toBe(false);
+  });
 
   it("preserves an explicit non-default digest and rejects malformed keys", () => {
     const key = keys[0];

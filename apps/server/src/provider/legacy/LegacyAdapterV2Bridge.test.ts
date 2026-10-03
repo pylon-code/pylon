@@ -432,8 +432,9 @@ describe("legacy runtime event projector", () => {
     });
   });
 
-  for (const status of ["completed", "interrupted", "cancelled", "failed"] as const) {
-    it(`preserves the ${status} terminal disposition`, () => {
+  it.each(["completed", "interrupted", "cancelled", "failed"] as const)(
+    "preserves the %s terminal disposition",
+    (status) => {
       const { projector } = fixture();
       projector.project(event("turn.started", {}));
       const output = projector.project(
@@ -447,8 +448,8 @@ describe("legacy runtime event projector", () => {
       expect(output.filter((row) => row.type === "turn.terminal")).toEqual([
         expect.objectContaining({ status, threadDisposition: "reusable" }),
       ]);
-    });
-  }
+    },
+  );
 
   it("projects aborts and starts a later run without combining assistant messages", () => {
     const { projector, providerThread } = fixture();
@@ -796,81 +797,82 @@ describe("legacy v2 runtime", () => {
     ),
   );
 
-  for (const stopFails of [false, true])
-    it.effect(
-      `keeps maintenance quarantined after native teardown ${stopFails ? "failure" : "timeout"} until cleanup proof`,
-      () =>
-        Effect.scoped(
-          Effect.gen(function* () {
-            let hasOwnership = false;
-            const maintenance = yield* Maintenance.make({
-              inspectNativeOwnership: () =>
-                Effect.succeed({ hasOwnership, quiescent: !hasOwnership }),
-            });
-            const scope = yield* Scope.make();
-            const adapter = legacyAdapter<ProviderAdapterValidationError>({
-              startSession: (input) =>
-                Effect.sync(() => {
-                  hasOwnership = true;
-                  return {
-                    provider: driver,
-                    providerInstanceId: instanceId,
-                    threadId: input.threadId,
-                    status: "ready" as const,
-                    runtimeMode: "full-access" as const,
-                    cwd: "/workspace",
-                    model: "prime-model",
-                    createdAt: time,
-                    updatedAt: time,
-                  };
-                }),
-              stopSession: () =>
-                stopFails
-                  ? Effect.fail(
-                      new ProviderAdapterValidationError({
-                        provider: driver,
-                        operation: "stopSession",
-                        issue: "Native cleanup failed",
-                      }),
-                    )
-                  : Effect.void,
-            });
-            yield* makeLegacyAdapterV2({ instanceId, adapter, maintenance })
-              .openSession({
-                threadId,
-                providerSessionId,
-                modelSelection: { instanceId, model: "prime-model" },
-                runtimePolicy: {
-                  runtimeMode: "full-access",
-                  interactionMode: "default",
+  it.effect.each(
+    [false, true].map((stopFails) => ({ stopFails, name: stopFails ? "failure" : "timeout" })),
+  )(
+    "keeps maintenance quarantined after native teardown $name until cleanup proof",
+    ({ stopFails }) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          let hasOwnership = false;
+          const maintenance = yield* Maintenance.make({
+            inspectNativeOwnership: () =>
+              Effect.succeed({ hasOwnership, quiescent: !hasOwnership }),
+          });
+          const scope = yield* Scope.make();
+          const adapter = legacyAdapter<ProviderAdapterValidationError>({
+            startSession: (input) =>
+              Effect.sync(() => {
+                hasOwnership = true;
+                return {
+                  provider: driver,
+                  providerInstanceId: instanceId,
+                  threadId: input.threadId,
+                  status: "ready" as const,
+                  runtimeMode: "full-access" as const,
                   cwd: "/workspace",
-                },
-              })
-              .pipe(Scope.provide(scope));
-            const drained = yield* maintenance.subscribeDrainedInstances;
-            const drainReceipt = yield* drained.pipe(
-              Stream.take(1),
-              Stream.runCollect,
-              Effect.forkScoped({ startImmediately: true }),
-            );
-            yield* Scope.close(scope, Exit.void);
-            expect(yield* maintenance.reserveProviderMaintenance(instanceId)).toMatchObject({
-              status: "busy",
-            });
-            expect(yield* maintenance.acquireRuntime(instanceId).pipe(Effect.result)).toMatchObject(
-              { _tag: "Failure" },
-            );
-            hasOwnership = false;
-            const next = yield* Scope.make();
-            yield* maintenance.acquireRuntime(instanceId).pipe(Scope.provide(next));
-            yield* Scope.close(next, Exit.void);
-            expect(yield* Fiber.join(drainReceipt)).toEqual([instanceId]);
-            expect(yield* maintenance.reserveProviderMaintenance(instanceId)).toMatchObject({
-              status: "reserved",
-            });
-          }),
-        ),
-    );
+                  model: "prime-model",
+                  createdAt: time,
+                  updatedAt: time,
+                };
+              }),
+            stopSession: () =>
+              stopFails
+                ? Effect.fail(
+                    new ProviderAdapterValidationError({
+                      provider: driver,
+                      operation: "stopSession",
+                      issue: "Native cleanup failed",
+                    }),
+                  )
+                : Effect.void,
+          });
+          yield* makeLegacyAdapterV2({ instanceId, adapter, maintenance })
+            .openSession({
+              threadId,
+              providerSessionId,
+              modelSelection: { instanceId, model: "prime-model" },
+              runtimePolicy: {
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                cwd: "/workspace",
+              },
+            })
+            .pipe(Scope.provide(scope));
+          const drained = yield* maintenance.subscribeDrainedInstances;
+          const drainReceipt = yield* drained.pipe(
+            Stream.take(1),
+            Stream.runCollect,
+            Effect.forkScoped({ startImmediately: true }),
+          );
+          yield* Scope.close(scope, Exit.void);
+          expect(yield* maintenance.reserveProviderMaintenance(instanceId)).toMatchObject({
+            status: "busy",
+          });
+          expect(yield* maintenance.acquireRuntime(instanceId).pipe(Effect.result)).toMatchObject({
+            _tag: "Failure",
+          });
+          hasOwnership = false;
+          const next = yield* Scope.make();
+          yield* maintenance.acquireRuntime(instanceId).pipe(Scope.provide(next));
+          yield* Scope.close(next, Exit.void);
+          expect(yield* Fiber.join(drainReceipt)).toEqual([instanceId]);
+          expect(yield* maintenance.reserveProviderMaintenance(instanceId)).toMatchObject({
+            status: "reserved",
+          });
+        }),
+      ),
+  );
 
   it("keeps native background ownership alive until queues, compaction and tasks drain", () => {
     const { projector } = fixture();

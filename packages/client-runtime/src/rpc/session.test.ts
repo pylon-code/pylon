@@ -290,7 +290,7 @@ const publishConfigEvents = Effect.fn("TestRpcSessionFactory.publishConfigEvents
 });
 
 describe("RpcSessionFactory", () => {
-  for (const target of [
+  it.effect.each([
     TARGET,
     new BearerConnectionTarget({
       environmentId: TARGET.environmentId,
@@ -303,67 +303,65 @@ describe("RpcSessionFactory", () => {
       label: TARGET.label,
       connectionId: "ssh-test",
     }),
-  ]) {
-    it.effect(`rejects a config from another environment for ${target._tag}`, () =>
-      Effect.gen(function* () {
-        const { factory, sockets } = yield* makeFactory();
-        yield* Effect.scoped(
-          Effect.gen(function* () {
-            const session = yield* factory.connect({ ...PREPARED, target });
-            const readyFiber = yield* Effect.forkChild(Effect.exit(session.ready));
-            const configFiber = yield* session
-              .subscribeServerConfig({})
-              .pipe(Stream.runHead, Effect.exit, Effect.forkChild);
-            const customConfigFiber = yield* session
-              .subscribeServerConfig({ environmentThemes: true })
-              .pipe(Stream.runHead, Effect.exit, Effect.forkChild);
-            const socket = yield* awaitSocket(sockets);
-            socket.open();
-            yield* completeInitialConfig(socket, {
-              ...ENCODED_SERVER_CONFIG,
-              environment: {
-                ...ENCODED_SERVER_CONFIG.environment,
-                environmentId: "other-environment",
-              },
-            });
+  ])("rejects a config from another environment for $_tag", (target) =>
+    Effect.gen(function* () {
+      const { factory, sockets } = yield* makeFactory();
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const session = yield* factory.connect({ ...PREPARED, target });
+          const readyFiber = yield* Effect.forkChild(Effect.exit(session.ready));
+          const configFiber = yield* session
+            .subscribeServerConfig({})
+            .pipe(Stream.runHead, Effect.exit, Effect.forkChild);
+          const customConfigFiber = yield* session
+            .subscribeServerConfig({ environmentThemes: true })
+            .pipe(Stream.runHead, Effect.exit, Effect.forkChild);
+          const socket = yield* awaitSocket(sockets);
+          socket.open();
+          yield* completeInitialConfig(socket, {
+            ...ENCODED_SERVER_CONFIG,
+            environment: {
+              ...ENCODED_SERVER_CONFIG.environment,
+              environmentId: "other-environment",
+            },
+          });
 
-            const ready = yield* Fiber.join(readyFiber);
-            expect(Exit.isFailure(ready)).toBe(true);
-            if (Exit.isFailure(ready)) {
-              expect(Cause.findErrorOption(ready.cause)).toEqual(
-                Option.some(
-                  new ConnectionBlockedError({
-                    reason: "configuration",
-                    detail: `Connected environment other-environment does not match ${TARGET.environmentId}.`,
-                  }),
-                ),
-              );
+          const ready = yield* Fiber.join(readyFiber);
+          expect(Exit.isFailure(ready)).toBe(true);
+          if (Exit.isFailure(ready)) {
+            expect(Cause.findErrorOption(ready.cause)).toEqual(
+              Option.some(
+                new ConnectionBlockedError({
+                  reason: "configuration",
+                  detail: `Connected environment other-environment does not match ${TARGET.environmentId}.`,
+                }),
+              ),
+            );
+          }
+          for (const result of [
+            yield* Fiber.join(configFiber),
+            yield* Fiber.join(customConfigFiber),
+          ]) {
+            expect(Exit.isFailure(result)).toBe(true);
+            if (Exit.isFailure(result)) {
+              expect(Option.getOrThrow(Cause.findErrorOption(result.cause))).toMatchObject({
+                _tag: "RpcClientError",
+              });
             }
-            for (const result of [
-              yield* Fiber.join(configFiber),
-              yield* Fiber.join(customConfigFiber),
-            ]) {
-              expect(Exit.isFailure(result)).toBe(true);
-              if (Exit.isFailure(result)) {
-                expect(Option.getOrThrow(Cause.findErrorOption(result.cause))).toMatchObject({
-                  _tag: "RpcClientError",
-                });
-              }
-            }
-            const initialConfig = yield* Effect.exit(session.initialConfig);
-            const probe = yield* Effect.exit(session.probe);
-            expect(Exit.isFailure(initialConfig)).toBe(true);
-            expect(Exit.isFailure(probe)).toBe(true);
-            // Custom subscriptions and probes must not send another request to the wrong host.
-            expect(
-              socket.sent.map((message) => decodeJson(message)).filter(isRpcRequest),
-            ).toHaveLength(1);
-          }),
-        );
-        expect(sockets[0]?.readyState).toBe(TestWebSocket.CLOSED);
-      }),
-    );
-  }
+          }
+          const initialConfig = yield* Effect.exit(session.initialConfig);
+          const probe = yield* Effect.exit(session.probe);
+          expect(Exit.isFailure(initialConfig)).toBe(true);
+          expect(Exit.isFailure(probe)).toBe(true);
+          // Custom subscriptions and probes must not send another request to the wrong host.
+          expect(
+            socket.sent.map((message) => decodeJson(message)).filter(isRpcRequest),
+          ).toHaveLength(1);
+        }),
+      );
+      expect(sockets[0]?.readyState).toBe(TestWebSocket.CLOSED);
+    }),
+  );
 
   it.effect("owns one scoped websocket attempt and exposes readiness and closure", () =>
     Effect.gen(function* () {
@@ -506,59 +504,55 @@ describe("RpcSessionFactory", () => {
     ),
   );
 
-  for (const options of [
+  it.effect.each([
     { environmentThemes: true },
     { usageLimitSources: true },
     { environmentThemes: true, usageLimitSources: true },
-  ]) {
-    it.effect(
-      `shares only a config subscription with the same opt-ins: ${JSON.stringify(options)}`,
-      () =>
-        Effect.scoped(
-          Effect.gen(function* () {
-            const { factory, sockets } = yield* makeFactory(options);
-            const session = yield* factory.connect(PREPARED);
-            const readyFiber = yield* Effect.forkChild(session.ready);
-            const socket = yield* awaitSocket(sockets);
-            socket.open();
-            yield* completeInitialConfig(socket, ENCODED_THEME_SERVER_CONFIG, options);
-            yield* Fiber.join(readyFiber);
+  ])("shares only a config subscription with the same opt-ins: %j", (options) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { factory, sockets } = yield* makeFactory(options);
+        const session = yield* factory.connect(PREPARED);
+        const readyFiber = yield* Effect.forkChild(session.ready);
+        const socket = yield* awaitSocket(sockets);
+        socket.open();
+        yield* completeInitialConfig(socket, ENCODED_THEME_SERVER_CONFIG, options);
+        yield* Fiber.join(readyFiber);
 
-            const shared = yield* session.subscribeServerConfig(options).pipe(Stream.runHead);
-            expect(shared).toMatchObject({ _tag: "Some", value: { type: "snapshot" } });
-            expect(
-              socket.sent.map((message) => decodeJson(message)).filter(isRpcRequest),
-            ).toHaveLength(1);
+        const shared = yield* session.subscribeServerConfig(options).pipe(Stream.runHead);
+        expect(shared).toMatchObject({ _tag: "Some", value: { type: "snapshot" } });
+        expect(socket.sent.map((message) => decodeJson(message)).filter(isRpcRequest)).toHaveLength(
+          1,
+        );
 
-            const fallbackFiber = yield* session
-              .subscribeServerConfig({})
-              .pipe(Stream.runHead, Effect.forkChild);
-            const fallbackRequest = yield* awaitRequest(socket, 1);
-            expect(fallbackRequest).toMatchObject({
-              tag: WS_METHODS.subscribeServerConfig,
-              payload: {},
-            });
-            socket.serverMessage(
-              encodeJson({
-                _tag: "Chunk",
-                requestId: fallbackRequest.id,
-                values: [
-                  {
-                    version: 1,
-                    type: "snapshot",
-                    config: ENCODED_THEME_SERVER_CONFIG,
-                  },
-                ],
-              }),
-            );
-            expect(yield* Fiber.join(fallbackFiber)).toMatchObject({
-              _tag: "Some",
-              value: { type: "snapshot" },
-            });
+        const fallbackFiber = yield* session
+          .subscribeServerConfig({})
+          .pipe(Stream.runHead, Effect.forkChild);
+        const fallbackRequest = yield* awaitRequest(socket, 1);
+        expect(fallbackRequest).toMatchObject({
+          tag: WS_METHODS.subscribeServerConfig,
+          payload: {},
+        });
+        socket.serverMessage(
+          encodeJson({
+            _tag: "Chunk",
+            requestId: fallbackRequest.id,
+            values: [
+              {
+                version: 1,
+                type: "snapshot",
+                config: ENCODED_THEME_SERVER_CONFIG,
+              },
+            ],
           }),
-        ),
-    );
-  }
+        );
+        expect(yield* Fiber.join(fallbackFiber)).toMatchObject({
+          _tag: "Some",
+          value: { type: "snapshot" },
+        });
+      }),
+    ),
+  );
 
   it.effect.each([
     { usageLimitSources: true },
@@ -1240,37 +1234,38 @@ describe("RpcSessionFactory", () => {
     ),
   );
 
-  for (const relay of [false, true]) {
-    it.effect(`fails readiness when the ${relay ? "relay" : "direct"} websocket never opens`, () =>
-      Effect.gen(function* () {
-        const { factory, sockets } = yield* makeFactory();
+  it.effect.each([
+    { relay: false, label: "direct" },
+    { relay: true, label: "relay" },
+  ])("fails readiness when the $label websocket never opens", ({ relay }) =>
+    Effect.gen(function* () {
+      const { factory, sockets } = yield* makeFactory();
 
-        const error = yield* Effect.scoped(
-          Effect.gen(function* () {
-            const session = yield* factory.connect({
-              ...PREPARED,
-              target: relay
-                ? new RelayConnectionTarget({
-                    environmentId: TARGET.environmentId,
-                    label: TARGET.label,
-                  })
-                : TARGET,
-            });
-            const readyFiber = yield* Effect.forkChild(Effect.flip(session.ready));
-            yield* awaitSocket(sockets);
+      const error = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const session = yield* factory.connect({
+            ...PREPARED,
+            target: relay
+              ? new RelayConnectionTarget({
+                  environmentId: TARGET.environmentId,
+                  label: TARGET.label,
+                })
+              : TARGET,
+          });
+          const readyFiber = yield* Effect.forkChild(Effect.flip(session.ready));
+          yield* awaitSocket(sockets);
 
-            yield* TestClock.adjust("15 seconds");
-            return yield* Fiber.join(readyFiber);
-          }),
-        );
+          yield* TestClock.adjust("15 seconds");
+          return yield* Fiber.join(readyFiber);
+        }),
+      );
 
-        expect(error).toBeInstanceOf(ConnectionTransientError);
-        expect(error).toMatchObject({
-          reason: "transport",
-          message: `Test environment could not establish a WebSocket connection.${relay ? ` ${NETWORK_BLOCKING_HINT}` : ""}`,
-        });
-        expect(sockets[0]?.readyState).toBe(TestWebSocket.CLOSED);
-      }).pipe(Effect.provide(TestClock.layer())),
-    );
-  }
+      expect(error).toBeInstanceOf(ConnectionTransientError);
+      expect(error).toMatchObject({
+        reason: "transport",
+        message: `Test environment could not establish a WebSocket connection.${relay ? ` ${NETWORK_BLOCKING_HINT}` : ""}`,
+      });
+      expect(sockets[0]?.readyState).toBe(TestWebSocket.CLOSED);
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
 });

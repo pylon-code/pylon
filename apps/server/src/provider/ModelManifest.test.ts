@@ -699,39 +699,47 @@ describe("compatibility policy by release channel", () => {
     ],
   };
 
-  for (const [channel, t3CodeVersion, expected, openCode2Status] of [
-    [
-      "preview builds keep the bundled policy",
-      "0.0.44-preview.20260929.1",
-      { ...remote, compatibility: ModelManifest.BUNDLED_MODEL_MANIFEST.compatibility },
-      "supported",
-    ],
-    ["stable builds adopt the fetched policy", "0.0.44", remote, "broken"],
-    ["nightly builds adopt the fetched policy", "0.0.44-nightly.20260929.1", remote, "broken"],
-  ] as const) {
-    it.live(channel, () =>
-      Effect.gen(function* () {
-        const openCode2 = (manifest: ModelManifest.ModelManifestData) =>
-          resolveProviderCompatibility(manifest.compatibility, OPENCODE, "2.0.18", t3CodeVersion)
-            ?.status;
-        const refreshed = yield* (yield* ModelManifest.makeForVersion(t3CodeVersion)).refresh;
-        assert.deepStrictEqual(refreshed, expected);
-        assert.strictEqual(openCode2(refreshed), openCode2Status);
+  it.live.each([
+    {
+      channel: "preview builds keep the bundled policy",
+      t3CodeVersion: "0.0.44-preview.20260929.1",
+      expected: { ...remote, compatibility: ModelManifest.BUNDLED_MODEL_MANIFEST.compatibility },
+      openCode2Status: "supported",
+    },
+    {
+      channel: "stable builds adopt the fetched policy",
+      t3CodeVersion: "0.0.44",
+      expected: remote,
+      openCode2Status: "broken",
+    },
+    {
+      channel: "nightly builds adopt the fetched policy",
+      t3CodeVersion: "0.0.44-nightly.20260929.1",
+      expected: remote,
+      openCode2Status: "broken",
+    },
+  ] as const)("$channel", ({ t3CodeVersion, expected, openCode2Status }) =>
+    Effect.gen(function* () {
+      const openCode2 = (manifest: ModelManifest.ModelManifestData) =>
+        resolveProviderCompatibility(manifest.compatibility, OPENCODE, "2.0.18", t3CodeVersion)
+          ?.status;
+      const refreshed = yield* (yield* ModelManifest.makeForVersion(t3CodeVersion)).refresh;
+      assert.deepStrictEqual(refreshed, expected);
+      assert.strictEqual(openCode2(refreshed), openCode2Status);
 
-        // A restart reads the fetched manifest back from the disk cache.
-        const rebooted = yield* (yield* ModelManifest.makeForVersion(t3CodeVersion)).current;
-        assert.deepStrictEqual(rebooted, expected);
-      }).pipe(
-        Effect.scoped,
-        Effect.provide(
-          serviceLayers({
-            prefix: "model-manifest-channel-compatibility-test",
-            response: () => Response.json(remote),
-          }),
-        ),
+      // A restart reads the fetched manifest back from the disk cache.
+      const rebooted = yield* (yield* ModelManifest.makeForVersion(t3CodeVersion)).current;
+      assert.deepStrictEqual(rebooted, expected);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        serviceLayers({
+          prefix: "model-manifest-channel-compatibility-test",
+          response: () => Response.json(remote),
+        }),
       ),
-    );
-  }
+    ),
+  );
 });
 
 it.effect("caches valid compatibility policies and keeps them after a malformed refresh", () => {

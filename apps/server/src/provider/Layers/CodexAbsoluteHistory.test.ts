@@ -296,52 +296,49 @@ describe("readCodexConversation", () => {
     }),
   );
 
-  for (const update of [
-    { id: "foreign" },
-    { cwd: "/tmp/foreign" },
-    { ephemeral: true },
-    { status: { type: "active", activeFlags: [] } },
-    { status: { type: "systemError" } },
-    { historyMode: "unknown" },
-  ]) {
-    it.effect(`rejects unverified metadata ${JSON.stringify(update)}`, () =>
-      Effect.gen(function* () {
-        const fixture = makeClient();
-        fixture.hooks.response = (_method, _params, response) => replaceThread(response, update);
-        NodeAssert.equal(
-          (yield* Effect.flip(readSource(fixture.client)))._tag,
-          "CodexAppServerRequestError",
-        );
-      }),
-    );
-  }
-
-  for (const turns of [
-    [turn("one", { status: "inProgress" })],
-    [turn("one", { itemsView: "summary" })],
-    [turn("one", { itemsView: "notLoaded" })],
-    [turn("one"), turn("one")],
-    [{ id: "one", status: "completed" }],
-    [turn("one", { items: [{ type: "agentMessage", text: "missing id" }] })],
+  it.effect.each(
     [
-      turn("one", {
-        items: [
-          { id: "same", type: "plan" },
-          { id: "same", type: "plan" },
-        ],
-      }),
-    ],
-  ]) {
-    it.effect(`rejects incomplete or ambiguous history ${JSON.stringify(turns)}`, () =>
-      Effect.gen(function* () {
-        const { client } = makeClient(turns);
-        NodeAssert.equal(
-          (yield* Effect.flip(readSource(client)))._tag,
-          "CodexAppServerRequestError",
-        );
-      }),
-    );
-  }
+      { id: "foreign" },
+      { cwd: "/tmp/foreign" },
+      { ephemeral: true },
+      { status: { type: "active", activeFlags: [] } },
+      { status: { type: "systemError" } },
+      { historyMode: "unknown" },
+    ].map((update) => [JSON.stringify(update), update] as const),
+  )("rejects unverified metadata %s", ([, update]) =>
+    Effect.gen(function* () {
+      const fixture = makeClient();
+      fixture.hooks.response = (_method, _params, response) => replaceThread(response, update);
+      NodeAssert.equal(
+        (yield* Effect.flip(readSource(fixture.client)))._tag,
+        "CodexAppServerRequestError",
+      );
+    }),
+  );
+
+  it.effect.each(
+    [
+      [turn("one", { status: "inProgress" })],
+      [turn("one", { itemsView: "summary" })],
+      [turn("one", { itemsView: "notLoaded" })],
+      [turn("one"), turn("one")],
+      [{ id: "one", status: "completed" }],
+      [turn("one", { items: [{ type: "agentMessage", text: "missing id" }] })],
+      [
+        turn("one", {
+          items: [
+            { id: "same", type: "plan" },
+            { id: "same", type: "plan" },
+          ],
+        }),
+      ],
+    ].map((turns) => [JSON.stringify(turns), turns] as const),
+  )("rejects incomplete or ambiguous history %s", ([, turns]) =>
+    Effect.gen(function* () {
+      const { client } = makeClient(turns);
+      NodeAssert.equal((yield* Effect.flip(readSource(client)))._tag, "CodexAppServerRequestError");
+    }),
+  );
 
   it.effect("rejects pagination cycles before requesting the same page again", () =>
     Effect.gen(function* () {
@@ -463,8 +460,9 @@ describe("forkCodexConversation", () => {
     }),
   );
 
-  for (const boundary of ["missing", "failed", "interrupted"]) {
-    it.effect(`rejects the non-completed boundary ${boundary} before issuing a fork`, () =>
+  it.effect.each(["missing", "failed", "interrupted"])(
+    "rejects the non-completed boundary %s before issuing a fork",
+    (boundary) =>
       Effect.gen(function* () {
         const fixture = makeClient([
           turn("completed"),
@@ -483,73 +481,72 @@ describe("forkCodexConversation", () => {
           false,
         );
       }),
-    );
-  }
+  );
 
-  for (const update of [
-    { id: "source" },
-    { forkedFromId: "foreign" },
-    { cwd: "/tmp/other" },
-    { ephemeral: true },
-    { status: { type: "active", activeFlags: [] } },
-    { status: { type: "notLoaded" } },
-  ]) {
-    it.effect(`rejects fork metadata ${JSON.stringify(update)}`, () =>
-      Effect.gen(function* () {
-        const fixture = makeClient();
-        const source = yield* readSource(fixture.client);
-        fixture.hooks.response = (method, _params, response) =>
-          method === "thread/fork" ? replaceThread(response, update) : response;
-        NodeAssert.equal(
-          (yield* Effect.flip(forkCodexConversation(fixture.client, { source })))._tag,
-          "CodexAppServerRequestError",
-        );
-      }),
-    );
-  }
+  it.effect.each(
+    [
+      { id: "source" },
+      { forkedFromId: "foreign" },
+      { cwd: "/tmp/other" },
+      { ephemeral: true },
+      { status: { type: "active", activeFlags: [] } },
+      { status: { type: "notLoaded" } },
+    ].map((update) => [JSON.stringify(update), update] as const),
+  )("rejects fork metadata %s", ([, update]) =>
+    Effect.gen(function* () {
+      const fixture = makeClient();
+      const source = yield* readSource(fixture.client);
+      fixture.hooks.response = (method, _params, response) =>
+        method === "thread/fork" ? replaceThread(response, update) : response;
+      NodeAssert.equal(
+        (yield* Effect.flip(forkCodexConversation(fixture.client, { source })))._tag,
+        "CodexAppServerRequestError",
+      );
+    }),
+  );
 
-  for (const changed of [
-    [turn("renamed"), turn("turn-2")],
+  it.effect.each(
     [
-      turn("turn-1", {
-        items: [
-          {
-            id: "renamed-item",
-            type: "userMessage",
-            content: [{ type: "text", text: "same prompt" }],
-          },
-        ],
-      }),
-      turn("turn-2"),
-    ],
-    [
-      turn("turn-1", {
-        items: [
-          {
-            id: "turn-1-user",
-            type: "userMessage",
-            content: [{ type: "text", text: "changed prompt" }],
-          },
-        ],
-      }),
-      turn("turn-2"),
-    ],
-    [turn("turn-2"), turn("turn-1")],
-    [turn("turn-1", { futureRelationship: "foreign-item" }), turn("turn-2")],
-  ]) {
-    it.effect(`rejects equal-length fork history changes ${JSON.stringify(changed)}`, () =>
-      Effect.gen(function* () {
-        const fixture = makeClient();
-        const source = yield* readSource(fixture.client);
-        fixture.hooks.response = (method, _params, response) =>
-          method === "thread/fork" ? replaceThread(response, { turns: changed }) : response;
-        NodeAssert.match(
-          (yield* Effect.flip(forkCodexConversation(fixture.client, { source }))).message,
-          /changed retained history/,
-        );
-      }),
-    );
-  }
+      [turn("renamed"), turn("turn-2")],
+      [
+        turn("turn-1", {
+          items: [
+            {
+              id: "renamed-item",
+              type: "userMessage",
+              content: [{ type: "text", text: "same prompt" }],
+            },
+          ],
+        }),
+        turn("turn-2"),
+      ],
+      [
+        turn("turn-1", {
+          items: [
+            {
+              id: "turn-1-user",
+              type: "userMessage",
+              content: [{ type: "text", text: "changed prompt" }],
+            },
+          ],
+        }),
+        turn("turn-2"),
+      ],
+      [turn("turn-2"), turn("turn-1")],
+      [turn("turn-1", { futureRelationship: "foreign-item" }), turn("turn-2")],
+    ].map((changed) => [JSON.stringify(changed), changed] as const),
+  )("rejects equal-length fork history changes %s", ([, changed]) =>
+    Effect.gen(function* () {
+      const fixture = makeClient();
+      const source = yield* readSource(fixture.client);
+      fixture.hooks.response = (method, _params, response) =>
+        method === "thread/fork" ? replaceThread(response, { turns: changed }) : response;
+      NodeAssert.match(
+        (yield* Effect.flip(forkCodexConversation(fixture.client, { source }))).message,
+        /changed retained history/,
+      );
+    }),
+  );
 
   it.effect("does not trust a correct fork response when rereading reveals different history", () =>
     Effect.gen(function* () {
@@ -701,8 +698,9 @@ describe("native conversation proof", () => {
     }),
   );
 
-  for (const hidden of hiddenContexts) {
-    it.effect(`includes ${String(hidden.type)} context omitted by the public transcript`, () =>
+  it.effect.each(hiddenContexts.map((hidden) => ({ hidden, name: String(hidden.type) })))(
+    "includes $name context omitted by the public transcript",
+    ({ hidden }) =>
       Effect.gen(function* () {
         const fixture = makeClient();
         const sourceThread = fixture.threads.get("source")!;
@@ -729,8 +727,7 @@ describe("native conversation proof", () => {
           /changed retained turn content or identities/,
         );
       }),
-    );
-  }
+  );
 
   it.effect(
     "retains opaque records after the terminal event through the exact next native start",
@@ -823,30 +820,33 @@ describe("native conversation proof", () => {
     }),
   );
 
-  for (const metadata of [
-    { id: "foreign" },
-    { cwd: "/tmp/foreign" },
-    { history_base: { thread_id: "unread-base", end_ordinal_exclusive: 4, end_byte_offset: 100 } },
-    { context_window: { window_id: 7 } },
-  ])
-    it.effect(`rejects unprovable native session metadata ${JSON.stringify(metadata)}`, () =>
-      Effect.gen(function* () {
-        const fixture = makeClient();
-        fixture.threads.get("source")!.nativeRecords = [
-          nativeRecord("session_meta", {
-            id: "source",
-            session_id: "source",
-            timestamp: "2026-01-01T00:00:00.000Z",
-            cwd: CWD,
-            ...metadata,
-          }),
-        ];
-        NodeAssert.equal(
-          (yield* Effect.flip(readSource(fixture.client)))._tag,
-          "CodexAppServerRequestError",
-        );
-      }),
-    );
+  it.effect.each(
+    [
+      { id: "foreign" },
+      { cwd: "/tmp/foreign" },
+      {
+        history_base: { thread_id: "unread-base", end_ordinal_exclusive: 4, end_byte_offset: 100 },
+      },
+      { context_window: { window_id: 7 } },
+    ].map((metadata) => [JSON.stringify(metadata), metadata] as const),
+  )("rejects unprovable native session metadata %s", ([, metadata]) =>
+    Effect.gen(function* () {
+      const fixture = makeClient();
+      fixture.threads.get("source")!.nativeRecords = [
+        nativeRecord("session_meta", {
+          id: "source",
+          session_id: "source",
+          timestamp: "2026-01-01T00:00:00.000Z",
+          cwd: CWD,
+          ...metadata,
+        }),
+      ];
+      NodeAssert.equal(
+        (yield* Effect.flip(readSource(fixture.client)))._tag,
+        "CodexAppServerRequestError",
+      );
+    }),
+  );
 
   it.effect("fails closed without a provider-owned rollout reader", () =>
     Effect.gen(function* () {
@@ -858,37 +858,39 @@ describe("native conversation proof", () => {
     }),
   );
 
-  for (const path of [null, "relative.jsonl", "", "/tmp/invalid\0.jsonl"])
-    it.effect(`rejects native path ${JSON.stringify(path)}`, () =>
-      Effect.gen(function* () {
-        const fixture = makeClient();
-        fixture.hooks.response = (method, _params, response) =>
-          method === "thread/read" ? replaceThread(response, { path }) : response;
-        NodeAssert.match(
-          (yield* Effect.flip(readSource(fixture.client))).message,
-          /proof is unavailable/,
-        );
-      }),
-    );
+  it.effect.each(
+    [null, "relative.jsonl", "", "/tmp/invalid\0.jsonl"].map(
+      (path) => [JSON.stringify(path), path] as const,
+    ),
+  )("rejects native path %s", ([, path]) =>
+    Effect.gen(function* () {
+      const fixture = makeClient();
+      fixture.hooks.response = (method, _params, response) =>
+        method === "thread/read" ? replaceThread(response, { path }) : response;
+      NodeAssert.match(
+        (yield* Effect.flip(readSource(fixture.client))).message,
+        /proof is unavailable/,
+      );
+    }),
+  );
 
-  for (const [label, invalid] of [
-    ["truncated", '{"type":"session_meta"}'],
-    ["malformed", "not JSON\n"],
-    ["empty", "\n"],
-    ["missing envelope", "{}\n"],
-    ["oversized line", `${" ".repeat(1024 * 1024 + 1)}\n`],
-    ["oversized file", `${" ".repeat(16 * 1024 * 1024)}\n`],
-    ["too many records", "{}\n".repeat(100_001)],
-  ])
-    it.effect(`rejects ${label} native JSONL without disclosing content`, () =>
-      Effect.gen(function* () {
-        const fixture = makeClient();
-        fixture.hooks.rollout = () => invalid!;
-        const error = yield* Effect.flip(readSource(fixture.client));
-        NodeAssert.equal(error._tag, "CodexAppServerRequestError");
-        NodeAssert.doesNotMatch(error.message, /native system instructions|retained native memory/);
-      }),
-    );
+  it.effect.each([
+    { label: "truncated", invalid: '{"type":"session_meta"}' },
+    { label: "malformed", invalid: "not JSON\n" },
+    { label: "empty", invalid: "\n" },
+    { label: "missing envelope", invalid: "{}\n" },
+    { label: "oversized line", invalid: `${" ".repeat(1024 * 1024 + 1)}\n` },
+    { label: "oversized file", invalid: `${" ".repeat(16 * 1024 * 1024)}\n` },
+    { label: "too many records", invalid: "{}\n".repeat(100_001) },
+  ])("rejects $label native JSONL without disclosing content", ({ invalid }) =>
+    Effect.gen(function* () {
+      const fixture = makeClient();
+      fixture.hooks.rollout = () => invalid;
+      const error = yield* Effect.flip(readSource(fixture.client));
+      NodeAssert.equal(error._tag, "CodexAppServerRequestError");
+      NodeAssert.doesNotMatch(error.message, /native system instructions|retained native memory/);
+    }),
+  );
 
   it.effect("preserves unknown header context instead of treating it as generated identity", () =>
     Effect.gen(function* () {
@@ -926,8 +928,9 @@ describe("native goal proof", () => {
     unknown: { futureGoalState: true },
   });
 
-  for (const status of ["paused", "blocked", "usageLimited", "budgetLimited", "complete"])
-    it.effect(`retains an idle ${status} goal through native deferred copying`, () =>
+  it.effect.each(["paused", "blocked", "usageLimited", "budgetLimited", "complete"])(
+    "retains an idle %s goal through native deferred copying",
+    (status) =>
       Effect.gen(function* () {
         const fixture = makeClient();
         fixture.threads.get("source")!.nativeGoal = goal(status);
@@ -942,25 +945,26 @@ describe("native goal proof", () => {
           false,
         );
       }),
-    );
+  );
 
-  for (const nativeGoal of [
-    goal("active"),
-    goal("futureActive"),
-    { ...goal("paused"), threadId: "foreign" },
-    { threadId: "source", status: "paused" },
-    { ...goal("paused"), tokensUsed: "unknown" },
-  ])
-    it.effect(`rejects unproven native goal ${JSON.stringify(nativeGoal)}`, () =>
-      Effect.gen(function* () {
-        const fixture = makeClient();
-        fixture.threads.get("source")!.nativeGoal = nativeGoal;
-        NodeAssert.equal(
-          (yield* Effect.flip(readSource(fixture.client)))._tag,
-          "CodexAppServerRequestError",
-        );
-      }),
-    );
+  it.effect.each(
+    [
+      goal("active"),
+      goal("futureActive"),
+      { ...goal("paused"), threadId: "foreign" },
+      { threadId: "source", status: "paused" },
+      { ...goal("paused"), tokensUsed: "unknown" },
+    ].map((nativeGoal) => [JSON.stringify(nativeGoal), nativeGoal] as const),
+  )("rejects unproven native goal %s", ([, nativeGoal]) =>
+    Effect.gen(function* () {
+      const fixture = makeClient();
+      fixture.threads.get("source")!.nativeGoal = nativeGoal;
+      NodeAssert.equal(
+        (yield* Effect.flip(readSource(fixture.client)))._tag,
+        "CodexAppServerRequestError",
+      );
+    }),
+  );
 
   it.effect(
     "does not establish exact eligibility when native goal introspection is unsupported",

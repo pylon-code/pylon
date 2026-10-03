@@ -67,7 +67,7 @@ describe("native Antigravity quota schema", () => {
 });
 
 it.layer(NodeServices.layer)("ACP profile quota reads", (it) => {
-  for (const mode of [
+  it.effect.each([
     "consumer",
     "enterprise",
     "missing",
@@ -76,78 +76,76 @@ it.layer(NodeServices.layer)("ACP profile quota reads", (it) => {
     "oversize",
     "account-change",
     "api-key",
-  ] as const) {
-    it.effect(mode, () =>
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const root = yield* fs.makeTempDirectoryScoped();
-        yield* fs.makeDirectory(path.join(root, "antigravity-acp"));
-        const tokenPath = path.join(root, "antigravity-acp", "acp_token.json");
-        const credential = encodeJson({
-          token_uri:
-            mode === "wrong-uri"
-              ? "https://example.invalid/token"
-              : "https://oauth2.googleapis.com/token",
-          client_id: "profile-client",
-          client_secret: "fixture-secret",
-          refresh_token: "profile-refresh",
-          project_id: "saved-project",
-        });
-        if (mode !== "missing") yield* fs.writeFileString(tokenPath, credential);
-        const urls: string[] = [];
-        const http = HttpClient.make((request) =>
-          Effect.gen(function* () {
-            urls.push(request.url);
-            if (request.url.endsWith("/token")) {
-              expect(request.body._tag).toBe("Uint8Array");
-              if (request.body._tag === "Uint8Array")
-                expect(new TextDecoder().decode(request.body.body)).toContain(
-                  "refresh_token=profile-refresh",
-                );
-              return HttpClientResponse.fromWeb(
-                request,
-                Response.json({ access_token: "fixture-access" }),
+  ] as const)("%s", (mode) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped();
+      yield* fs.makeDirectory(path.join(root, "antigravity-acp"));
+      const tokenPath = path.join(root, "antigravity-acp", "acp_token.json");
+      const credential = encodeJson({
+        token_uri:
+          mode === "wrong-uri"
+            ? "https://example.invalid/token"
+            : "https://oauth2.googleapis.com/token",
+        client_id: "profile-client",
+        client_secret: "fixture-secret",
+        refresh_token: "profile-refresh",
+        project_id: "saved-project",
+      });
+      if (mode !== "missing") yield* fs.writeFileString(tokenPath, credential);
+      const urls: string[] = [];
+      const http = HttpClient.make((request) =>
+        Effect.gen(function* () {
+          urls.push(request.url);
+          if (request.url.endsWith("/token")) {
+            expect(request.body._tag).toBe("Uint8Array");
+            if (request.body._tag === "Uint8Array")
+              expect(new TextDecoder().decode(request.body.body)).toContain(
+                "refresh_token=profile-refresh",
               );
-            }
-            expect(request.headers.authorization).toBe("Bearer fixture-access");
-            expect(request.headers["user-agent"]).toContain("antigravity/acp/1.1.1 (aidev_client;");
-            if (request.url.endsWith("loadCodeAssist"))
-              return HttpClientResponse.fromWeb(
-                request,
-                Response.json({
-                  cloudaicompanionProject: "account-project",
-                  paidTier: { usesGcpTos: mode === "enterprise" },
-                }),
-              );
-            if (mode === "account-change")
-              yield* fs.writeFileString(tokenPath, credential + " ").pipe(Effect.orDie);
-            const body = mode === "oversize" ? " ".repeat(300_000) : encodeJson(summary);
             return HttpClientResponse.fromWeb(
               request,
-              new Response(body, { status: mode === "http-error" ? 403 : 200 }),
+              Response.json({ access_token: "fixture-access" }),
             );
-          }),
-        );
-        const limits = yield* readAntigravityUsageLimits({
-          profileDirectory: root,
-          authMethod: mode === "api-key" ? "gemini-api-key" : "oauth-personal",
-          runtimeVersion: "1.1.1",
-        }).pipe(Effect.provideService(HttpClient.HttpClient, http));
-        if (mode === "consumer" || mode === "enterprise") {
-          expect(limits.windows).toHaveLength(3);
-          expect(urls[2]).toBe(
-            `https://${mode === "enterprise" ? "cloudcode-pa" : "daily-cloudcode-pa"}.googleapis.com/v1internal:retrieveUserQuotaSummary`,
+          }
+          expect(request.headers.authorization).toBe("Bearer fixture-access");
+          expect(request.headers["user-agent"]).toContain("antigravity/acp/1.1.1 (aidev_client;");
+          if (request.url.endsWith("loadCodeAssist"))
+            return HttpClientResponse.fromWeb(
+              request,
+              Response.json({
+                cloudaicompanionProject: "account-project",
+                paidTier: { usesGcpTos: mode === "enterprise" },
+              }),
+            );
+          if (mode === "account-change")
+            yield* fs.writeFileString(tokenPath, credential + " ").pipe(Effect.orDie);
+          const body = mode === "oversize" ? " ".repeat(300_000) : encodeJson(summary);
+          return HttpClientResponse.fromWeb(
+            request,
+            new Response(body, { status: mode === "http-error" ? 403 : 200 }),
           );
-        } else {
-          expect(limits.windows).toEqual([]);
-          expect(limits.unavailable).toBeDefined();
-        }
-        if (mode === "missing" || mode === "wrong-uri" || mode === "api-key")
-          expect(urls).toEqual([]);
-        if (mode !== "missing" && mode !== "account-change")
-          expect(yield* fs.readFileString(tokenPath)).toBe(credential);
-      }),
-    );
-  }
+        }),
+      );
+      const limits = yield* readAntigravityUsageLimits({
+        profileDirectory: root,
+        authMethod: mode === "api-key" ? "gemini-api-key" : "oauth-personal",
+        runtimeVersion: "1.1.1",
+      }).pipe(Effect.provideService(HttpClient.HttpClient, http));
+      if (mode === "consumer" || mode === "enterprise") {
+        expect(limits.windows).toHaveLength(3);
+        expect(urls[2]).toBe(
+          `https://${mode === "enterprise" ? "cloudcode-pa" : "daily-cloudcode-pa"}.googleapis.com/v1internal:retrieveUserQuotaSummary`,
+        );
+      } else {
+        expect(limits.windows).toEqual([]);
+        expect(limits.unavailable).toBeDefined();
+      }
+      if (mode === "missing" || mode === "wrong-uri" || mode === "api-key")
+        expect(urls).toEqual([]);
+      if (mode !== "missing" && mode !== "account-change")
+        expect(yield* fs.readFileString(tokenPath)).toBe(credential);
+    }),
+  );
 });

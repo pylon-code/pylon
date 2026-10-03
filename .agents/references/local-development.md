@@ -23,8 +23,10 @@ Use populated fixtures when the affected flow needs them. For an authorized snap
   ```bash
   mkdir -p .t3/userdata
   # Use a fresh destination; VACUUM INTO refuses to overwrite an existing file.
-  bun -e "new (require('bun:sqlite').Database)(process.env.HOME + '/.pylon-code/userdata/state.sqlite', { readonly: true }).run(\"VACUUM INTO '.t3/userdata/state.sqlite'\")"
+  bun -e "new (require('bun:sqlite').Database)(process.env.HOME + '/.pylon-code/userdata/statev2.sqlite', { readonly: true }).run(\"VACUUM INTO '.t3/userdata/statev2.sqlite'\")"
   ```
+
+  The server and `vp run migrate-dev-db` use `statev2.sqlite`. An install created before orchestration v2 may only have `state.sqlite`; `migrate-dev-db` then stops safely with a source-missing error, so pass `--source <path>` explicitly.
 
   A plain `cp` is only safe when no server has the source open, and must bring the `-wal` and `-shm` siblings along. A live file copy is a corrupt copy.
 

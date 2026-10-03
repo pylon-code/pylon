@@ -128,8 +128,9 @@ it.layer(testLayer)("OpenCodeRuntime Pylon MCP timeout", (it) => {
     }).pipe(Effect.scoped),
   );
 
-  for (const timeout of [0, 90_000]) {
-    it.effect(`preserves provider per-server timeout ${timeout} ahead of the global setting`, () =>
+  it.effect.each([0, 90_000])(
+    "preserves provider per-server timeout %s ahead of the global setting",
+    (timeout) =>
       Effect.gen(function* () {
         const providerConfig = {
           mcp: { "t3-code": { ...remoteConfig, timeout } },
@@ -149,23 +150,20 @@ it.layer(testLayer)("OpenCodeRuntime Pylon MCP timeout", (it) => {
           "/provider/workspace",
         );
       }).pipe(Effect.scoped),
-    );
-  }
+  );
 
-  for (const timeout of [0, 45_000]) {
-    it.effect(`preserves provider global MCP timeout ${timeout}`, () =>
-      Effect.gen(function* () {
-        const { client, requests } = yield* makeHarness({
-          config: () => ({ experimental: { mcp_timeout: timeout } }),
-        });
-        yield* Effect.promise(() => client.mcp.add({ name: "t3-code", config: remoteConfig }));
-        expect(decodeBody(requests[1]!.body)).toEqual({
-          name: "t3-code",
-          config: { ...remoteConfig, timeout },
-        });
-      }).pipe(Effect.scoped),
-    );
-  }
+  it.effect.each([0, 45_000])("preserves provider global MCP timeout %s", (timeout) =>
+    Effect.gen(function* () {
+      const { client, requests } = yield* makeHarness({
+        config: () => ({ experimental: { mcp_timeout: timeout } }),
+      });
+      yield* Effect.promise(() => client.mcp.add({ name: "t3-code", config: remoteConfig }));
+      expect(decodeBody(requests[1]!.body)).toEqual({
+        name: "t3-code",
+        config: { ...remoteConfig, timeout },
+      });
+    }).pipe(Effect.scoped),
+  );
 
   it.effect("leaves other names and local MCP servers unchanged", () =>
     Effect.gen(function* () {

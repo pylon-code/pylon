@@ -95,6 +95,20 @@ function sessionEvent(event: Record<string, unknown>) {
   return { type: "session_event", event };
 }
 
+const REFINEMENT_CUSTOM_TYPES = ["refinement_outcome", "refinement_notice"] as const;
+
+const PRIVATE_CUSTOM_TYPES = [
+  "compaction_outcome",
+  "ipython_state_restored",
+  "ipython_state",
+  "session_slash_command",
+  "session_slash_command_result",
+  "rlm_child_failure",
+  "rlm_child_terminal_notice",
+  "async_bash_completion",
+  "agent_message",
+] as const;
+
 describe("PrimeAgentDaemonEvents", () => {
   it("retains exact hidden harness digest identity and native snapshot counts without content", () => {
     const hidden = {
@@ -166,8 +180,9 @@ describe("PrimeAgentDaemonEvents", () => {
     expect(JSON.stringify(snapshot)).not.toContain("private compaction");
   });
 
-  for (const customType of ["refinement_outcome", "refinement_notice"] as const) {
-    it(`retains ${customType} identity in live events and snapshots without private content`, () => {
+  it.each(REFINEMENT_CUSTOM_TYPES)(
+    "retains %s identity in live events and snapshots without private content",
+    (customType: (typeof REFINEMENT_CUSTOM_TYPES)[number]) => {
       const refinement = {
         role: "custom",
         customType,
@@ -241,21 +256,12 @@ describe("PrimeAgentDaemonEvents", () => {
           decodePrimeAgentDaemonEvent(sessionEvent({ type: "message_end", message: changed })),
         ).not.toEqual(completed);
       }
-    });
-  }
+    },
+  );
 
-  for (const customType of [
-    "compaction_outcome",
-    "ipython_state_restored",
-    "ipython_state",
-    "session_slash_command",
-    "session_slash_command_result",
-    "rlm_child_failure",
-    "rlm_child_terminal_notice",
-    "async_bash_completion",
-    "agent_message",
-  ] as const) {
-    it(`retains ${customType} identity in live events and snapshots without private content`, () => {
+  it.each(PRIVATE_CUSTOM_TYPES)(
+    "retains %s identity in live events and snapshots without private content",
+    (customType: (typeof PRIVATE_CUSTOM_TYPES)[number]) => {
       const refinement = {
         role: "custom",
         customType,
@@ -329,8 +335,8 @@ describe("PrimeAgentDaemonEvents", () => {
           decodePrimeAgentDaemonEvent(sessionEvent({ type: "message_end", message: changed })),
         ).not.toEqual(completed);
       }
-    });
-  }
+    },
+  );
 
   it("retains exact native branch and bash records without exposing their content", () => {
     for (const message of [

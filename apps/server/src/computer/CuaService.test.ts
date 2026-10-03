@@ -166,35 +166,33 @@ it.effect("Cua tool errors remain errors and malformed results are rejected", ()
   ),
 );
 
-for (const revoke of ["thread", "all"] as const) {
-  it.effect(`queued calls cannot survive ${revoke} revocation`, () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const f = yield* fixture;
-        yield* f.cua.tools(owner);
-        const entered = yield* Deferred.make<void>();
-        const release = Promise.withResolvers<void>();
-        Object.assign(f.connections[0]!, {
-          callTool: async () => {
-            Deferred.doneUnsafe(entered, Effect.void);
-            await release.promise;
-            return imageResult;
-          },
-        });
-        const active = yield* f.cua.call(owner, "get_window_state", {}).pipe(Effect.forkChild);
-        yield* Deferred.await(entered);
-        const queued = yield* f.cua.tools(owner).pipe(expectFailure, Effect.forkChild);
-        // Let the request enter the semaphore wait; no desktop or timer is involved.
-        yield* Effect.yieldNow;
-        yield* revoke === "thread" ? f.cua.closeThread(owner.threadId) : f.cua.closeAll;
-        release.resolve();
-        yield* Fiber.join(active);
-        expect((yield* Fiber.join(queued)).message).toContain("no longer");
-        expect(f.starts()).toBe(1);
-      }),
-    ),
-  );
-}
+it.effect.each(["thread", "all"] as const)("queued calls cannot survive %s revocation", (revoke) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* f.cua.tools(owner);
+      const entered = yield* Deferred.make<void>();
+      const release = Promise.withResolvers<void>();
+      Object.assign(f.connections[0]!, {
+        callTool: async () => {
+          Deferred.doneUnsafe(entered, Effect.void);
+          await release.promise;
+          return imageResult;
+        },
+      });
+      const active = yield* f.cua.call(owner, "get_window_state", {}).pipe(Effect.forkChild);
+      yield* Deferred.await(entered);
+      const queued = yield* f.cua.tools(owner).pipe(expectFailure, Effect.forkChild);
+      // Let the request enter the semaphore wait; no desktop or timer is involved.
+      yield* Effect.yieldNow;
+      yield* revoke === "thread" ? f.cua.closeThread(owner.threadId) : f.cua.closeAll;
+      release.resolve();
+      yield* Fiber.join(active);
+      expect((yield* Fiber.join(queued)).message).toContain("no longer");
+      expect(f.starts()).toBe(1);
+    }),
+  ),
+);
 
 it.effect(
   "background policy blocks foreground calls before dispatch and supports explicit opt-in",
@@ -248,8 +246,9 @@ it.effect("foreground revocation during connect is enforced before subscriber no
   ),
 );
 
-for (const failure of ["transport", "catalog"] as const) {
-  it.effect(`discovery recovers from ${failure} failure without closing on unknown names`, () =>
+it.effect.each(["transport", "catalog"] as const)(
+  "discovery recovers from %s failure without closing on unknown names",
+  (failure) =>
     Effect.scoped(
       Effect.gen(function* () {
         const f = yield* fixture;
@@ -268,8 +267,7 @@ for (const failure of ["transport", "catalog"] as const) {
         expect(f.starts()).toBe(2);
       }),
     ),
-  );
-}
+);
 
 it.effect("does not read settings or start a driver during server layer construction", () =>
   Effect.scoped(

@@ -47,31 +47,29 @@ describe("ElectronNotification lifetime", () => {
       assert.strictEqual(NodeV8.queryObjects(NativeNotification), baseline);
     }),
   );
-  for (const event of ["click", "close", "failed"]) {
-    it.effect(`releases a notification after ${event}`, () =>
-      Effect.gen(function* () {
-        const baseline = NodeV8.queryObjects(NativeNotification);
-        let clicked = 0;
-        NativeNotification.eventOnShow = event;
-        try {
-          yield* Effect.gen(function* () {
-            const service = yield* ElectronNotification.ElectronNotification;
-            yield* service.show({
-              title: "Thread",
-              body: "Done",
-              onClick: () => {
-                clicked++;
-              },
-            });
-            assert.strictEqual(NodeV8.queryObjects(NativeNotification), baseline);
-            assert.strictEqual(clicked, event === "click" ? 1 : 0);
-          }).pipe(Effect.provide(ElectronNotification.layer), Effect.scoped);
-        } finally {
-          NativeNotification.eventOnShow = undefined;
-        }
-      }),
-    );
-  }
+  it.effect.each(["click", "close", "failed"])("releases a notification after %s", (event) =>
+    Effect.gen(function* () {
+      const baseline = NodeV8.queryObjects(NativeNotification);
+      let clicked = 0;
+      NativeNotification.eventOnShow = event;
+      try {
+        yield* Effect.gen(function* () {
+          const service = yield* ElectronNotification.ElectronNotification;
+          yield* service.show({
+            title: "Thread",
+            body: "Done",
+            onClick: () => {
+              clicked++;
+            },
+          });
+          assert.strictEqual(NodeV8.queryObjects(NativeNotification), baseline);
+          assert.strictEqual(clicked, event === "click" ? 1 : 0);
+        }).pipe(Effect.provide(ElectronNotification.layer), Effect.scoped);
+      } finally {
+        NativeNotification.eventOnShow = undefined;
+      }
+    }),
+  );
   it.effect("retains a Windows notification moved into Action Center", () =>
     Effect.gen(function* () {
       const baseline = NodeV8.queryObjects(NativeNotification);

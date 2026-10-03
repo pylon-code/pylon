@@ -39,7 +39,7 @@ cases. Never run a development server against the live `~/.pylon-code/userdata`,
 Seed development state from a copy of Pylon's own database. See
 [test data](../../AGENTS.md#test-data) for a consistent `VACUUM INTO` snapshot.
 `vp run migrate-dev-db` seeds a worktree from a trimmed copy of
-`~/.pylon-code/userdata/state.sqlite`, and `--source <path>` reads a different database (never
+`~/.pylon-code/userdata/statev2.sqlite`, and `--source <path>` reads a different database (never
 `~/.t3`). `node apps/server/scripts/t3-sqlite-state.ts <query|exec> --base-dir <path>` inspects or
 seeds an isolated database after taking a private backup. Both refuse to write to either runtime
 home.
