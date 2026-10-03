@@ -8,6 +8,7 @@ import type {
   SourceControlProviderKind,
   SourceControlRepositoryInfo,
 } from "@t3tools/contracts";
+import { newProjectFolderName } from "@t3tools/shared/path";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Order from "effect/Order";
@@ -248,6 +249,106 @@ export function getCloneDestinationPath(
     return directoryPath;
   }
   return `${ensureBrowseDirectoryPath(directoryPath)}${name}`;
+}
+
+/**
+ * Where `projects.createNew` will put a project named `name`. The server adds
+ * `-2`, `-3`, ... when that folder is taken, so this is a preview.
+ */
+export function getNewProjectPathPreview(newProjectsRoot: string, name: string): string {
+  return getCloneDestinationPath(newProjectsRoot, newProjectFolderName(name));
+}
+
+/**
+ * The GitHub account a new project would be published under, or null when
+ * GitHub is not ready on that environment. A ready GitHub with an unknown
+ * account still publishes; `gh` picks the signed-in user.
+ */
+export function getNewProjectGitHubTarget(
+  discovery: SourceControlDiscoveryResult | null,
+): { readonly account: string | null } | null {
+  if (!buildAddProjectRemoteSourceReadiness(discovery).github.ready) return null;
+  const github = discovery?.sourceControlProviders.find((provider) => provider.kind === "github");
+  return { account: github ? Option.getOrNull(github.auth.account) : null };
+}
+
+/** `owner/folder` for publishing a new project, or just the folder for `gh` to place. */
+export function getNewProjectGitHubRepository(
+  target: { readonly account: string | null },
+  workspaceRoot: string,
+): string {
+  const folderName = workspaceRoot.split(/[\\/]/).findLast(Boolean) ?? "";
+  return target.account ? `${target.account}/${folderName}` : folderName;
+}
+
+/** One New project submission: the machine, the typed name, and the id it asked for. */
+export interface NewProjectAttempt {
+  readonly environmentId: EnvironmentId;
+  readonly name: string;
+  readonly projectId: ProjectId;
+}
+
+/**
+ * Unfinished New project creates, kept outside any screen or dialog so that
+ * closing and reopening it does not forget them.
+ */
+export interface NewProjectAttemptStore {
+  /**
+   * The attempt to send for a create of `name` on `environmentId`: the
+   * unfinished one for the same machine and name, so a retry after a lost
+   * response returns the project the server already made instead of a `-2`
+   * copy, else a new one with a fresh id.
+   */
+  readonly attemptFor: (
+    input: { readonly environmentId: EnvironmentId; readonly name: string },
+    makeProjectId: () => ProjectId,
+  ) => NewProjectAttempt;
+  /**
+   * Forgets `attempt` once its outcome is known: the project was created and
+   * opened, or the server refused its id for good. A newer attempt for the
+   * same key is left alone.
+   */
+  readonly settle: (attempt: NewProjectAttempt) => void;
+}
+
+// Whitespace and Unicode composition differences are the same typed name.
+function newProjectAttemptKey(environmentId: EnvironmentId, name: string): string {
+  return JSON.stringify([environmentId, name.trim().normalize("NFC")]);
+}
+
+export function createNewProjectAttemptStore(): NewProjectAttemptStore {
+  const pending = new Map<string, NewProjectAttempt>();
+  return {
+    attemptFor: (input, makeProjectId) => {
+      const key = newProjectAttemptKey(input.environmentId, input.name);
+      const existing = pending.get(key);
+      if (existing !== undefined) return existing;
+      const attempt: NewProjectAttempt = {
+        environmentId: input.environmentId,
+        name: input.name.trim(),
+        projectId: makeProjectId(),
+      };
+      pending.set(key, attempt);
+      return attempt;
+    },
+    settle: (attempt) => {
+      const key = newProjectAttemptKey(attempt.environmentId, attempt.name);
+      if (pending.get(key) === attempt) pending.delete(key);
+    },
+  };
+}
+
+/**
+ * Whether a failed create means its project id can never succeed (it belongs
+ * to another project), so the attempt should be settled rather than retried.
+ */
+export function isNewProjectIdInUseFailure(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "_tag" in error &&
+    error._tag === "ProjectCreateNewIdInUseError"
+  );
 }
 
 /**

@@ -900,6 +900,14 @@ export const ServerConfig = Schema.Struct({
   /** Recovery requests must name the public operation shown in rollback status. */
   rollbackRecoveryOperationIdentity: Schema.optionalKey(Schema.Boolean),
   /**
+   * Folder that holds projects started from just a name. Present only on
+   * servers that answer projects.createNew and honor its client-chosen
+   * `projectId`, so clients offer New project (and rely on retry replay) only
+   * when it is set. Earlier servers that already answered the RPC never put
+   * it on the wire, since their schema did not declare it.
+   */
+  newProjectsRoot: Schema.optionalKey(TrimmedNonEmptyString),
+  /**
    * Palettes published by this environment's machine. Never sent in a config
    * snapshot: the theme stream emits the current set before any change, so a
    * snapshot carrying it too would hand every subscriber the same array twice

@@ -12,6 +12,8 @@ import {
   ProjectReadFileError,
   ProjectListEntriesInput,
   ProjectListEntriesResult,
+  ProjectCreateNewIdInUseError,
+  ProjectCreateNewInput,
   ProjectCreatePayload,
   ProjectUpdatePayload,
   ProjectMutation,
@@ -325,3 +327,38 @@ effectIt.effect("encodes compatible icons inside snapshots and project updates",
     assert.deepEqual(yield* decodeNightlyIcon(update.projectIcon), fallback);
   }),
 );
+
+describe("ProjectCreateNewInput", () => {
+  const decode = Schema.decodeUnknownSync(ProjectCreateNewInput);
+
+  it("accepts a create without a client-chosen id, as older clients send", () => {
+    expect(decode({ name: "  Pinball Stats  " })).toEqual({ name: "Pinball Stats" });
+  });
+
+  it("carries the client-chosen project id that makes a retry idempotent", () => {
+    expect(decode({ name: "Pinball Stats", projectId: "project:client" })).toEqual({
+      name: "Pinball Stats",
+      projectId: ProjectId.make("project:client"),
+    });
+  });
+
+  it("bounds the name", () => {
+    expect(() => decode({ name: "   " })).toThrow();
+    expect(() => decode({ name: "a".repeat(201) })).toThrow();
+  });
+});
+
+const encodeIdInUse = Schema.encodeSync(ProjectCreateNewIdInUseError);
+const decodeIdInUse = Schema.decodeUnknownSync(ProjectCreateNewIdInUseError);
+
+describe("ProjectCreateNewIdInUseError", () => {
+  it("round-trips with its tag so clients can drop the refused id", () => {
+    const error = new ProjectCreateNewIdInUseError({
+      projectId: ProjectId.make("project:taken"),
+      message: "This project id already belongs to another project.",
+    });
+    const decoded = decodeIdInUse(encodeIdInUse(error));
+    expect(decoded._tag).toBe("ProjectCreateNewIdInUseError");
+    expect(decoded.projectId).toBe("project:taken");
+  });
+});

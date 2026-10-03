@@ -80,7 +80,30 @@ az extension add --name azure-devops
 az login
 ```
 
-## Clone or publish a project
+## Start, clone, or publish a project
+
+To start from nothing, choose **New project** in the command palette (`Cmd/Ctrl+K`), or
+**New project** under **Add Project** on web, desktop, or mobile, and type a name. **Add existing
+project** on the same screen goes back to opening a folder or cloning a repository.
+
+The project is made on the environment you choose (this device, a remote server, or a tunnelled
+machine): Pylon creates a Git repository in that environment's `projects` folder, `~/.pylon-code/projects`
+by default (`~/.pylon-code-nightly/projects` for Nightly, or the `projects` folder of a custom base
+directory). The folder is named after the project, like `pinball-stats` for "Pinball Stats", reduced
+to plain letters, digits, and dashes so it works on every platform; a taken name gets `-2`, `-3`,
+and so on. Pylon adds a `README.md` and an `assets/icon.svg`, makes a first commit on your
+`init.defaultBranch` (or `main`), and opens a new thread in the project.
+
+If Git cannot make the first commit (no `user.name`/`user.email` on that machine, or commit signing
+fails), the project and its files are still created and a warning says why; commit yourself once Git
+is set up. Creating the same name on the same environment again after a dropped connection or a
+failure, even after closing the palette or leaving the screen, opens the project that was already
+made rather than creating a second copy. This lasts until the app or page reloads.
+
+Turn on **Create private repository on GitHub** to also publish the project with the GitHub account
+signed in on that environment. Publishing uses the folder Pylon actually made, including any `-2`
+suffix. If publishing fails, or is skipped because there is no first commit yet, the local project
+stays; use **Publish repository** in the Git menu on web or desktop to try again.
 
 Use **Add Project** in the command palette (`Cmd/Ctrl+K`) to clone a repository. Choose a hosting
 provider or paste a Git URL, then choose where to save it. GitHub repositories clone over HTTPS, so a

@@ -2,7 +2,10 @@ import type { EnvironmentConnectionPhase } from "@t3tools/client-runtime/connect
 import { EnvironmentId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { resolveAddProjectEnvironment } from "./AddProjectScreen.logic";
+import {
+  resolveAddProjectEnvironment,
+  resolveExistingProjectSourcesNavigation,
+} from "./AddProjectScreen.logic";
 
 const ENVIRONMENT_A = EnvironmentId.make("environment-a");
 const ENVIRONMENT_B = EnvironmentId.make("environment-b");
@@ -37,5 +40,37 @@ describe("resolveAddProjectEnvironment", () => {
         null,
       )?.environmentId,
     ).toBe(ENVIRONMENT_B);
+  });
+});
+
+describe("resolveExistingProjectSourcesNavigation", () => {
+  it("goes back when the Add project screen underneath shows the selected machine", () => {
+    expect(
+      resolveExistingProjectSourcesNavigation({
+        previousRouteName: "AddProject",
+        openedFromEnvironmentId: ENVIRONMENT_A,
+        selectedEnvironmentId: ENVIRONMENT_A,
+      }),
+    ).toEqual({ kind: "back" });
+  });
+
+  it("swaps in sources for the machine New project switched to", () => {
+    expect(
+      resolveExistingProjectSourcesNavigation({
+        previousRouteName: "AddProject",
+        openedFromEnvironmentId: ENVIRONMENT_A,
+        selectedEnvironmentId: ENVIRONMENT_B,
+      }),
+    ).toEqual({ kind: "replace-sources", popSourcesBelow: true });
+  });
+
+  it("opens sources for the selected machine from a deep link", () => {
+    expect(
+      resolveExistingProjectSourcesNavigation({
+        previousRouteName: null,
+        openedFromEnvironmentId: null,
+        selectedEnvironmentId: ENVIRONMENT_B,
+      }),
+    ).toEqual({ kind: "replace-sources", popSourcesBelow: false });
   });
 });
