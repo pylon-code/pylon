@@ -591,21 +591,25 @@ export const layer: Layer.Layer<
             .pipe(Effect.mapError(mapWriteError));
           return result.storedEvents;
         }).pipe(
-          Effect.flatMap((storedEvents) =>
-            storedEvents.length === 0 || input.event.type !== "subagent.updated"
-              ? Effect.succeed(storedEvents)
-              : syncSubagentThreadModel(input, input.event.subagent).pipe(
-                  Effect.map((synced) => [...storedEvents, ...synced]),
-                  Effect.mapError(
-                    (cause) =>
-                      new ProviderEventPublishError({
-                        providerSessionId: input.providerSessionId,
-                        eventCount: 1,
-                        cause,
-                      }),
-                  ),
-                ),
-          ),
+          Effect.flatMap((storedEvents) => {
+            if (storedEvents.length === 0 || input.event.type !== "subagent.updated") {
+              return Effect.succeed(storedEvents);
+            }
+            const subagent = input.event.subagent;
+            return syncSubagentThreadModel(input, subagent).pipe(
+              Effect.map((synced) => [...storedEvents, ...synced]),
+              // The child thread's model is display-only; a failed sync must not
+              // fail the run's provider event stream.
+              Effect.catch((cause) =>
+                Effect.logWarning("Failed to sync a native subagent's thread model", {
+                  providerSessionId: input.providerSessionId,
+                  childThreadId: subagent.childThreadId,
+                  model: subagent.model,
+                  cause,
+                }).pipe(Effect.as(storedEvents)),
+              ),
+            );
+          }),
           Effect.tap((storedEvents) =>
             Effect.gen(function* () {
               if (storedEvents.length === 0 || input.event.type !== "provider_turn.updated") return;

@@ -20,6 +20,7 @@ import { serverEnvironment } from "../../state/server";
 import { environmentThreadDetails } from "../../state/threads";
 import { subagentCardElapsed } from "./subagent-card-presentation";
 import { SubagentRow } from "./SubagentRow";
+import { resolveSubagentRowPresentation } from "./threadAgentsPresentation";
 import { WorkLogBlock } from "./work-log-layout";
 
 type SubagentItem = Extract<OrchestrationV2TurnItem, { type: "subagent" }>;
@@ -148,10 +149,12 @@ export function ThreadSubagentGroup(props: {
         <View className="mb-1 gap-px rounded-xl border border-border bg-card/30 p-1">
           {agents.map((agent) => {
             const threadId = agent.childThreadId;
+            const presentation = resolveSubagentRowPresentation(agent);
             return (
               <Pressable
                 key={agent.item.id}
                 accessible
+                accessibilityLabel={`${presentation.title}, ${presentation.statusLabel}`}
                 accessibilityRole={threadId === null ? undefined : "link"}
                 accessibilityHint={
                   threadId === null ? "Provider-managed agent" : "Opens this agent's thread"

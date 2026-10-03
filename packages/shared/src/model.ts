@@ -267,9 +267,15 @@ export function getProviderOptionCurrentLabel(
       : undefined;
   }
   const currentValue = getProviderOptionCurrentValue(descriptor, selection, reportedSelection);
+  const reportedValue = getReportedOptionValue(descriptor.id, selection, reportedSelection);
+  // An unchosen, unreported variant runs on the provider's default, so label it that way.
+  const variantUnchosen =
+    descriptor.id === "variant" &&
+    reportedValue === undefined &&
+    !selection?.options?.some((option) => option.id === descriptor.id);
   return (
     descriptor.options.find((option) => option.id === currentValue)?.label ??
-    (getReportedOptionValue(descriptor.id, selection, reportedSelection) === "default"
+    (reportedValue === "default" || variantUnchosen
       ? "Default"
       : descriptor.id === "variant"
         ? "Unknown"

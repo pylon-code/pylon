@@ -1339,3 +1339,116 @@ layer("ProviderEventIngestorV2", (it) => {
     }),
   );
 });
+
+// Fails only the display-only child-thread model sync write.
+const FailingModelSyncEventSinkLayer = Layer.effect(
+  EventSink.EventSinkV2,
+  Effect.gen(function* () {
+    const eventSink = yield* EventSink.EventSinkV2;
+    return EventSink.EventSinkV2.of({
+      ...eventSink,
+      write: (input) =>
+        input.events.some((event) => event.type === "thread.model-selection-updated")
+          ? Effect.fail(new EventSink.EventSinkWriteError({ eventCount: input.events.length }))
+          : eventSink.write(input),
+    });
+  }),
+).pipe(Layer.provide(TestEventSinkLayer));
+
+const failingModelSyncLayer = it.layer(
+  Layer.mergeAll(
+    TestStoresLayer,
+    FailingModelSyncEventSinkLayer,
+    IdAllocator.layer,
+    ProviderEventIngestor.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          TestStoresLayer,
+          FailingModelSyncEventSinkLayer,
+          IdAllocator.layer,
+          ThreadCommandExecutor.layer,
+        ),
+      ),
+    ),
+  ),
+);
+
+failingModelSyncLayer("ProviderEventIngestorV2 subagent model sync failure", (it) => {
+  it.effect("keeps the provider event stream alive when the model sync write fails", () =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+      const ingestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const rootEvent = yield* threadCreatedEvent(now);
+      if (rootEvent.type !== "thread.created") {
+        throw new Error("Expected a thread.created fixture event");
+      }
+      const childThreadId = idAllocator.derive.threadFromProviderThread({
+        driver: CODEX_DRIVER,
+        nativeThreadId: "native-failed-model-sync-subagent",
+      });
+      const providerSessionId = yield* idAllocator.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId: rootEvent.threadId,
+      });
+      const ingest = (event: ProviderEventIngestor.ProviderEventIngestInput["event"]) =>
+        ingestor.ingestNormalized({
+          providerSessionId,
+          providerInstanceId: modelSelection.instanceId,
+          threadId: rootEvent.threadId,
+          event,
+        });
+      yield* eventSink.write({ events: [rootEvent] });
+      yield* ingest({
+        type: "app_thread.created",
+        driver: CODEX_DRIVER,
+        appThread: {
+          ...rootEvent.payload,
+          id: childThreadId,
+          title: "review design",
+          activeProviderThreadId: null,
+          lineage: {
+            parentThreadId: rootEvent.threadId,
+            relationshipToParent: "subagent",
+            rootThreadId: rootEvent.threadId,
+          },
+        },
+      });
+
+      const stored = yield* ingest({
+        type: "subagent.updated",
+        driver: CODEX_DRIVER,
+        subagent: {
+          id: NodeId.make("node:failed-model-sync-subagent"),
+          threadId: rootEvent.threadId,
+          runId: null,
+          parentNodeId: NodeId.make("node:root"),
+          origin: "provider_native",
+          createdBy: "agent",
+          driver: CODEX_DRIVER,
+          providerInstanceId: modelSelection.instanceId,
+          providerThreadId: null,
+          childThreadId,
+          nativeTaskRef: null,
+          prompt: "Review the design",
+          title: "review design",
+          model: "gpt-6.1-sol",
+          status: "running",
+          result: null,
+          startedAt: now,
+          completedAt: null,
+          updatedAt: now,
+        },
+      });
+      const childThread = yield* projectionStore.getThread(childThreadId);
+
+      assert.deepEqual(
+        stored.map((event) => event.event.type),
+        ["subagent.updated"],
+      );
+      assert.equal(childThread.modelSelection.model, modelSelection.model);
+    }),
+  );
+});

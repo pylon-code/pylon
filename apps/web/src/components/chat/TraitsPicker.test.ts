@@ -237,7 +237,7 @@ describe("buildUnavailableModelOptionDescriptors", () => {
   });
 });
 
-it("shows Unknown until a matching provider report provides Default", () => {
+it("shows Default for an unchosen variant with or without a matching report", () => {
   const selection = {
     instanceId: ProviderInstanceId.make("opencode"),
     model: "ling",
@@ -259,7 +259,7 @@ it("shows Unknown until a matching provider report provides Default", () => {
     ultrathinkPromptControlled: false,
     modelSelection: selection,
   };
-  expect(buildTraitsTriggerDisplay(input).label).toBe("Unknown");
+  expect(buildTraitsTriggerDisplay(input).label).toBe("Default");
   expect(
     buildTraitsTriggerDisplay({
       ...input,
