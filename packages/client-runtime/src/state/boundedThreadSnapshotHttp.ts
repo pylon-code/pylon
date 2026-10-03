@@ -73,12 +73,10 @@ export const boundedThreadSnapshotLoaderLayer: Layer.Layer<
           signer,
           remoteAuthorization,
         }).pipe(
-          Effect.map(
-            (snapshot): ThreadSnapshotLoader.ThreadSnapshotLoadResult => ({
-              _tag: "present",
-              snapshot,
-            }),
-          ),
+          Effect.map((snapshot): ThreadSnapshotLoader.ThreadSnapshotLoadResult => ({
+            _tag: "present",
+            snapshot,
+          })),
           Effect.provideService(HttpClient.HttpClient, httpClient),
           Effect.catchTags({
             EnvironmentResourceNotFoundError: () =>
@@ -109,21 +107,19 @@ export const boundedThreadSnapshotLoaderLayer: Layer.Layer<
           signer,
           remoteAuthorization,
         }).pipe(
-          Effect.map(
-            (bounded): ThreadSnapshotLoader.ThreadSnapshotLoadResult => ({
-              _tag: "present",
-              snapshot: {
-                snapshotSequence: bounded.snapshotSequence,
-                projection: bounded.projection,
-                latestLocalTurnOrdinal: bounded.latestLocalTurnOrdinal,
-              },
-              history: {
-                historyCursor: bounded.historyCursor,
-                hasMoreHistory: bounded.hasMoreHistory,
-                latestLocalTurnOrdinal: bounded.latestLocalTurnOrdinal,
-              },
-            }),
-          ),
+          Effect.map((bounded): ThreadSnapshotLoader.ThreadSnapshotLoadResult => ({
+            _tag: "present",
+            snapshot: {
+              snapshotSequence: bounded.snapshotSequence,
+              projection: bounded.projection,
+              latestLocalTurnOrdinal: bounded.latestLocalTurnOrdinal,
+            },
+            history: {
+              historyCursor: bounded.historyCursor,
+              hasMoreHistory: bounded.hasMoreHistory,
+              latestLocalTurnOrdinal: bounded.latestLocalTurnOrdinal,
+            },
+          })),
           Effect.provideService(HttpClient.HttpClient, httpClient),
           Effect.catchTags({
             EnvironmentResourceNotFoundError: () =>
