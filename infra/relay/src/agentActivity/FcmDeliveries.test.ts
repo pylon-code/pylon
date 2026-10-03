@@ -458,7 +458,7 @@ describe("Android delivery routing", () => {
   });
 
   it("keeps notification groups distinct when identifiers contain slashes", () => {
-    const left = androidAlertForState(
+    const left = FcmDeliveries.androidAlertForState(
       {
         ...state,
         environmentId: EnvironmentId.make("a/b"),
@@ -468,7 +468,7 @@ describe("Android delivery routing", () => {
       preferences,
       0,
     );
-    const right = androidAlertForState(
+    const right = FcmDeliveries.androidAlertForState(
       {
         ...state,
         environmentId: EnvironmentId.make("a"),
