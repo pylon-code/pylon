@@ -25,7 +25,11 @@ import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import { forkParked } from "../serverActivation.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
-import { evaluatePullRequestWatch, pullRequestWatchMessage } from "./pullRequestWatch.ts";
+import {
+  evaluatePullRequestWatch,
+  isPullRequestWatchEnding,
+  pullRequestWatchMessage,
+} from "./pullRequestWatch.ts";
 
 /** Passes in a row that could not read a pull request before its watch ends (one a minute). */
 const READ_FAILURE_LIMIT = 15;
@@ -172,7 +176,7 @@ export const make = Effect.gen(function* () {
     // watch nobody can see through outliving the thread's work.
     if (link.snapshot?.state === "merged") return yield* record(target, null);
     if (thread.settledOverride === "settled" || thread.settledAt !== null) {
-      if (link.snapshot?.state === "closed") return yield* record(target, null);
+      if (isPullRequestWatchEnding(link)) return yield* record(target, null);
       return;
     }
 
