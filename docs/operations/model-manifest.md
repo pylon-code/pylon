@@ -11,7 +11,7 @@ Pylon uses a small public manifest to decide which Codex and Claude models appea
 - Runtime URL: `https://raw.githubusercontent.com/pylon-code/pylon-releases/main/model-catalog-v2.json`. Older releases continue fetching the feed they shipped with.
 - Publisher: `.github/workflows/publish-model-manifest.yml`.
 
-The catalog contains schema version `1`, current model slugs, and optional provider catalogs. Every released reader decodes strictly and rejects unknown fields, so each older feed keeps the shape its readers shipped with: the classification feed omits provider catalogs, and the older catalog feed omits `updatedAt` and `compatibility`. A new top-level field needs a new feed rather than an addition to an existing one.
+The catalog contains schema version `1`, current model slugs, and optional provider catalogs. Readers of the two older feeds decode strictly and reject unknown fields, so each keeps the shape its readers shipped with: the classification feed omits provider catalogs, and the older catalog feed omits `updatedAt` and `compatibility`. Readers of `model-catalog-v2.json` ignore unknown top-level fields, so a new top-level field can be added to that feed without a new one. Fields nested inside a known field are still validated strictly, and the publisher still validates the source manifest strictly.
 
 `compatibility` lists per-driver provider CLI version ranges. Each policy's `t3CodeRange` keeps its upstream field name but is matched against Pylon's own server version. Release builds stamp that version, so stable releases, nightlies (`<base>-nightly.<date>.<run>`), and the checked-in development version all resolve against Pylon ranges. Range matching ignores prerelease tags: a nightly matches like its base version, so a range cannot separate a nightly from the stable release with the same base version. Never copy T3 Code's version ranges. A built-in model is legacy when its driver has a manifest entry and its slug is absent from that list. Providers with no entry are not classified. Custom models are never classified.
 
@@ -21,7 +21,7 @@ The catalog contains schema version `1`, current model slugs, and optional provi
 2. Run `vp test run apps/server/src/provider/ModelManifest.test.ts apps/server/src/provider/modelManifestPublication.test.ts` and the server typecheck.
 3. Open and merge a PR against `pylon`.
 4. Confirm the **Publish model manifest** workflow succeeds.
-5. Generate both expected files and compare their JSON values with the public repository at its exact `main` commit:
+5. Generate all three expected files and compare their JSON values with the public repository at its exact `main` commit:
 
    ```bash
    public_sha="$(gh api repos/pylon-code/pylon-releases/commits/main --jq .sha)"
@@ -35,7 +35,7 @@ The catalog contains schema version `1`, current model slugs, and optional provi
 
 The branch-based raw URL can remain cached for up to five minutes after publication. The commit-pinned check above is the authoritative immediate verification.
 
-The workflow checks out the exact merged `pylon` revision that triggered it without persisting checkout credentials. Before accessing the release credential, it installs the pinned dependencies, validates the source with the server's manifest decoder, prepares both size-bounded public files, and confirms that the source commit is still the current `pylon` head. Delayed or rerun older revisions exit without publishing. Runs are serialized, and both files publish in one public commit. The protected `pylon` branch requires a PR and rejects administrator bypass, force pushes, and deletion. Public output is constructed from the allowlisted `version`, `updatedAt`, `currentModels`, `providers`, and `compatibility` fields. Its generic commit message does not include source commit or branch metadata.
+The workflow checks out the exact merged `pylon` revision that triggered it without persisting checkout credentials. Before accessing the release credential, it installs the pinned dependencies, validates the source with the server's manifest decoder, prepares all three size-bounded public files, and confirms that the source commit is still the current `pylon` head. Delayed or rerun older revisions exit without publishing. Runs are serialized, and all three files publish in one public commit. The protected `pylon` branch requires a PR and rejects administrator bypass, force pushes, and deletion. Public output is constructed from the allowlisted `version`, `updatedAt`, `currentModels`, `providers`, and `compatibility` fields. Its generic commit message does not include source commit or branch metadata.
 
 The public `main` branch rejects force pushes and deletion, including from administrators. Normal fast-forward publication remains enabled for the release bot. A dedicated manifest-only credential would reduce the impact of a future publisher-token compromise; until one exists, keep `RELEASES_REPO_TOKEN` fine-grained and limited to `pylon-code/pylon-releases` contents.
 

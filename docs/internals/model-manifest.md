@@ -4,7 +4,9 @@ The [bundled manifest](../../apps/server/src/provider/model-manifest.json) allow
 offline startup; fetching `model-catalog-v2.json` from Pylon's public releases repository
 lets model metadata change between releases. Failed fetches or invalid data preserve
 the last usable manifest. Remote data must pass both catalog-reference validation and
-the owning provider's adapter validation before replacing the cache.
+the owning provider's adapter validation before replacing the cache. Unknown top-level
+fields in the fetched feed are dropped rather than rejected, so later publications can
+add fields; the bundled source and the disk cache stay strict.
 
 The on-disk copy of the last successful fetch outranks the bundle even when it is
 stale; the bundle is used only when no valid remote cache exists. Editing the bundled

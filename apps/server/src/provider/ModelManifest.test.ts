@@ -6,8 +6,10 @@ import {
   type ServerProviderModel,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
 import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
@@ -232,6 +234,7 @@ describe("ModelManifest.resolveProviderCatalog", () => {
 
 // Remote fixtures date after the bundle so a fetch still outranks it.
 const REMOTE_UPDATED_AT = "2099-01-01T00:00:00Z";
+const encodeUnknownJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 const REMOTE_MANIFEST: ModelManifest.ModelManifestData = {
   version: 1,
@@ -513,7 +516,25 @@ describe("ModelManifest service", () => {
     ),
   );
 
-  it.live("rejects otherwise valid payloads with non-public metadata", () =>
+  it.live("accepts a v2 catalog with an unknown top-level field and drops the field", () =>
+    Effect.gen(function* () {
+      const service = yield* ModelManifest.make;
+      assert.deepStrictEqual(yield* service.refresh, REMOTE_MANIFEST);
+      // The dropped field never reaches the disk cache.
+      const rebooted = yield* (yield* ModelManifest.make).current;
+      assert.deepStrictEqual(rebooted, REMOTE_MANIFEST);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        serviceLayers({
+          prefix: "model-manifest-extra-top-level-test",
+          response: () => Response.json({ ...REMOTE_MANIFEST, futureField: { any: "shape" } }),
+        }),
+      ),
+    ),
+  );
+
+  it.live("still rejects unknown fields nested inside a known field", () =>
     Effect.gen(function* () {
       const service = yield* ModelManifest.make;
       assert.deepStrictEqual(yield* service.refresh, ModelManifest.BUNDLED_MODEL_MANIFEST);
@@ -521,11 +542,36 @@ describe("ModelManifest service", () => {
       Effect.scoped,
       Effect.provide(
         serviceLayers({
-          prefix: "model-manifest-extra-metadata-test",
-          response: () => Response.json({ ...REMOTE_MANIFEST, internalNotes: "private" }),
+          prefix: "model-manifest-extra-nested-test",
+          response: () =>
+            Response.json({
+              ...REMOTE_MANIFEST,
+              compatibility: [
+                {
+                  driver: "codex",
+                  t3CodeRange: ">=0.0.31",
+                  ranges: [{ range: ">=1.0.0", status: "supported" }],
+                  internalNotes: "private",
+                },
+              ],
+            }),
         }),
       ),
     ),
+  );
+
+  it.effect("keeps the source decoder strict about unknown top-level fields", () =>
+    Effect.gen(function* () {
+      const source = yield* encodeUnknownJson({
+        ...REMOTE_MANIFEST,
+        futureField: true,
+      });
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(ModelManifest.decodeManifestJson(source))));
+      assert.deepStrictEqual(
+        yield* ModelManifest.decodeRemoteManifestJson(source),
+        REMOTE_MANIFEST,
+      );
+    }),
   );
 
   it.live("rejects a schema-valid response beyond the byte limit", () =>

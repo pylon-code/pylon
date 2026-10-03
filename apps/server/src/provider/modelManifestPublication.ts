@@ -3,11 +3,11 @@ import { MODEL_MANIFEST_MAX_BYTES, type ModelManifestData } from "./ModelManifes
 /**
  * Publish the validated catalog alongside the feeds older servers accept.
  *
- * Every published reader decodes strictly, so each feed keeps the shape its
- * readers shipped with: `model-manifest.json` for pre-catalog releases,
+ * Readers of the two older feeds decode strictly, so each keeps the shape its
+ * readers shipped with: `model-manifest.json` for pre-catalog releases and
  * `model-catalog.json` for catalog releases that predate `updatedAt` and
- * provider compatibility policies, and `model-catalog-v2.json` for current
- * releases.
+ * provider compatibility policies. `model-catalog-v2.json` readers ignore
+ * unknown top-level fields, so new fields can be added to it.
  */
 export function serializeModelManifestPublication(manifest: ModelManifestData) {
   const classification = {

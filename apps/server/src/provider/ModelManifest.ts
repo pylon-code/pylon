@@ -39,8 +39,9 @@ import bundledManifestJson from "./model-manifest.json" with { type: "json" };
 import type { ServerProviderDraft } from "./providerSnapshot.ts";
 import { ProviderCompatibilityPolicy } from "./providerCompatibility.ts";
 
-// `model-catalog.json` stays frozen for older strict readers; only this feed
-// carries `updatedAt` and provider compatibility policies.
+// `model-catalog.json` stays frozen for older strict readers. This feed carries
+// `updatedAt` and provider compatibility policies, and its readers ignore unknown
+// top-level fields (see `decodeRemoteManifestJson`).
 const MODEL_MANIFEST_URL =
   "https://raw.githubusercontent.com/pylon-code/pylon-releases/main/model-catalog-v2.json";
 
@@ -161,6 +162,31 @@ const decodeManifestJsonSchema = Schema.decodeUnknownEffect(
 );
 export const decodeManifestJson = (input: string) =>
   decodeManifestJsonSchema(input).pipe(Effect.flatMap(validateManifestDrivers));
+
+const MANIFEST_TOP_LEVEL_KEYS: ReadonlySet<string> = new Set(
+  Object.keys(ModelManifestEnvelopeSchema.fields),
+);
+const decodeUnknownJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
+const decodeManifest = Schema.decodeUnknownEffect(ModelManifestSchema);
+
+/**
+ * Decode the hosted `model-catalog-v2.json` feed. Unknown top-level fields are
+ * dropped so later publications can add fields without another feed; every
+ * known field, and everything nested in it, is still validated strictly. The
+ * bundled source, the disk cache and the publisher keep the strict decoder.
+ */
+export const decodeRemoteManifestJson = (input: string) =>
+  decodeUnknownJson(input).pipe(
+    Effect.map((value) =>
+      typeof value === "object" && value !== null && !Array.isArray(value)
+        ? Object.fromEntries(
+            Object.entries(value).filter(([key]) => MANIFEST_TOP_LEVEL_KEYS.has(key)),
+          )
+        : value,
+    ),
+    Effect.flatMap((value) => decodeManifest(value)),
+    Effect.flatMap(validateManifestDrivers),
+  );
 
 export const BUNDLED_MODEL_MANIFEST: ModelManifestData =
   Schema.decodeUnknownSync(ModelManifestSchema)(bundledManifestJson);
@@ -453,7 +479,7 @@ export const make = Effect.gen(function* () {
             reason: "Model manifest response exceeded its byte limit or was not UTF-8",
           }),
       ),
-      Effect.flatMap((body) => decodeManifestJson(body.text)),
+      Effect.flatMap((body) => decodeRemoteManifestJson(body.text)),
       Effect.timeout(FETCH_TIMEOUT_MS),
       Effect.catchCause(() => Effect.succeed(null)),
     );
