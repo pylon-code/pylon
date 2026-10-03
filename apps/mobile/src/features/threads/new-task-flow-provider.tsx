@@ -75,6 +75,10 @@ import {
   flushPendingTaskEditorWrite,
 } from "../../state/pending-task-editor-writes";
 import { hydratePendingTaskEditorDraft } from "../../state/recover-failed-thread-draft";
+import {
+  rememberModelOptions,
+  withRememberedModelOptions,
+} from "../../state/use-model-option-memory";
 import { useDebouncedValue, usePaginatedBranches } from "../../state/queries";
 import { vcsEnvironment } from "../../state/vcs";
 import {
@@ -598,7 +602,9 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       if (!option) {
         return;
       }
-      const modelSelection = options ? { ...option.selection, options } : option.selection;
+      const modelSelection = withRememberedModelOptions(
+        options ? { ...option.selection, options } : option.selection,
+      );
       updateComposerDraftSettings(selectedProjectDraftKey, {
         modelSelection,
         providerSelectionExplicit: true,
@@ -623,6 +629,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       if (!selectedModel || !selectedProjectDraftKey) {
         return;
       }
+      rememberModelOptions(selectedModel.instanceId, selectedModel.model, options ?? []);
       const nextSelection: ModelSelection = options
         ? { ...selectedModel, options }
         : {

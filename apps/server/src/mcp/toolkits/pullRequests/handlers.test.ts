@@ -3,9 +3,8 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
-  type OrchestrationCommand,
+  type OrchestrationV2ServerCommand as OrchestrationCommand,
   type OrchestrationProjectShell,
-  type OrchestrationThreadShell,
   type ThreadPullRequestLink,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
@@ -17,12 +16,12 @@ import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import type { Tool } from "effect/unstable/ai";
 
-import { OrchestrationCommandInvariantError } from "../../../orchestration/Errors.ts";
+import * as Orchestrator from "../../../orchestration-v2/Orchestrator.ts";
 import {
-  OrchestrationEngineService,
-  type OrchestrationEngineShape,
-} from "../../../orchestration/Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
+  type PullRequestTestThread,
+  v2PullRequestThread,
+} from "../../../orchestration-v2/testkit/pullRequestFixtures.ts";
+import * as ProjectService from "../../../project/ProjectService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { listThreadPullRequests, PullRequestsToolkitHandlersLive } from "./handlers.ts";
 import { PullRequestLinkFailedError, PullRequestsToolkit } from "./tools.ts";
@@ -72,7 +71,7 @@ function makeProject(
   };
 }
 
-function makeThread(pullRequests: ReadonlyArray<ThreadPullRequestLink>): OrchestrationThreadShell {
+function makeThread(pullRequests: ReadonlyArray<ThreadPullRequestLink>): PullRequestTestThread {
   return {
     id: THREAD_ID,
     projectId: PROJECT_ID,
@@ -83,17 +82,12 @@ function makeThread(pullRequests: ReadonlyArray<ThreadPullRequestLink>): Orchest
     branch: null,
     worktreePath: null,
     pullRequests,
-    latestTurn: null,
     createdAt: "2026-08-01T00:00:00.000Z",
     updatedAt: "2026-08-20T00:00:00.000Z",
     archivedAt: null,
     settledOverride: null,
     settledAt: null,
-    session: null,
     latestUserMessageAt: "2026-08-20T00:00:00.000Z",
-    hasPendingApprovals: false,
-    hasPendingUserInput: false,
-    hasActionableProposedPlan: false,
   };
 }
 
@@ -130,10 +124,10 @@ function makeLink(
 }
 
 interface HarnessOptions {
-  readonly thread?: OrchestrationThreadShell | null;
+  readonly thread?: PullRequestTestThread | null;
   readonly project?: OrchestrationProjectShell | null;
   readonly disappearOnDispatch?: boolean;
-  readonly reject?: (command: OrchestrationCommand) => OrchestrationCommandInvariantError | null;
+  readonly reject?: (command: OrchestrationCommand) => string | null;
 }
 
 const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
@@ -142,25 +136,27 @@ const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
   const commands = yield* Ref.make<ReadonlyArray<OrchestrationCommand>>([]);
   let thread = options.thread === undefined ? makeThread([]) : options.thread;
   const project = options.project === undefined ? makeProject() : options.project;
-  const dispatch: OrchestrationEngineShape["dispatch"] = (command) =>
+  const dispatch: Orchestrator.OrchestratorV2Shape["dispatch"] = (command) =>
     Effect.gen(function* () {
       if (options.disappearOnDispatch) thread = null;
       const rejection = options.reject?.(command) ?? null;
-      if (rejection !== null) return yield* rejection;
+      if (rejection !== null)
+        return yield* new Orchestrator.OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: rejection,
+        });
       yield* Ref.update(commands, (recorded) => [...recorded, command]);
-      return { sequence: 1 };
+      return { sequence: 1, storedEvents: [] };
     });
   const dependencies = Layer.mergeAll(
-    Layer.mock(ProjectionSnapshotQuery)({
-      getThreadShellById: (threadId) =>
-        Effect.succeed(threadId === THREAD_ID ? Option.fromNullishOr(thread) : Option.none()),
-      getProjectShellById: () => Effect.succeed(Option.fromNullishOr(project)),
+    Layer.mock(ProjectService.ProjectService)({
+      getShell: () => Effect.succeed(Option.fromNullishOr(project)),
     }),
-    Layer.mock(OrchestrationEngineService)({
-      readEvents: () => Stream.empty,
+    Layer.mock(Orchestrator.OrchestratorV2)({
+      getThreadShell: (id) =>
+        Effect.succeed(id === THREAD_ID && thread ? v2PullRequestThread(thread) : null),
       dispatch,
-      streamDomainEvents: Stream.empty,
-      latestSequence: Effect.succeed(0),
     }),
     Layer.succeed(Crypto.Crypto, testCrypto),
   );
@@ -324,12 +320,7 @@ describe("pull request toolkit handlers", () => {
       const harness = yield* makeHarness({
         thread: makeThread([makeLink(123)]),
         reject: (command) =>
-          command.type === "thread.pull-request.link"
-            ? new OrchestrationCommandInvariantError({
-                commandType: command.type,
-                detail: "already linked",
-              })
-            : null,
+          command.type === "thread.pull-request.link" ? "already linked" : null,
       });
       const result = yield* harness.call("link_pull_request", {
         url: "https://github.com/t3tools/t3code/pull/123",
@@ -344,10 +335,7 @@ describe("pull request toolkit handlers", () => {
         thread: makeThread([makeLink(5)]),
         reject: (command) =>
           command.type === "thread.pull-request.unlink" && command.number !== 5
-            ? new OrchestrationCommandInvariantError({
-                commandType: command.type,
-                detail: "not linked",
-              })
+            ? "not linked"
             : null,
       });
       const linked = yield* harness.call("unlink_pull_request", {
@@ -374,11 +362,7 @@ describe("pull request toolkit handlers", () => {
     Effect.gen(function* () {
       const harness = yield* makeHarness({
         thread: makeThread([makeLink(5)]),
-        reject: (command) =>
-          new OrchestrationCommandInvariantError({
-            commandType: command.type,
-            detail: "synthetic unrelated invariant",
-          }),
+        reject: () => "synthetic unrelated invariant",
       });
       const linkFailure = yield* harness
         .call("link_pull_request", {
@@ -402,13 +386,9 @@ describe("pull request toolkit handlers", () => {
         ["unlink_pull_request", "PullRequestUnlinkFailedError"],
       ] as const) {
         const harness = yield* makeHarness({
-          thread: makeThread([makeLink(5)]),
+          thread: makeThread(tool === "link_pull_request" ? [] : [makeLink(5)]),
           disappearOnDispatch: true,
-          reject: (command) =>
-            new OrchestrationCommandInvariantError({
-              commandType: command.type,
-              detail: "Thread no longer exists",
-            }),
+          reject: () => "Thread no longer exists",
         });
         const failure = yield* harness
           .call(tool, {

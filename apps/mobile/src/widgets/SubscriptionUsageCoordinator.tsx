@@ -39,11 +39,11 @@ const widgetSessionOwnerAtom = Atom.family((environmentId: EnvironmentId) =>
       AsyncResult.value(get(environmentCatalog.stateAtom(environmentId))),
     );
     if (connection?.phase !== "connected") return Effect.succeed(null);
-    return EnvironmentRegistry.pipe(
+    return EnvironmentRegistry.EnvironmentRegistry.pipe(
       Effect.flatMap((registry) =>
         registry.run(
           environmentId,
-          EnvironmentSupervisor.pipe(
+          EnvironmentSupervisor.EnvironmentSupervisor.pipe(
             Effect.flatMap((supervisor) =>
               Effect.all([
                 SubscriptionRef.get(supervisor.state),

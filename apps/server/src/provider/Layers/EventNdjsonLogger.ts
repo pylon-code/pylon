@@ -197,7 +197,7 @@ function providerLogPath(directory: string, prefix: string, threadSegment: strin
   return NodePath.join(directory, `${prefix}${threadSegment}.log`);
 }
 
-function shouldPersistProviderEvent(stream: EventNdjsonStream, event: unknown): boolean {
+export function shouldPersistProviderEvent(stream: EventNdjsonStream, event: unknown): boolean {
   if (stream === "orchestration" || typeof event !== "object" || event === null) {
     return true;
   }
@@ -209,7 +209,14 @@ function shouldPersistProviderEvent(stream: EventNdjsonStream, event: unknown): 
     if (stream !== "native") return true;
 
     const nested = Reflect.get(event, "event");
-    const nativeEvent = typeof nested === "object" && nested !== null ? nested : event;
+    const envelope = typeof nested === "object" && nested !== null ? nested : event;
+    // Decoded frames carry the same information as raw frames without another
+    // copy of every token delta. Decode failures have their own diagnostic frame.
+    const stage = Reflect.get(envelope, "stage");
+    if (stage === "raw") return false;
+    const decodedPayload = stage === "decoded" ? Reflect.get(envelope, "payload") : undefined;
+    const nativeEvent =
+      typeof decodedPayload === "object" && decodedPayload !== null ? decodedPayload : envelope;
     const method = Reflect.get(nativeEvent, "method");
     if (
       typeof method === "string" &&
@@ -333,8 +340,8 @@ function summarizeProviderEvent(event: unknown): unknown {
   }
 }
 
-/** Bounds traversal before the logger encodes payloads. */
-function boundProviderEventForLogging(event: unknown): unknown {
+/** Bounds traversal before adapters copy payloads or the logger encodes them. */
+export function boundProviderEventForLogging(event: unknown): unknown {
   let remainingCharacters = MAX_RECORD_CHARACTERS;
   let remainingFields = MAX_RECORD_FIELDS;
   const ancestors = new WeakSet<object>();

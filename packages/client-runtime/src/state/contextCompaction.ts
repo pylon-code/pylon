@@ -1,16 +1,18 @@
+import {
+  decodeProviderPresentation,
+  type ProviderPresentationActivity,
+  type SessionCompactionPresentation,
+} from "./providerPresentation.ts";
 import * as Option from "effect/Option";
 
 import {
-  decodeOrchestrationSessionActivity,
   type EnvironmentId,
-  type OrchestrationThreadActivity,
   type ProviderInstanceId,
   type ThreadId,
   type ServerProvider,
-  type SessionCompactionUpdatedActivityPayload,
 } from "@t3tools/contracts";
 
-export type SessionCompactionSnapshot = SessionCompactionUpdatedActivityPayload & {
+export type SessionCompactionSnapshot = SessionCompactionPresentation & {
   readonly updatedAt: string;
 };
 export type SessionCompactionControlSnapshot = Omit<
@@ -50,13 +52,13 @@ export function isAcceptedSessionCompactionMutationResult(input: {
 }
 
 export function deriveLatestSessionCompaction(
-  activities: ReadonlyArray<OrchestrationThreadActivity>,
+  activities: ReadonlyArray<ProviderPresentationActivity>,
   providerInstanceId: ProviderInstanceId,
 ): SessionCompactionSnapshot | null {
   for (let index = activities.length - 1; index >= 0; index -= 1) {
     const activity = activities[index];
     if (!activity || activity.kind !== "session.compaction.updated") continue;
-    const decoded = decodeOrchestrationSessionActivity(activity);
+    const decoded = decodeProviderPresentation(activity);
     if (Option.isNone(decoded) || decoded.value.kind !== "session.compaction.updated") continue;
     if (decoded.value.payload.providerInstanceId !== providerInstanceId) continue;
     return { ...decoded.value.payload, updatedAt: activity.createdAt };

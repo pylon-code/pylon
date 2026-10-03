@@ -24,6 +24,7 @@ import * as CodexResetCredit from "./Layers/codexResetCredit.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
+  EnvironmentId,
   ProviderDriverKind,
   ProviderInstanceId,
   ServerProvider,
@@ -40,6 +41,11 @@ import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as ServerConfig from "../config.ts";
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import * as CodexInstallation from "./CodexInstallation.ts";
+import * as OpenCodeServerLedger from "./OpenCodeServerLedger.ts";
+import * as LegacyAdapterV2Maintenance from "./legacy/LegacyAdapterV2Maintenance.ts";
 import * as ServerSettingsModule from "../serverSettings.ts";
 import * as ModelManifest from "./ModelManifest.ts";
 import * as OpenCodeRuntime from "./opencodeRuntime.ts";
@@ -126,6 +132,18 @@ const TWO_ACCOUNT_OVERRIDES = {
 
 const registryLayer = ProviderRegistryLive.pipe(
   Layer.provideMerge(ProviderInstanceRegistryHydrationLive),
+  Layer.provideMerge(LegacyAdapterV2Maintenance.layer),
+  Layer.provideMerge(
+    Layer.mock(CodexInstallation.CodexInstallation)({
+      managedDirectory: "unused-managed-installation",
+    }),
+  ),
+  Layer.provideMerge(
+    Layer.succeed(ServerEnvironment.ServerEnvironmentIdentity, {
+      getEnvironmentId: Effect.succeed(EnvironmentId.make("environment:account-drain-test")),
+    }),
+  ),
+  Layer.provideMerge(ServerSecretStore.layer),
   Layer.provideMerge(ServerSettingsModule.layerTest(TWO_ACCOUNT_OVERRIDES)),
   Layer.provideMerge(AntigravityInstallation.layer),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-account-drain-e2e-" })),
@@ -138,7 +156,9 @@ const registryLayer = ProviderRegistryLive.pipe(
   ),
   Layer.provideMerge(ModelManifest.layerTest),
   Layer.provideMerge(CodexResetCredit.layerTest),
-  Layer.provideMerge(OpenCodeRuntime.OpenCodeRuntimeLive),
+  Layer.provideMerge(
+    OpenCodeRuntime.OpenCodeRuntimeLive.pipe(Layer.provide(OpenCodeServerLedger.layerTest)),
+  ),
   Layer.provideMerge(BackgroundPolicyAlwaysRunLayer),
 );
 

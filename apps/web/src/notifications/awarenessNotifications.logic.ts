@@ -1,9 +1,10 @@
+import * as DateTime from "effect/DateTime";
 import type {
   AgentAwarenessPhase,
   AgentAwarenessState,
-  ProjectThreadAwarenessInput,
+  ProjectThreadAwarenessV2Input,
 } from "@t3tools/shared/agentAwareness";
-import { projectThreadAwareness } from "@t3tools/shared/agentAwareness";
+import { projectThreadAwarenessV2 } from "@t3tools/shared/agentAwareness";
 import type { ClientSettings } from "@t3tools/contracts/settings";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 
@@ -81,15 +82,17 @@ export function projectAwarenessStates(input: {
     {
       readonly environmentId: EnvironmentId;
       readonly projectId: string;
-      readonly archivedAt?: string | null;
-    } & ProjectThreadAwarenessInput["thread"]
+      readonly archivedAt?: DateTime.Utc | null;
+      readonly latestRunId?: string | null;
+      readonly latestRunCompletedAt?: DateTime.Utc | null | undefined;
+    } & ProjectThreadAwarenessV2Input["thread"]
   >;
   readonly projectTitleByKey: ReadonlyMap<string, string>;
 }): Array<AgentAwarenessState & { readonly eventKey: string }> {
   const states: Array<AgentAwarenessState & { readonly eventKey: string }> = [];
   for (const thread of input.threads) {
     if (thread.archivedAt != null) continue;
-    const state = projectThreadAwareness({
+    const state = projectThreadAwarenessV2({
       environmentId: thread.environmentId,
       project: {
         title: input.projectTitleByKey.get(`${thread.environmentId}:${thread.projectId}`) ?? "",
@@ -99,13 +102,16 @@ export function projectAwarenessStates(input: {
     if (state !== null) {
       // A batched snapshot may skip running entirely between two finished turns.
       // Names, usage and other metadata must not create a new notification.
-      const turn = thread.latestTurn;
       states.push({
         ...state,
         eventKey: JSON.stringify([
           state.phase,
-          turn?.turnId ?? null,
-          state.phase === "completed" ? (turn?.completedAt ?? null) : null,
+          thread.latestRunId ?? null,
+          state.phase === "completed"
+            ? thread.latestRunCompletedAt
+              ? DateTime.formatIso(thread.latestRunCompletedAt)
+              : null
+            : null,
         ]),
       });
     }

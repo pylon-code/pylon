@@ -10,6 +10,7 @@
 
 import * as Migrator from "effect/unstable/sql/Migrator";
 import * as Effect from "effect/Effect";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 // Import all migrations statically
 import Migration0001 from "./Migrations/001_OrchestrationEvents.ts";
@@ -78,6 +79,8 @@ import Migration0064 from "./Migrations/064_PullRequestFilesViewed.ts";
 import Migration0065 from "./Migrations/065_ProjectionThreadTitleState.ts";
 import Migration0066 from "./Migrations/066_ProjectionRollbackOperationId.ts";
 import Migration0067 from "./Migrations/067_ProjectionThreadsAutoSettleDisabledAt.ts";
+import Migration0068 from "./Migrations/068_OrchestrationV2.ts";
+import Migration0069 from "./Migrations/069_RemoveRedundantProjectionIndexes.ts";
 /**
  * Migration loader with all migrations defined inline.
  *
@@ -88,7 +91,7 @@ import Migration0067 from "./Migrations/067_ProjectionThreadsAutoSettleDisabledA
  * Uses Migrator.fromRecord which parses the key format and
  * returns migrations sorted by ID.
  */
-const migrationEntries = [
+export const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
   [2, "OrchestrationCommandReceipts", Migration0002],
   [3, "CheckpointDiffBlobs", Migration0003],
@@ -190,6 +193,12 @@ const migrationEntries = [
   [66, "ProjectionRollbackOperationId", Migration0066],
   // Upstream shipped this as 54 (#11846); Pylon already uses ids through 66.
   [67, "ProjectionThreadsAutoSettleDisabledAt", Migration0067],
+  // Upstream shipped orchestration v2 as 55 and 56 (pingdotgg/t3code#2829); Pylon's ids
+  // already run through 67, so they land here. Pylon never shipped a V2 preview, so
+  // upstream's preview-ledger reconciliation does not apply.
+  // Preserve this migration's schema. Future V2 schema changes need new migrations.
+  [68, "OrchestrationV2", Migration0068],
+  [69, "RemoveRedundantProjectionIndexes", Migration0069],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
@@ -231,5 +240,30 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
   yield* migrations.length === 0
     ? Effect.logDebug("Database schema is current")
     : Effect.log("Migrations ran successfully").pipe(Effect.annotateLogs({ migrations }));
+
+  // The migrator keys on migration_id: a database that recorded a different
+  // migration under a shared id (local or fork builds) keeps that id and
+  // silently skips this build's migration at it. Surface the divergence so the
+  // skipped schema change is diagnosable.
+  const sql = yield* SqlClient.SqlClient;
+  const recorded = yield* sql<{
+    readonly migration_id: number;
+    readonly name: string;
+  }>`SELECT migration_id, name FROM effect_sql_migrations`;
+  const manifestNames = new Map<number, string>(migrationEntries.map(([id, name]) => [id, name]));
+  const divergent = recorded.flatMap((row) => {
+    const expected = manifestNames.get(row.migration_id);
+    if (expected === undefined) {
+      return [`${row.migration_id}:${row.name} (unknown to this build)`];
+    }
+    return expected === row.name
+      ? []
+      : [`${row.migration_id}:${row.name} (this build: ${expected})`];
+  });
+  if (divergent.length > 0) {
+    yield* Effect.logWarning(
+      "Database migration history diverges from this build; recorded migration ids are skipped, not reconciled by name.",
+    ).pipe(Effect.annotateLogs({ divergent }));
+  }
   return executedMigrations;
 });

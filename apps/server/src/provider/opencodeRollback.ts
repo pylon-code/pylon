@@ -18,9 +18,6 @@ export const OpenCodeConversationAnchor = Schema.Struct({
   ),
 });
 export type OpenCodeConversationAnchor = typeof OpenCodeConversationAnchor.Type;
-export const decodeOpenCodeConversationAnchor = Schema.decodeUnknownOption(
-  OpenCodeConversationAnchor,
-);
 
 const decodeJson = Schema.decodeUnknownOption(Schema.Json);
 const isArray = (value: Schema.Json): value is ReadonlyArray<Schema.Json> => Array.isArray(value);

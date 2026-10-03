@@ -120,7 +120,7 @@ describe("DesktopEnvironment", () => {
       assert.equal(environment.browserArtifactsDir, "/tmp/t3/userdata/browser-artifacts");
       assert.equal(environment.serverSettingsPath, "/tmp/t3/userdata/settings.json");
       assert.equal(environment.appUserModelId, "com.pylon.code");
-      assert.equal(environment.userDataDirName, "pylon-code");
+      assert.equal(environment.userDataDirName, "pylon-code-v2");
       assert.equal(environment.legacyUserDataDirName, "Pylon (Alpha)");
       assert.equal(environment.displayName, "Pylon (Alpha)");
       assert.equal(environment.linuxDesktopEntryName, "com.pylon.code.desktop");

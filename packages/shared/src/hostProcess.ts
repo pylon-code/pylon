@@ -2,6 +2,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as NodeDns from "node:dns";
 import * as NodeOS from "node:os";
+import * as NodeSea from "node:sea";
 
 export const HostProcessPlatform = Context.Reference<NodeJS.Platform>(
   "@t3tools/shared/hostProcess/HostProcessPlatform",
@@ -49,6 +50,19 @@ export const HostProcessArguments = Context.Reference<ReadonlyArray<string>>(
   "@t3tools/shared/hostProcess/HostProcessArguments",
   {
     defaultValue: () => process.argv,
+  },
+);
+
+/**
+ * Whether this process is a Node single-executable rather than a script run
+ * by a Node on the machine. Code that needs a sibling file or a Node to run
+ * one branches on this: an executable hosts such things as hidden
+ * subcommands of itself.
+ */
+export const HostProcessIsExecutable = Context.Reference<boolean>(
+  "@t3tools/shared/hostProcess/HostProcessIsExecutable",
+  {
+    defaultValue: () => NodeSea.isSea(),
   },
 );
 

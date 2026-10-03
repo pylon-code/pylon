@@ -9,17 +9,17 @@ import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Stream from "effect/Stream";
 
 import { loadPrimeAgentDaemonBridge } from "./PrimeAgentDaemonBridge.ts";
 import { recoverPrimeAgentLegacySettlement } from "./PrimeAgentLegacySettlement.ts";
+import * as PrimeManagedMaintenanceDrain from "./PrimeManagedMaintenanceDrain.ts";
 import { PrimeAgentOwnershipReceiptStore } from "./PrimeAgentOwnershipReceipt.ts";
 
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
 import { ProviderRegistry } from "../Services/ProviderRegistry.ts";
-import { ProviderService } from "../Services/ProviderService.ts";
+import { LegacyAdapterV2Maintenance } from "../legacy/LegacyAdapterV2Maintenance.ts";
 import {
   PrimeAgentManagedToolStore,
   type PrimeManagedCommandReceipt,
@@ -98,7 +98,7 @@ export const make = Effect.fn("PrimeManagedMaintenance.make")(function* () {
   const config = yield* ServerConfig;
   const platform = yield* HostProcessPlatform;
   const settings = yield* ServerSettingsService;
-  const providerService = yield* ProviderService;
+  const providerMaintenance = yield* LegacyAdapterV2Maintenance;
   const providerRegistry = yield* ProviderRegistry;
   const instanceRegistry = yield* ProviderInstanceRegistry;
   const runtimeContext = yield* Effect.context<never>();
@@ -109,8 +109,8 @@ export const make = Effect.fn("PrimeManagedMaintenance.make")(function* () {
       !settings.readPrimeAgentBinaryBinding ||
       !settings.listPrimeAgentBinaryBindings ||
       !settings.compareAndSetPrimeAgentBinaryPath ||
-      !providerService.reserveProviderMaintenance ||
-      !providerService.releaseProviderMaintenance
+      !providerMaintenance.reserveProviderMaintenance ||
+      !providerMaintenance.releaseProviderMaintenance
     ) {
       return yield* Effect.die(
         new Error("Prime managed maintenance requires exact settings CAS and provider fences."),
@@ -142,8 +142,8 @@ export const make = Effect.fn("PrimeManagedMaintenance.make")(function* () {
   const readPrimeAgentBinaryBinding = settings.readPrimeAgentBinaryBinding!;
   const listPrimeAgentBinaryBindings = settings.listPrimeAgentBinaryBindings!;
   const compareAndSetPrimeAgentBinaryPath = settings.compareAndSetPrimeAgentBinaryPath!;
-  const reserveProviderMaintenance = providerService.reserveProviderMaintenance!;
-  const releaseProviderMaintenance = providerService.releaseProviderMaintenance!;
+  const reserveProviderMaintenance = providerMaintenance.reserveProviderMaintenance!;
+  const releaseProviderMaintenance = providerMaintenance.releaseProviderMaintenance!;
 
   const networkDependencies = makePrimeDistributionNetworkDependencies({
     tufCachePath: `${config.stateDir}/sigstore-tuf`,
@@ -183,7 +183,9 @@ export const make = Effect.fn("PrimeManagedMaintenance.make")(function* () {
         });
         // Recovery may have completed before a previous install failed. Retry admission
         // even when this call found no remaining receipt; status refresh cannot create instances.
-        await runPromise(instanceRegistry.retryUnavailable(ProviderInstanceId.make(instanceId)));
+        if (instanceRegistry.retryUnavailable) {
+          await runPromise(instanceRegistry.retryUnavailable(ProviderInstanceId.make(instanceId)));
+        }
       },
       reserveQuiescentBinding: async (instanceId, expected) => {
         const current = await runPromise(
@@ -240,16 +242,20 @@ export const make = Effect.fn("PrimeManagedMaintenance.make")(function* () {
         }),
       ),
     );
-  yield* providerService.streamEvents.pipe(
-    Stream.filter(
-      (event) =>
-        event.type === "session.exited" &&
-        event.provider === "primeAgent" &&
-        event.providerInstanceId !== undefined,
+  yield* PrimeManagedMaintenanceDrain.start({
+    subscribe: providerMaintenance.subscribeDrainedInstances,
+    initialInstances: listPrimeAgentBinaryBindings.pipe(
+      Effect.map((bindings) =>
+        bindings.map(({ instanceId }) => ProviderInstanceId.make(instanceId)),
+      ),
+      Effect.catch((cause) =>
+        Effect.logWarning("Scheduled Prime maintenance startup bindings could not be read.", {
+          cause,
+        }).pipe(Effect.as([])),
+      ),
     ),
-    Stream.runForEach((event) => refreshAfterDrain(event.providerInstanceId!)),
-    Effect.forkScoped,
-  );
+    drain: refreshAfterDrain,
+  });
 
   const status: PrimeManagedMaintenanceShape["status"] = (instanceId) =>
     Effect.tryPromise({

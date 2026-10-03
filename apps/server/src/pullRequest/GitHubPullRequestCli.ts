@@ -1,3 +1,4 @@
+import { makeChecksRevalidator } from "./gitHubConditionalChecks.ts";
 import { runGitHubStackAction, type GitHubStackActionError } from "./githubStackActions.ts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -522,6 +523,8 @@ export class GitHubPullRequestCli extends Context.Service<
       readonly host: string;
       readonly number: number;
     }) => Effect.Effect<ProviderChangeRequestSummary, GitHubPullRequestCliError>;
+
+    readonly revalidateChecks: Effect.Success<typeof makeChecksRevalidator>;
 
     readonly getPullRequestDetail: (input: {
       readonly cwd: string;
@@ -1068,6 +1071,7 @@ function actionArgs(
 export const make = Effect.gen(function* () {
   const github = yield* GitHubCli.GitHubCli;
   const graphQlBudget = yield* GitHubGraphQlBudget.GitHubGraphQlBudget;
+  const revalidateChecks = yield* makeChecksRevalidator;
 
   /**
    * The pull request's own node id, which is what a mutation against the pull request itself is
@@ -1710,6 +1714,7 @@ export const make = Effect.gen(function* () {
 
   return GitHubPullRequestCli.of({
     snapshotViewedFilesCredential: github.snapshotCredential,
+    revalidateChecks,
     getViewerLogin: (input) =>
       github
         .execute({

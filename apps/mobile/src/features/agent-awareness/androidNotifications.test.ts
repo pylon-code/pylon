@@ -2,7 +2,13 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const mocks = vi.hoisted(() => ({
   os: "android",
-  native: null as { configure?: ReturnType<typeof vi.fn>; clear?: ReturnType<typeof vi.fn> } | null,
+  version: 36,
+  openSettings: vi.fn(),
+  native: null as {
+    configure?: ReturnType<typeof vi.fn>;
+    clear?: ReturnType<typeof vi.fn>;
+    openLiveUpdateSettings?: ReturnType<typeof vi.fn>;
+  } | null,
   config: {
     scheme: ["pylon-code-preview"],
     extra: { iosPersonalTeamBuild: false, androidPushConfigured: true },
@@ -13,7 +19,11 @@ const mocks = vi.hoisted(() => ({
 vi.mock("expo", () => ({ requireOptionalNativeModule: mocks.requireModule }));
 vi.mock("expo-constants", () => ({ default: { expoConfig: mocks.config } }));
 vi.mock("react-native", () => ({
+  Linking: { openSettings: mocks.openSettings },
   Platform: {
+    get Version() {
+      return mocks.version;
+    },
     get OS() {
       return mocks.os;
     },
@@ -23,6 +33,8 @@ vi.mock("react-native", () => ({
 beforeEach(() => {
   vi.resetModules();
   mocks.os = "android";
+  mocks.version = 36;
+  mocks.openSettings.mockReset();
   mocks.native = { configure: vi.fn(), clear: vi.fn() };
   mocks.config.extra.iosPersonalTeamBuild = false;
   mocks.config.extra.androidPushConfigured = true;
@@ -83,5 +95,28 @@ describe("Android native notification capability", () => {
     mocks.config.extra.iosPersonalTeamBuild = true;
     expect(supportsAgentAwarenessPush()).toBe(false);
     expect(mocks.requireModule).not.toHaveBeenCalled();
+  });
+});
+
+describe("Android live update settings", () => {
+  it("uses Android 16 settings only on supporting platforms", async () => {
+    const { supportsAndroidLiveUpdateSettings } = await import("./androidNotifications");
+    expect(supportsAndroidLiveUpdateSettings()).toBe(true);
+    mocks.version = 35;
+    expect(supportsAndroidLiveUpdateSettings()).toBe(false);
+    mocks.version = 36;
+    mocks.os = "ios";
+    expect(supportsAndroidLiveUpdateSettings()).toBe(false);
+  });
+  it("falls back to app settings when the optional native opener is unavailable", async () => {
+    const { openAndroidLiveUpdateSettings } = await import("./androidNotifications");
+    await openAndroidLiveUpdateSettings();
+    expect(mocks.openSettings).toHaveBeenCalledOnce();
+    const openLiveUpdateSettings = vi.fn(() => true);
+    if (mocks.native === null) throw new Error("Expected native fixture");
+    mocks.native.openLiveUpdateSettings = openLiveUpdateSettings;
+    await openAndroidLiveUpdateSettings();
+    expect(openLiveUpdateSettings).toHaveBeenCalledOnce();
+    expect(mocks.openSettings).toHaveBeenCalledOnce();
   });
 });

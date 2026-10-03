@@ -1,4 +1,12 @@
-import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ThreadId,
+  type ServerProvider,
+} from "@t3tools/contracts";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { createModelSelection } from "@t3tools/shared/model";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -7,6 +15,7 @@ import {
   resolveComposerProviderSettingsAction,
 } from "./composerInstanceSelection";
 import { deriveProviderInstanceEntries, NO_PROVIDER_MODEL_SELECTION } from "./providerInstances";
+import { composerDraftHasUserContent, useComposerDraftStore } from "./composerDraftStore";
 
 const NOW_MS = Date.parse("2026-08-06T12:00:00.000Z");
 
@@ -115,6 +124,124 @@ describe("resolveComposerInstanceSelection", () => {
     expect(selection.draftConflictsWithSessionBinding).toBe(false);
     expect(canStartComposerTurn(selection)).toBe(true);
   });
+
+  it.each(["claudeAgent", "codex"])(
+    "clears the legacy draft lock for a native portable %s account pick and its reverse",
+    (driver) => {
+      const sourceInstanceId = id(`${driver}_work`);
+      const targetInstanceId = id(`${driver}_personal`);
+      const entries = entriesOf(
+        provider({
+          instanceId: sourceInstanceId,
+          driver,
+          continuationGroupKey: "home:work",
+        }),
+        provider({
+          instanceId: targetInstanceId,
+          driver,
+          continuationGroupKey: "home:personal",
+        }),
+      );
+      const threadRef = scopeThreadRef(
+        EnvironmentId.make("portable-draft-lock"),
+        ThreadId.make(`portable-${driver}`),
+      );
+      const store = useComposerDraftStore.getState();
+      store.setPrompt(threadRef, "Keep this unsent request");
+      store.setModelSelection(threadRef, createModelSelection(targetInstanceId, "model"), {
+        explicit: true,
+      });
+      store.setProviderBindingConflict(threadRef, sourceInstanceId);
+      expect(store.getComposerDraft(threadRef)?.providerBindingConflict).toBeDefined();
+
+      for (const instanceId of [targetInstanceId, sourceInstanceId]) {
+        store.setModelSelection(threadRef, createModelSelection(instanceId, "model"), {
+          explicit: true,
+        });
+        const draft = store.getComposerDraft(threadRef)!;
+        const selection = resolveComposerInstanceSelection({
+          ...base,
+          entries,
+          draftActiveProvider: draft.activeProvider,
+          sessionInstanceId: sourceInstanceId,
+          threadInstanceId: sourceInstanceId,
+          lockedProvider: kind(driver),
+          supportsProviderSwitchingViaHandoff: true,
+        });
+        store.setProviderBindingConflict(
+          threadRef,
+          selection.draftConflictsWithSessionBinding &&
+            draft.modelSelectionExplicit === true &&
+            composerDraftHasUserContent(draft)
+            ? sourceInstanceId
+            : null,
+        );
+
+        expect(selection.instanceId).toBe(instanceId);
+        expect(selection.draftConflictsWithSessionBinding).toBe(false);
+        expect(selection.lockedContinuationGroupKey).toBeNull();
+        expect(canStartComposerTurn(selection)).toBe(true);
+        expect(store.getComposerDraft(threadRef)).toMatchObject({
+          prompt: "Keep this unsent request",
+          activeProvider: instanceId,
+          modelSelectionExplicit: true,
+        });
+        expect(store.getComposerDraft(threadRef)?.providerBindingConflict).toBeUndefined();
+      }
+    },
+  );
+
+  it.each([undefined, false])(
+    "keeps the legacy cross-group draft guard without explicit native handoff (%s)",
+    (supportsProviderSwitchingViaHandoff) => {
+      const sourceInstanceId = id("legacy_work");
+      const targetInstanceId = id("legacy_personal");
+      const threadRef = scopeThreadRef(
+        EnvironmentId.make("legacy-draft-lock"),
+        ThreadId.make(`legacy-${String(supportsProviderSwitchingViaHandoff)}`),
+      );
+      const store = useComposerDraftStore.getState();
+      store.setPrompt(threadRef, "Keep this blocked request");
+      store.setModelSelection(threadRef, createModelSelection(targetInstanceId, "model"), {
+        explicit: true,
+      });
+      const draft = store.getComposerDraft(threadRef)!;
+      const selection = resolveComposerInstanceSelection({
+        ...base,
+        entries: entriesOf(
+          provider({
+            instanceId: sourceInstanceId,
+            driver: "codex",
+            continuationGroupKey: "home:work",
+          }),
+          provider({
+            instanceId: targetInstanceId,
+            driver: "codex",
+            continuationGroupKey: "home:personal",
+          }),
+        ),
+        draftActiveProvider: draft.activeProvider,
+        sessionInstanceId: sourceInstanceId,
+        supportsProviderSwitchingViaHandoff,
+      });
+      store.setProviderBindingConflict(
+        threadRef,
+        selection.draftConflictsWithSessionBinding &&
+          draft.modelSelectionExplicit === true &&
+          composerDraftHasUserContent(draft)
+          ? sourceInstanceId
+          : null,
+      );
+
+      expect(selection.instanceId).toBe(sourceInstanceId);
+      expect(selection.draftConflictsWithSessionBinding).toBe(true);
+      expect(store.getComposerDraft(threadRef)?.providerBindingConflict).toMatchObject({
+        boundInstanceId: sourceInstanceId,
+        originalSelection: { instanceId: targetInstanceId },
+      });
+      expect(store.getComposerDraft(threadRef)?.prompt).toBe("Keep this blocked request");
+    },
+  );
 
   it("falls through thread, then project, when nothing was picked", () => {
     const entries = entriesOf(CLAUDE_WORK, CLAUDE_PERSONAL, CODEX);

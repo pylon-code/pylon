@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from "@effect/vitest";
-import { type OrchestrationProject, ProjectId, type TerminalEvent } from "@t3tools/contracts";
+import { type Project, ProjectId, type TerminalEvent } from "@t3tools/contracts";
 import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import * as ProjectService from "./ProjectService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
 import * as ProjectSetupScriptRunner from "./ProjectSetupScriptRunner.ts";
@@ -15,10 +15,12 @@ const isProjectSetupScriptOperationError = Schema.is(
   ProjectSetupScriptRunner.ProjectSetupScriptOperationError,
 );
 
-const makeProject = (scripts: OrchestrationProject["scripts"]): OrchestrationProject => ({
+const makeProject = (scripts: Project["scripts"]): Project => ({
   id: ProjectId.make("project-1"),
   title: "Project",
   workspaceRoot: "/repo/project",
+  repositoryIdentity: null,
+  faviconPath: null,
   defaultModelSelection: null,
   scripts,
   createdAt: "2026-01-01T00:00:00.000Z",
@@ -26,36 +28,14 @@ const makeProject = (scripts: OrchestrationProject["scripts"]): OrchestrationPro
   deletedAt: null,
 });
 
-const makeProjectionSnapshotQueryLayer = (project: OrchestrationProject) =>
-  Layer.succeed(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
-    getPendingRequestActivities: () => Effect.succeed([]),
-    getUserInputActivity: () => Effect.die("unused"),
-    listActivitiesByKind: () => Effect.die("unused"),
-    getCommandReadModel: () => Effect.die("unused"),
-    getSnapshot: () => Effect.die("unused"),
-    listThreadsWithPullRequests: () => Effect.succeed([]),
-    getShellSnapshot: () => Effect.die("unused"),
-    getArchivedShellSnapshot: () => Effect.die("unused"),
-    getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 1 }),
-    getCounts: () => Effect.die("unused"),
-    getEventReplayStats: () => Effect.die("unused"),
-    getActiveProjectByWorkspaceRoot: (workspaceRoot) =>
+const makeProjectServiceLayer = (project: Project) =>
+  Layer.mock(ProjectService.ProjectService)({
+    getById: (projectId) =>
+      Effect.succeed(projectId === project.id ? Option.some(project) : Option.none()),
+    getByWorkspaceRoot: (workspaceRoot) =>
       Effect.succeed(
         workspaceRoot === project.workspaceRoot ? Option.some(project) : Option.none(),
       ),
-    getProjectShells: () => Effect.die("unused"),
-    getProjectShellById: (projectId) =>
-      Effect.succeed(projectId === project.id ? Option.some(project) : Option.none()),
-    getFirstActiveThreadIdByProjectId: () => Effect.die("unused"),
-    getImportedAgentSessionSources: () => Effect.die("unused"),
-    getThreadCheckpointContext: () => Effect.die("unused"),
-    getFullThreadDiffContext: () => Effect.die("unused"),
-    getThreadRuntimeContext: () => Effect.die("unused"),
-    getTurnStartMessage: () => Effect.die("unused"),
-    getThreadShellById: () => Effect.die("unused"),
-    getThreadDetailById: () => Effect.die("unused"),
-    getThreadDetailSnapshot: () => Effect.die("unused"),
-    searchThreads: () => Effect.succeed({ matches: [] }),
   });
 
 type TerminalOverrides = Pick<TerminalManager.TerminalManager["Service"], "open" | "write"> &
@@ -68,6 +48,7 @@ const makeTerminalManagerLayer = (overrides: TerminalOverrides) =>
     clear: () => Effect.void,
     restart: () => Effect.die(new Error("unused")),
     close: () => Effect.void,
+    closeIdle: () => Effect.void,
     closeCompletedSetup: () => Effect.void,
     subscribe: () => Effect.succeed(() => undefined),
     subscribeMetadata: () => Effect.succeed(() => undefined),
@@ -75,12 +56,12 @@ const makeTerminalManagerLayer = (overrides: TerminalOverrides) =>
   });
 
 const testLayer = (
-  project: OrchestrationProject,
+  project: Project,
   terminal: TerminalOverrides,
   settings = ServerSettings.layerTest(),
 ) =>
   ProjectSetupScriptRunner.layer.pipe(
-    Layer.provideMerge(makeProjectionSnapshotQueryLayer(project)),
+    Layer.provideMerge(makeProjectServiceLayer(project)),
     Layer.provideMerge(makeTerminalManagerLayer(terminal)),
     Layer.provide(settings),
   );
@@ -117,6 +98,7 @@ describe("ProjectSetupScriptRunner", () => {
         cwd: "/repo/worktrees/a",
         worktreePath: "/repo/worktrees/a",
         env: {
+          COLORTERM: "",
           T3CODE_PROJECT_ROOT: "/repo/project",
           T3CODE_WORKTREE_PATH: "/repo/worktrees/a",
           NO_COLOR: "1",
@@ -222,6 +204,7 @@ describe("ProjectSetupScriptRunner", () => {
           env: {
             NO_COLOR: "1",
             FORCE_COLOR: "0",
+            COLORTERM: "",
             T3CODE_PROJECT_ROOT: "/repo/project",
             T3CODE_WORKTREE_PATH: "/repo/worktrees/a",
           },

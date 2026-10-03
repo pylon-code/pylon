@@ -1,17 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 
+import { makeThreadShellFixture } from "../../test-fixtures";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 
 import { resolveThreadStatus } from "./threadPresentation";
 
-const baseThread = {
-  interactionMode: "default",
-  hasActionableProposedPlan: false,
-  hasPendingApprovals: false,
-  hasPendingUserInput: false,
-  latestTurn: null,
-  session: null,
-} as EnvironmentThreadShell;
+const baseThread = makeThreadShellFixture({});
 
 describe("resolveThreadStatus", () => {
   it("restores distinct upstream approval and input hues", () => {
@@ -35,7 +29,7 @@ describe("resolveThreadStatus", () => {
         ...baseThread,
         interactionMode: "plan",
         hasActionableProposedPlan: true,
-        latestTurn: {
+        latestRun: {
           startedAt: "2026-08-27T12:00:00.000Z",
           completedAt: "2026-08-27T12:01:00.000Z",
         },
@@ -52,7 +46,7 @@ describe("resolveThreadStatus", () => {
     expect(
       resolveThreadStatus({
         ...baseThread,
-        session: { status: "running", activeTurnId: null },
+        runtime: { status: "running", activeRunId: null },
       } as EnvironmentThreadShell),
     ).toBeNull();
   });
@@ -61,7 +55,7 @@ describe("resolveThreadStatus", () => {
     expect(
       resolveThreadStatus({
         ...baseThread,
-        session: { status: "running", activeTurnId: "turn-1" },
+        runtime: { status: "running", activeRunId: "turn-1" },
       } as EnvironmentThreadShell),
     ).toMatchObject({
       pillClassName: "bg-primary/10",
@@ -75,7 +69,7 @@ describe("resolveThreadStatus", () => {
     expect(
       resolveThreadStatus({
         ...baseThread,
-        session: { status: "starting" },
+        runtime: { status: "starting" },
       } as EnvironmentThreadShell),
     ).toMatchObject({
       pillClassName: "bg-adaptive-sky-500-a12-a16",

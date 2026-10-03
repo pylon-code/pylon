@@ -1,6 +1,7 @@
 import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   type ProviderInteractionMode,
+  type ServerProvider,
 } from "@t3tools/contracts";
 
 export function resolveLegacyPlanModeEnabled(input: {
@@ -26,4 +27,13 @@ export function resolvePendingTaskInteractionMode(input: {
     return input.queuedInteractionMode ?? DEFAULT_PROVIDER_INTERACTION_MODE;
   }
   return DEFAULT_PROVIDER_INTERACTION_MODE;
+}
+
+export function resolveProviderInteractionMode(
+  provider: Pick<ServerProvider, "showInteractionModeToggle"> | null | undefined,
+  mode: ProviderInteractionMode | null | undefined,
+): ProviderInteractionMode {
+  return provider?.showInteractionModeToggle === false
+    ? DEFAULT_PROVIDER_INTERACTION_MODE
+    : (mode ?? DEFAULT_PROVIDER_INTERACTION_MODE);
 }

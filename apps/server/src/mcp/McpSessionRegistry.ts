@@ -17,7 +17,13 @@ import * as McpProviderSession from "./McpProviderSession.ts";
 export interface McpCredentialRequest {
   readonly threadId: ThreadId;
   readonly providerInstanceId: ProviderInstanceId;
-  readonly capabilities: ReadonlySet<McpInvocationContext.McpCapability>;
+  /**
+   * When false, the credential is minted without the "preview" capability so
+   * the user's choice to withhold agent browser access holds everywhere the
+   * token is honored (#7083). Defaults to full access.
+   */
+  readonly browserToolsAvailable?: boolean;
+  readonly capabilities?: ReadonlySet<McpInvocationContext.McpCapability>;
 }
 
 export interface McpIssuedCredential {
@@ -27,7 +33,7 @@ export interface McpIssuedCredential {
 export interface McpSessionRegistryShape {
   readonly issue: (request: McpCredentialRequest) => Effect.Effect<McpIssuedCredential>;
   /** Atomically replace one thread credential only while its provider generation is current. */
-  readonly issueIfCurrent: (
+  readonly issueIfCurrent?: (
     request: McpCredentialRequest,
     isCurrent: Effect.Effect<boolean>,
   ) => Effect.Effect<McpIssuedCredential | undefined>;
@@ -140,12 +146,18 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
     const providerSessionId = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
     const rawToken = yield* crypto.randomBytes(32).pipe(Effect.map(tokenFromBytes), Effect.orDie);
     const tokenHash = yield* hashToken(rawToken);
+    const browserToolsAvailable = request.browserToolsAvailable ?? true;
     const scope: McpInvocationContext.McpInvocationScope = {
       environmentId,
       threadId: ThreadId.make(request.threadId),
       providerSessionId,
       providerInstanceId: ProviderInstanceId.make(request.providerInstanceId),
-      capabilities: new Set(request.capabilities),
+      // v2 orchestrator and worktree tools are always available; the rest stay caller-gated.
+      capabilities: new Set<McpInvocationContext.McpCapability>([
+        "orchestration",
+        "worktree",
+        ...(request.capabilities ?? (browserToolsAvailable ? (["preview"] as const) : [])),
+      ]),
       issuedAt,
     };
     return {
@@ -160,6 +172,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
           providerInstanceId: scope.providerInstanceId,
           endpoint,
           authorizationHeader: `Bearer ${rawToken}`,
+          browserToolsAvailable: scope.capabilities.has("preview"),
           capabilities: scope.capabilities,
         },
       } satisfies McpIssuedCredential,
@@ -303,13 +316,20 @@ export const issueActiveMcpCredential = (
   isCurrent: Effect.Effect<boolean> = Effect.succeed(true),
 ): Effect.Effect<McpIssuedCredential | undefined> =>
   activeMcpSessionRegistry
-    ? activeMcpSessionRegistry.issueIfCurrent(request, isCurrent)
+    ? issueMcpCredentialIfCurrent(activeMcpSessionRegistry, request, isCurrent)
     : Effect.undefined;
 
-export const revokeActiveMcpProviderSession = (providerSessionId: string): Effect.Effect<void> =>
-  activeMcpSessionRegistry
-    ? activeMcpSessionRegistry.revokeProviderSession(providerSessionId)
-    : Effect.void;
+/** Compatibility fallback for registries written before Pylon's generation fence. */
+export const issueMcpCredentialIfCurrent = (
+  registry: McpSessionRegistryShape,
+  request: McpCredentialRequest,
+  isCurrent: Effect.Effect<boolean>,
+): Effect.Effect<McpIssuedCredential | undefined> =>
+  registry.issueIfCurrent
+    ? registry.issueIfCurrent(request, isCurrent)
+    : isCurrent.pipe(
+        Effect.flatMap((current) => (current ? registry.issue(request) : Effect.undefined)),
+      );
 
 /**
  * Refreshes the liveness of a thread's MCP credential. Called on every provider
@@ -317,12 +337,6 @@ export const revokeActiveMcpProviderSession = (providerSessionId: string): Effec
  */
 export const touchActiveMcpThread = (threadId: ThreadId): Effect.Effect<void> =>
   activeMcpSessionRegistry ? activeMcpSessionRegistry.touch(threadId) : Effect.void;
-
-export const revokeActiveMcpThread = (threadId: ThreadId): Effect.Effect<void> =>
-  activeMcpSessionRegistry ? activeMcpSessionRegistry.revokeThread(threadId) : Effect.void;
-
-export const revokeAllActiveMcpCredentials = (): Effect.Effect<void> =>
-  activeMcpSessionRegistry ? activeMcpSessionRegistry.revokeAll : Effect.void;
 
 /** Exposed for tests. */
 export const __testing = {

@@ -319,7 +319,7 @@ describe("UsageService", () => {
             yield* Effect.promise(() => NodeFSP.realpath(NodePath.join(configured, "projects"))),
           );
           const initial = yield* settingsService.getSettings;
-          yield* settingsService.mutateProviderInstances({
+          yield* ServerSettings.mutateProviderInstances(settingsService, {
             mutationId: ServerProviderInstancesMutationId.make("update-claude-account"),
             expectedProviderInstances: initial.providerInstances,
             patch: {

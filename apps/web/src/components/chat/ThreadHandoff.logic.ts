@@ -23,18 +23,24 @@
  * @module components/chat/ThreadHandoff.logic
  */
 import type {
-  OrchestrationMessage,
+  OrchestrationV2ThreadProjection,
   ProviderInstanceId,
   ServerProvider,
   ThreadHandoffEstimate,
 } from "@t3tools/contracts";
 import { estimateThreadHandoff, formatHandoffTokenCost } from "@t3tools/contracts";
+import type { ChatMessage } from "../../types";
 import type { UnifiedSettings } from "@t3tools/contracts/settings";
+import {
+  resolveActiveThreadRun,
+  threadSupportsProviderHandoff,
+} from "@t3tools/client-runtime/state/thread-workflows";
 
 import { getDiffLineStat, getRenderablePatch, resolveFileDiffPath } from "../../lib/diffRendering";
 import { resolveAppModelSelectionForInstance } from "../../modelSelection";
 import {
   getDefaultProviderInstanceModel,
+  isProviderInstancePickerReady,
   isProviderInstanceDrained,
   sortProviderInstancesForRouting,
   type ProviderInstanceEntry,
@@ -119,7 +125,7 @@ export function summarizeHandoffDiff(patch: string | undefined): string | undefi
 }
 
 export interface ThreadHandoffSeedInput {
-  readonly messages: ReadonlyArray<OrchestrationMessage>;
+  readonly messages: ReadonlyArray<ChatMessage>;
   readonly estimate: ThreadHandoffEstimate;
   /** Human-readable summary of the checkpoint diff, when one is available. */
   readonly diffSummary?: string | undefined;
@@ -127,10 +133,10 @@ export interface ThreadHandoffSeedInput {
   readonly targetAccountName?: string | undefined;
 }
 
-const roleLabel = (role: OrchestrationMessage["role"]): string =>
+const roleLabel = (role: ChatMessage["role"]): string =>
   role === "user" ? "User" : role === "assistant" ? "Assistant" : role;
 
-const renderTurns = (messages: ReadonlyArray<OrchestrationMessage>): string =>
+const renderTurns = (messages: ReadonlyArray<ChatMessage>): string =>
   messages
     .filter((message) => message.text.trim().length > 0)
     .map((message) => `**${roleLabel(message.role)}:** ${message.text.trim()}`)
@@ -143,10 +149,10 @@ const renderTurns = (messages: ReadonlyArray<OrchestrationMessage>): string =>
  * much is being dropped without re-deriving it.
  */
 export function selectHandoffMessages(input: {
-  readonly messages: ReadonlyArray<OrchestrationMessage>;
+  readonly messages: ReadonlyArray<ChatMessage>;
   readonly estimate: ThreadHandoffEstimate;
 }): {
-  readonly carried: ReadonlyArray<OrchestrationMessage>;
+  readonly carried: ReadonlyArray<ChatMessage>;
   readonly omittedCount: number;
 } {
   const substantive = input.messages.filter((message) => message.text.trim().length > 0);
@@ -317,7 +323,7 @@ export interface ThreadHandoffOffer {
 export function getThreadHandoffOffer(input: {
   readonly entries: ReadonlyArray<ProviderInstanceEntry>;
   readonly boundInstanceId: string | undefined;
-  readonly messages: ReadonlyArray<OrchestrationMessage>;
+  readonly messages: ReadonlyArray<ChatMessage>;
   readonly usedTokens?: number | undefined;
   readonly maxTokens?: number | undefined;
   readonly nowMs: number;
@@ -332,7 +338,7 @@ export function getThreadHandoffOffer(input: {
         entry.driverKind === bound.driverKind &&
         entry.instanceId !== bound.instanceId &&
         entry.enabled &&
-        entry.isAvailable &&
+        isProviderInstancePickerReady(entry) &&
         !isProviderInstanceDrained(entry, input.nowMs),
     ),
     input.nowMs,
@@ -369,4 +375,37 @@ export function getThreadHandoffOffer(input: {
     costLabel: formatHandoffTokenCost(estimate.carriedTokens),
     carries,
   };
+}
+
+/** Offer the native next-message handoff only for the live, idle account on screen. */
+export function getPortableThreadHandoffOffer(
+  input: Omit<Parameters<typeof getThreadHandoffOffer>[0], "boundInstanceId"> & {
+    readonly projection: OrchestrationV2ThreadProjection | null;
+    readonly sessionOwner: object | null;
+    readonly expectedSessionOwner: object | null;
+    readonly selectedInstanceId: ProviderInstanceId | null;
+    readonly busy: boolean;
+  },
+): ThreadHandoffOffer | null {
+  const projection = input.projection;
+  if (
+    projection === null ||
+    input.expectedSessionOwner === null ||
+    input.sessionOwner !== input.expectedSessionOwner ||
+    input.busy ||
+    resolveActiveThreadRun(projection) !== null ||
+    projection.runs.some((run) => run.status === "queued") ||
+    projection.runtimeRequests.some((request) => request.status === "pending") ||
+    !threadSupportsProviderHandoff(projection)
+  ) {
+    return null;
+  }
+  const boundInstanceId =
+    projection.providerThreads.find(
+      (thread) => thread.id === projection.thread.activeProviderThreadId,
+    )?.providerInstanceId ?? projection.thread.modelSelection.instanceId;
+  // An explicit alternate selection already prepares this handoff. Do not
+  // offer another destination or overwrite that choice.
+  if (input.selectedInstanceId !== boundInstanceId) return null;
+  return getThreadHandoffOffer({ ...input, boundInstanceId });
 }

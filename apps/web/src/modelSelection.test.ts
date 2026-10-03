@@ -7,7 +7,7 @@ import {
 import { DEFAULT_UNIFIED_SETTINGS, type UnifiedSettings } from "@t3tools/contracts/settings";
 import { describe, expect, it } from "vite-plus/test";
 import { createModelSelection } from "@t3tools/shared/model";
-import { deriveProviderInstanceEntries } from "./providerInstances";
+import { NO_PROVIDER_MODEL_SELECTION, deriveProviderInstanceEntries } from "./providerInstances";
 import { deriveEffectiveComposerModelState } from "./composerDraftStore";
 import { getComposerProviderState } from "./components/chat/composerProviderState";
 import {
@@ -25,6 +25,7 @@ function provider(input: {
   models?: ReadonlyArray<string>;
   supportsBackgroundTextGeneration?: boolean;
   featureCapabilities?: ServerProvider["featureCapabilities"];
+  supportsTextGeneration?: boolean;
 }): ServerProvider {
   const driver =
     input.provider ??
@@ -34,6 +35,9 @@ function provider(input: {
   return {
     instanceId: ProviderInstanceId.make(input.instanceId),
     driver,
+    ...(input.supportsTextGeneration === undefined
+      ? {}
+      : { supportsTextGeneration: input.supportsTextGeneration }),
     enabled: true,
     installed: true,
     version: null,
@@ -1112,6 +1116,118 @@ describe("instance-scoped model selection", () => {
     expect(
       createModelSelection(instanceId, state.selectedModel, dispatch.modelOptionsForDispatch),
     ).toEqual(saved);
+  });
+
+  it("keeps a custom-instance draft model while dropping unsupported options", () => {
+    const instanceId = ProviderInstanceId.make("claude_openrouter");
+    const driver = ProviderDriverKind.make("claudeAgent");
+    const providers = [
+      provider({ provider: driver, instanceId: "claudeAgent", models: ["claude-opus-5"] }),
+      provider({ provider: driver, instanceId, models: ["claude-opus-5"] }),
+    ];
+    const threadSelection = createModelSelection(instanceId, "claude-opus-5", [
+      { id: "effort", value: "high" },
+    ]);
+    const draftSelection = createModelSelection(instanceId, "openai/gpt-5.5", [
+      { id: "effort", value: "max" },
+    ]);
+    const state = deriveEffectiveComposerModelState({
+      draft: {
+        activeProvider: instanceId,
+        modelSelectionByProvider: { [instanceId]: draftSelection },
+      },
+      providers,
+      selectedProvider: driver,
+      selectedInstanceId: instanceId,
+      threadModelSelection: threadSelection,
+      projectModelSelection: null,
+      settings: settingsWithProviderInstances(),
+    });
+    const dispatch = getComposerProviderState({
+      provider: driver,
+      model: state.selectedModel,
+      models: providers[1]!.models,
+      modelOptions: state.modelOptions?.[instanceId],
+      planModeEnabled: false,
+    });
+
+    expect(
+      createModelSelection(instanceId, state.selectedModel, dispatch.modelOptionsForDispatch),
+    ).toEqual(createModelSelection(instanceId, "openai/gpt-5.5"));
+  });
+
+  it("preserves custom provider instances in settings model selection", () => {
+    const providers = [
+      provider({
+        instanceId: "claudeAgent",
+        models: ["claude-sonnet-4-6"],
+      }),
+      provider({
+        instanceId: "claude_openrouter",
+        models: ["claude-sonnet-4-6"],
+      }),
+    ];
+    const settings: UnifiedSettings = {
+      ...settingsWithProviderInstances(),
+      textGenerationModelSelection: {
+        instanceId: ProviderInstanceId.make("claude_openrouter"),
+        model: "openai/gpt-5.5",
+      },
+    };
+
+    expect(resolveAppModelSelectionState(settings, providers)).toEqual({
+      instanceId: ProviderInstanceId.make("claude_openrouter"),
+      model: "openai/gpt-5.5",
+    });
+  });
+
+  it("self-heals a persisted selection pointing at a text-generation-incapable instance", () => {
+    const providers = [
+      provider({
+        provider: ProviderDriverKind.make("acpRegistry"),
+        instanceId: "acp_gemini",
+        models: ["default"],
+        supportsTextGeneration: false,
+      }),
+      provider({
+        instanceId: "codex",
+        models: ["gpt-5.6-luna"],
+      }),
+    ];
+    const settings: UnifiedSettings = {
+      ...settingsWithProviderInstances(),
+      textGenerationModelSelection: {
+        instanceId: ProviderInstanceId.make("acp_gemini"),
+        model: "default",
+      },
+    };
+
+    expect(resolveAppModelSelectionState(settings, providers).instanceId).toBe(
+      ProviderInstanceId.make("codex"),
+    );
+  });
+  it("does not select a provider that cannot generate system text", () => {
+    const instanceId = ProviderInstanceId.make("antigravity");
+    const unsupported = {
+      ...provider({
+        provider: ProviderDriverKind.make("antigravity"),
+        instanceId,
+        models: ["gemini-3.1-pro"],
+      }),
+      supportsTextGeneration: false,
+    };
+    const supported = provider({ instanceId: "codex", models: ["gpt-5.6-sol"] });
+    const settings = {
+      ...settingsWithProviderInstances(),
+      textGenerationModelSelection: createModelSelection(instanceId, "gemini-3.1-pro"),
+    };
+
+    expect(resolveAppModelSelectionState(settings, [unsupported, supported])).toEqual(
+      createModelSelection(supported.instanceId, "gpt-5.6-sol"),
+    );
+    expect(resolveAppModelSelectionState(settings, [unsupported])).toEqual(
+      NO_PROVIDER_MODEL_SELECTION,
+    );
   });
 });
 

@@ -31,7 +31,7 @@ describe("WeightedShardSequencer", () => {
   it.each([1, 3, 6, files.length + 1])(
     "runs every file in exactly one of %i shards",
     async (count) => {
-      expect(serverFiles).toContain("src/server.test.ts");
+      expect(serverFiles).toContain("src/orchestration-v2/runtimeLayer.test.ts");
       const shards = await shardModuleIds(count);
       expect(shards.flat().toSorted()).toEqual(specs.map((spec) => spec.moduleId).toSorted());
     },
@@ -49,10 +49,12 @@ describe("WeightedShardSequencer", () => {
   it("puts each of the slowest files in a different shard", async () => {
     const slowest = new Set(
       recorded
+        .filter((file) => serverFiles.includes(file))
         .toSorted((a, b) => (recordedSeconds[b] ?? 0) - (recordedSeconds[a] ?? 0))
         .slice(0, 6)
         .map((file) => `${root}/${file}`),
     );
+    expect(slowest.size).toBe(6);
     const shards = await shardModuleIds(6);
 
     for (const shard of shards) {

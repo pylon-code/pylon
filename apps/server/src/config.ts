@@ -80,7 +80,7 @@ export class ServerConfig extends Context.Service<
     readonly otlpTracesExport: SignalExport;
     readonly otlpMetricsExport: SignalExport;
     readonly otlpLogsExport: SignalExport;
-    readonly otlpServiceName: string;
+    readonly otlpServiceName?: string;
     readonly otelEnvironment: OtelEnvironment.OtelEnvironment;
     readonly mode: RuntimeMode;
     readonly port: number;
@@ -112,7 +112,7 @@ export class ServerConfig extends Context.Service<
 export const make = (config: ServerConfig["Service"]) => ServerConfig.of(config);
 
 export const otlpResource = (config: ServerConfig["Service"]) => ({
-  serviceName: config.otlpServiceName,
+  serviceName: config.otlpServiceName ?? "pylon-server",
   attributes: {
     "service.runtime": "pylon-server",
     "service.mode": config.mode,
@@ -131,7 +131,7 @@ export const deriveServerPaths = Effect.fn(function* (
     baseDir,
     devUrl !== undefined && !options.baseDirIsExplicit ? "dev" : "userdata",
   );
-  const dbPath = join(stateDir, "state.sqlite");
+  const dbPath = join(stateDir, "statev2.sqlite");
   const attachmentsDir = join(stateDir, "attachments");
   const logsDir = join(stateDir, "logs");
   const providerLogsDir = join(logsDir, "provider");

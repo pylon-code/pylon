@@ -5,6 +5,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   accumulatePushedUsageWindows,
   applyPushedUsageWindows,
+  resolveUsageLimitsAfterProbe,
   usageLimitsFromCodexRateLimits,
   usageWindowsFromCodexRateLimitSnapshot,
 } from "./providerUsageLimits.ts";
@@ -14,6 +15,80 @@ const decodeServerProviders = Schema.decodeUnknownSync(ServerProviders);
 const providerJsonCodec = Schema.toCodecJson(ServerProviders);
 const encodeProviderJson = Schema.encodeSync(providerJsonCodec);
 const decodeProviderJson = Schema.decodeUnknownSync(providerJsonCodec);
+
+describe("resolveUsageLimitsAfterProbe", () => {
+  const published = {
+    source: "antigravityOAuth",
+    checkedAt: "2026-09-17T18:00:00.000Z",
+    windows: [{ id: "gemini-5h", label: "5-Hour (Gemini)", usedPercent: 45 }],
+  } as const;
+
+  it("retains the published reading when a failed probe has no bars", () => {
+    expect(
+      resolveUsageLimitsAfterProbe({
+        published,
+        probed: {
+          checkedAt: "2026-09-17T19:00:00.000Z",
+          windows: [],
+          unavailable: { reason: "probeFailed" },
+        },
+      }),
+    ).toBe(published);
+  });
+
+  it("preserves an explicit stale-reading marker without replacing newer published bars", () => {
+    const unavailable = {
+      reason: "probeFailed",
+      message: "Last reading; subscription limits could not be refreshed.",
+    } as const;
+    expect(
+      resolveUsageLimitsAfterProbe({
+        published,
+        probed: {
+          checkedAt: "2026-09-17T17:00:00.000Z",
+          windows: [{ ...published.windows[0], usedPercent: 10 }],
+          unavailable,
+        },
+      }),
+    ).toEqual({ ...published, unavailable });
+  });
+
+  it("clears the failed-probe marker when a full reading succeeds", () => {
+    const probed = { ...published, checkedAt: "2026-09-17T19:00:00.000Z" };
+    expect(
+      resolveUsageLimitsAfterProbe({
+        published: { ...published, unavailable: { reason: "probeFailed" } },
+        probed,
+      }),
+    ).toBe(probed);
+  });
+
+  it("keeps newer retained bars through repeated failed probes", () => {
+    const stalePublished = { ...published, unavailable: { reason: "probeFailed" } } as const;
+    const probed = {
+      checkedAt: "2026-09-17T17:00:00.000Z",
+      windows: [{ ...published.windows[0], usedPercent: 10 }],
+      unavailable: { reason: "probeFailed", message: "Still could not refresh." },
+    } as const;
+    const retained = resolveUsageLimitsAfterProbe({ published: stalePublished, probed });
+    expect(retained).toEqual({ ...published, unavailable: probed.unavailable });
+    expect(
+      resolveUsageLimitsAfterProbe({
+        published: retained,
+        probed: { ...probed, windows: [] },
+      }),
+    ).toBe(retained);
+  });
+
+  it("replaces retained bars when the provider reports an unsupported account", () => {
+    const probed = {
+      checkedAt: "2026-09-17T19:00:00.000Z",
+      windows: [],
+      unavailable: { reason: "unsupported" },
+    } as const;
+    expect(resolveUsageLimitsAfterProbe({ published, probed })).toBe(probed);
+  });
+});
 
 describe("usageLimitsFromCodexRateLimits", () => {
   it("selects the main allowance when the legacy snapshot names Spark", () => {

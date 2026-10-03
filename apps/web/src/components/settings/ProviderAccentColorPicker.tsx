@@ -14,7 +14,6 @@ import {
 import { Button } from "../ui/button";
 import { Popover, PopoverClose, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { normalizeProviderAccentColor } from "../../providerInstances";
-import { cn } from "../../lib/utils";
 
 const FALLBACK_ACCENT_COLOR = "#2563eb";
 
@@ -251,23 +250,25 @@ function ProviderCustomColorPicker(props: {
   readonly onCommit: (value: string) => void;
   readonly onClear: () => void;
 }) {
-  const normalized = normalizeProviderAccentColor(props.value) ?? FALLBACK_ACCENT_COLOR;
+  const normalized = normalizeProviderAccentColor(props.value);
 
   return (
     <Popover>
       <PopoverTrigger
         render={
-          <button
+          <Button
             type="button"
-            className={cn(
-              "flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md border border-input text-white shadow-xs transition-transform duration-200 active:scale-95",
-              "hover:scale-105 hover:border-ring/60",
-            )}
-            style={{ backgroundColor: normalized }}
-            aria-label={`Choose accent color for ${props.displayName}`}
+            size="icon-sm"
+            variant="ghost-muted"
+            style={normalized ? { backgroundColor: normalized } : undefined}
+            aria-label={`${normalized ? "Change" : "Add"} accent color for ${props.displayName}`}
           >
-            <PipetteIcon className="size-3 text-white/70 drop-shadow-sm" aria-hidden />
-          </button>
+            {normalized ? (
+              <span className="sr-only">Change accent color</span>
+            ) : (
+              <PipetteIcon aria-hidden />
+            )}
+          </Button>
         }
       />
       <PopoverPopup
@@ -276,7 +277,7 @@ function ProviderCustomColorPicker(props: {
         sideOffset={6}
         className="overflow-hidden rounded-md p-0 [--viewport-inline-padding:0px] [&_[data-slot=popover-viewport]]:p-0"
       >
-        <ProviderCustomColorPanel value={normalized} onCommit={props.onCommit} />
+        <ProviderCustomColorPanel value={normalized ?? ""} onCommit={props.onCommit} />
         <PopoverClose
           render={
             <Button

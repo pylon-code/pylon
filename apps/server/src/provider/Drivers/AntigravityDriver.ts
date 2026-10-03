@@ -1,6 +1,7 @@
 import { withAgentDeviceEnvironment } from "../../mcp/McpProviderSession.ts";
 import { AntigravitySettings, ProviderDriverKind, ProviderSetupError } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import { resolveSelfInvocation } from "@t3tools/shared/nodeRuntime";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -15,14 +16,14 @@ import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawne
 import type { AcpError } from "effect-acp/errors";
 
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
-import { ServerConfig } from "../../config.ts";
-import { ServerSettingsService } from "../../serverSettings.ts";
+import * as ServerConfig from "../../config.ts";
+import * as ServerSettings from "../../serverSettings.ts";
 import {
   isAntigravityTextGenerationAvailable,
   makeAntigravityTextGeneration,
 } from "../../textGeneration/AntigravityTextGeneration.ts";
 import { makeAntigravityAuth, type AntigravityAuth } from "../AntigravityAuth.ts";
-import { AntigravityInstallation } from "../AntigravityInstallation.ts";
+import * as AntigravityInstallation from "../AntigravityInstallation.ts";
 import {
   antigravityAuthConfigIssue,
   antigravityAuthLabel,
@@ -41,13 +42,15 @@ import {
 import type { AcpSessionRuntime, AcpSessionRuntimeStartResult } from "../acp/AcpSessionRuntime.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { removeAntigravitySessionFiles } from "../acp/AntigravitySessionFiles.ts";
+import * as IdAllocator from "../../orchestration-v2/IdAllocator.ts";
+import * as ProviderContinuationRequests from "../../orchestration-v2/ProviderContinuationRequests.ts";
+import { makeAntigravityAdapterV2 } from "../../orchestration-v2/Adapters/AntigravityAdapterV2.ts";
+import { makeAcpNativeLoggerFactory } from "../acp/AcpNativeLogging.ts";
 import { ProviderDriverError } from "../Errors.ts";
-import { makeAntigravityAdapter } from "../Layers/AntigravityAdapter.ts";
 import { makeAntigravityProvider } from "../Layers/AntigravityProvider.ts";
 import { readAntigravityUsageLimits } from "../Layers/antigravityUsageLimits.ts";
-import { readAntigravityLatestContext } from "../../usage/antigravityUsageReader.ts";
 import { HttpClient } from "effect/unstable/http";
-import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
+import * as ProviderEventLoggers from "../Layers/ProviderEventLoggers.ts";
 import * as ModelManifest from "../ModelManifest.ts";
 import {
   defaultProviderContinuationIdentity,
@@ -62,17 +65,18 @@ const DRIVER = ProviderDriverKind.make("antigravity");
 const decodeSettings = Schema.decodeSync(AntigravitySettings);
 
 export type AntigravityDriverEnv =
-  | AntigravityInstallation
+  | AntigravityInstallation.AntigravityInstallation
   | BackgroundPolicy.BackgroundPolicy
   | ChildProcessSpawner.ChildProcessSpawner
   | Crypto.Crypto
   | FileSystem.FileSystem
   | HttpClient.HttpClient
+  | IdAllocator.IdAllocatorV2
   | ModelManifest.ModelManifest
   | Path.Path
-  | ProviderEventLoggers
-  | ServerConfig
-  | ServerSettingsService;
+  | ProviderEventLoggers.ProviderEventLoggers
+  | ServerConfig.ServerConfig
+  | ServerSettings.ServerSettingsService;
 
 /** Each instance owns its Google profile. Executable releases are shared by the environment. */
 export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityDriverEnv> = {
@@ -87,10 +91,14 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
       const httpClient = yield* HttpClient.HttpClient;
       const path = yield* Path.Path;
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const serverConfig = yield* ServerConfig;
-      const installation = yield* AntigravityInstallation;
-      const loggers = yield* ProviderEventLoggers;
+      const serverConfig = yield* ServerConfig.ServerConfig;
+      const selfInvocation = yield* resolveSelfInvocation();
+      const installation = yield* AntigravityInstallation.AntigravityInstallation;
+      const loggers = yield* ProviderEventLoggers.ProviderEventLoggers;
       const modelManifest = yield* ModelManifest.ModelManifest;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
+      const makeNativeLogger = yield* makeAcpNativeLoggerFactory();
       const settings = { ...config, enabled } satisfies AntigravitySettings;
       const auth: AntigravityAuthConfig = {
         authMethod: settings.authMethod,
@@ -385,33 +393,33 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
       const defaultModel = modelManifest.current.pipe(
         Effect.map((manifest) => ModelManifest.manifestDefaultModel(manifest, DRIVER)),
       );
-      const adapter = yield* makeAntigravityAdapter(settings, {
+      const orchestrationAdapter = makeAntigravityAdapterV2({
         instanceId,
+        crypto,
+        fileSystem,
+        path,
+        idAllocator,
+        serverConfig,
+        selfInvocation,
         makeRuntime,
         withProcess: authFlow.withProcess,
         defaultModel,
-        readNativeContext: (sessionId) => {
-          // Native UUIDs are filenames; reject paths and unrelated database names.
-          if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(sessionId))
-            return Effect.undefined;
-          return Effect.tryPromise(() =>
-            readAntigravityLatestContext(
-              path.join(profileDirectory, "antigravity-acp", "conversations", `${sessionId}.db`),
-            ),
-          ).pipe(
-            Effect.map((snapshot) =>
-              snapshot
-                ? { usedTokens: snapshot.estimatedTokensUsed, maxTokens: snapshot.maxContextTokens }
-                : undefined,
-            ),
-            Effect.orElseSucceed(() => undefined),
-          );
-        },
         onSessionStarted: provider.onSessionStarted,
-        onConfigOptionsUpdated: provider.onConfigOptionsUpdated,
-        onAvailableCommands: provider.onAvailableCommands,
-        onAuthRequired: provider.onAuthRequired,
-        ...(loggers.native ? { nativeEventLogger: loggers.native } : {}),
+        onSessionEvent: (event) => {
+          if (event._tag === "ConfigOptionsUpdated") {
+            return provider.onConfigOptionsUpdated(event.configOptions);
+          }
+          return event._tag === "AvailableCommandsUpdated"
+            ? provider.onAvailableCommands(event.availableCommands)
+            : Effect.void;
+        },
+        continuationRequests,
+        nativeLogging: (threadId) =>
+          makeNativeLogger({
+            nativeEventLogger: loggers.native,
+            provider: DRIVER,
+            threadId,
+          }),
       });
       const textGeneration = yield* makeAntigravityTextGeneration({
         profileDirectory,
@@ -496,7 +504,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
                     }),
                 ),
               ),
-        adapter,
+        orchestrationAdapter,
         textGeneration,
         auth: authFlow.controller,
         refreshModels,

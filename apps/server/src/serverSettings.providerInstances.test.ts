@@ -13,7 +13,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import { describe, expect, it } from "@effect/vitest";
 
-import { ServerSettingsService } from "./serverSettings.ts";
+import { mutateProviderInstances, ServerSettingsService } from "./serverSettings.ts";
 
 const codex = ProviderDriverKind.make("codex");
 const aId = ProviderInstanceId.make("codex_a");
@@ -29,6 +29,31 @@ const primeInstance = (home: string, launchArgs = ""): ProviderInstanceConfig =>
 });
 
 describe("provider instance host CAS receipts", () => {
+  it.effect("rejects unsupported mutation runtimes without attempting an unsafe write", () =>
+    Effect.gen(function* () {
+      const settings = yield* ServerSettingsService;
+      const before = yield* settings.getSettings;
+      const { mutateProviderInstances: _mutationExtension, ...baseService } = settings;
+      const legacyService = ServerSettingsService.of({
+        ...baseService,
+        updateSettings: () => Effect.die("A safe mutation must not fall back to updateSettings"),
+        updateProviderInstance: () =>
+          Effect.die("A safe mutation must not fall back to updateProviderInstance"),
+      });
+      const error = yield* mutateProviderInstances(legacyService, {
+        mutationId: mutationId("unsupported-runtime"),
+        expectedProviderInstances: before.providerInstances,
+        patch: { providerInstances: { [aId]: a } },
+      }).pipe(Effect.flip);
+      expect(error).toMatchObject({
+        _tag: "ServerSettingsError",
+        operation: "write-file",
+        detail: "This server settings runtime does not support safe provider instance mutations.",
+      });
+      expect(yield* legacyService.getSettings).toEqual(before);
+    }).pipe(Effect.provide(ServerSettingsService.layerTest())),
+  );
+
   it.effect(
     "is idempotent, rejects mutation-id reuse, and preserves unrelated instances on removal",
     () =>
@@ -39,23 +64,21 @@ describe("provider instance host CAS receipts", () => {
           expectedProviderInstances: {},
           patch: { providerInstances: { [aId]: a, [bId]: b } },
         } as const;
-        const applied = yield* settings.mutateProviderInstances(create);
-        const repeated = yield* settings.mutateProviderInstances(create);
+        const applied = yield* mutateProviderInstances(settings, create);
+        const repeated = yield* mutateProviderInstances(settings, create);
         expect(applied.disposition).toBe("applied");
         expect(repeated.disposition).toBe("already-applied");
 
-        const reused = yield* settings
-          .mutateProviderInstances({
-            ...create,
-            patch: { providerInstances: { [aId]: { ...a, displayName: "Other" } } },
-          })
-          .pipe(Effect.flip);
+        const reused = yield* mutateProviderInstances(settings, {
+          ...create,
+          patch: { providerInstances: { [aId]: { ...a, displayName: "Other" } } },
+        }).pipe(Effect.flip);
         expect(reused).toMatchObject({
           _tag: "ServerProviderInstancesMutationConflictError",
           reason: "mutation-reused",
         });
 
-        const removed = yield* settings.mutateProviderInstances({
+        const removed = yield* mutateProviderInstances(settings, {
           mutationId: mutationId("remove-a"),
           expectedProviderInstances: { [aId]: a, [bId]: b },
           patch: { providerInstances: { [bId]: b } },
@@ -70,12 +93,12 @@ describe("provider instance host CAS receipts", () => {
       const settings = yield* ServerSettingsService;
       const exits = yield* Effect.forEach(
         [
-          settings.mutateProviderInstances({
+          mutateProviderInstances(settings, {
             mutationId: mutationId("client-a"),
             expectedProviderInstances: {},
             patch: { providerInstances: { [aId]: a } },
           }),
-          settings.mutateProviderInstances({
+          mutateProviderInstances(settings, {
             mutationId: mutationId("client-b"),
             expectedProviderInstances: {},
             patch: { providerInstances: { [bId]: b } },
@@ -124,24 +147,20 @@ describe("provider instance host CAS receipts", () => {
           ];
 
           for (const [index, providerInstances] of invalidSets.entries()) {
-            const rejected = yield* settings
-              .mutateProviderInstances({
-                mutationId: mutationId(`invalid-prime-${index}`),
-                expectedProviderInstances: {},
-                patch: { providerInstances },
-              })
-              .pipe(Effect.flip);
+            const rejected = yield* mutateProviderInstances(settings, {
+              mutationId: mutationId(`invalid-prime-${index}`),
+              expectedProviderInstances: {},
+              patch: { providerInstances },
+            }).pipe(Effect.flip);
             expect(rejected).toMatchObject({ _tag: "ServerSettingsError", operation: "normalize" });
             expect((yield* settings.getSettings).providerInstances).toEqual({});
           }
 
-          const gated = yield* settings
-            .mutateProviderInstances({
-              mutationId: mutationId("graduation-gated-prime-native-set"),
-              expectedProviderInstances: {},
-              patch: { providerInstances: distinct },
-            })
-            .pipe(Effect.flip);
+          const gated = yield* mutateProviderInstances(settings, {
+            mutationId: mutationId("graduation-gated-prime-native-set"),
+            expectedProviderInstances: {},
+            patch: { providerInstances: distinct },
+          }).pipe(Effect.flip);
           expect(gated).toMatchObject({ _tag: "ServerSettingsError", operation: "normalize" });
           expect(gated.message).toMatch(/N=1\/2\/4/u);
           expect((yield* settings.getSettings).providerInstances).toEqual({});
@@ -153,7 +172,7 @@ describe("provider instance host CAS receipts", () => {
   it.effect("recognizes an already-applied mutation after a server service restart", () =>
     Effect.gen(function* () {
       const settings = yield* ServerSettingsService;
-      const receipt = yield* settings.mutateProviderInstances({
+      const receipt = yield* mutateProviderInstances(settings, {
         mutationId: mutationId("retry-after-restart"),
         expectedProviderInstances: {},
         patch: { providerInstances: { [aId]: a } },

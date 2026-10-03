@@ -1,9 +1,5 @@
-import {
-  EventId,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  type OrchestrationThreadActivity,
-} from "@t3tools/contracts";
+import { type ProviderPresentationActivity } from "./providerPresentation.ts";
+import { EventId, ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -51,10 +47,10 @@ const goalActivity = (input: {
       timeUsedSeconds: 125,
       continuationsUsed: 2,
     },
-  }) as OrchestrationThreadActivity;
+  }) as ProviderPresentationActivity;
 
 const derive = (
-  activities: ReadonlyArray<OrchestrationThreadActivity>,
+  activities: ReadonlyArray<ProviderPresentationActivity>,
   overrides?: Partial<Parameters<typeof deriveActiveSessionGoal>[0]>,
 ) =>
   deriveActiveSessionGoal({

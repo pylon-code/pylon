@@ -41,21 +41,24 @@ import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as Semaphore from "effect/Semaphore";
 import * as Scope from "effect/Scope";
 
-import { ServerConfig } from "../../config.ts";
+import * as ModelManifest from "../ModelManifest.ts";
+import { applyProviderCompatibility } from "../providerCompatibility.ts";
+import * as ServerConfig from "../../config.ts";
 import {
   accumulatePushedUsageWindows,
   applyPushedUsageWindows,
   type PushedUsageWindow,
 } from "../providerUsageLimits.ts";
 import { isRetainedUsageFresh, USAGE_RETENTION_MAX_AGE } from "../providerUsageRetention.ts";
-import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
-import { ProviderRegistry, type ProviderRegistryShape } from "../Services/ProviderRegistry.ts";
+import * as ProviderInstanceRegistry from "../Services/ProviderInstanceRegistry.ts";
+import * as ProviderRegistry from "../Services/ProviderRegistry.ts";
 import {
   hydrateCachedProvider,
   isCachedProviderCorrelated,
@@ -129,6 +132,15 @@ export function upsertProviderWorkspaceSnapshot(
 }
 
 const shouldRetainMissingProviderModels = (provider: ServerProvider): boolean => {
+  if (provider.driver === ProviderDriverKind.make("acpRegistry")) {
+    // Completed ACP discovery replaces its entire inventory; pending and failed probes are partial.
+    return !(
+      provider.installed &&
+      provider.status === "ready" &&
+      provider.auth.status === "authenticated"
+    );
+  }
+
   const isCodex = provider.driver === ProviderDriverKind.make("codex");
   if (!isCodex && provider.driver !== ProviderDriverKind.make("opencode")) {
     return true;
@@ -262,6 +274,30 @@ export function mergeProviderCapacityRefresh(input: {
   });
 }
 
+export const mergeProviderSnapshots = (
+  previousProviders: ReadonlyArray<ServerProvider>,
+  nextProviders: ReadonlyArray<ServerProvider>,
+): ReadonlyArray<ServerProvider> => {
+  const mergedProviders = new Map(
+    previousProviders.map((provider) => [snapshotInstanceKey(provider), provider] as const),
+  );
+
+  for (const provider of nextProviders) {
+    mergedProviders.set(
+      snapshotInstanceKey(provider),
+      mergeProviderSnapshot(mergedProviders.get(snapshotInstanceKey(provider)), provider),
+    );
+  }
+
+  return orderProviderSnapshots([...mergedProviders.values()]);
+};
+
+export const selectProvidersByKind = (
+  providers: ReadonlyArray<ServerProvider>,
+  providerKinds: ReadonlySet<ProviderDriverKind>,
+): ReadonlyArray<ServerProvider> =>
+  providers.filter((provider) => providerKinds.has(provider.driver));
+
 const haveProvidersChanged = (
   previousProviders: ReadonlyArray<ServerProvider>,
   nextProviders: ReadonlyArray<ServerProvider>,
@@ -319,10 +355,18 @@ const sourceIsCurrent = (source: RuntimeProviderSnapshotSource): Effect.Effect<b
   source.runtimeFence?.isCurrent ?? Effect.succeed(true);
 
 export const ProviderRegistryLive = Layer.effect(
-  ProviderRegistry,
+  ProviderRegistry.ProviderRegistry,
   Effect.gen(function* () {
-    const instanceRegistry = yield* ProviderInstanceRegistry;
-    const config = yield* ServerConfig;
+    const instanceRegistry = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
+    const manifestOption = yield* Effect.serviceOption(ModelManifest.ModelManifest);
+    const manifestService = Option.isSome(manifestOption)
+      ? manifestOption.value
+      : {
+          current: Effect.succeed(ModelManifest.BUNDLED_MODEL_MANIFEST),
+          refresh: Effect.succeed(ModelManifest.BUNDLED_MODEL_MANIFEST),
+        };
+    const serviceScope = yield* Effect.scope;
+    const config = yield* ServerConfig.ServerConfig;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
 
@@ -402,7 +446,19 @@ export const ProviderRegistryLive = Layer.effect(
         ),
       ),
     );
-    const providersRef = yield* Ref.make<ReadonlyArray<ServerProvider>>(cachedProviders);
+    const initialManifest = yield* manifestService.current;
+    const classifyCompatibility = (
+      provider: ServerProvider,
+      manifest: ModelManifest.ModelManifestData,
+    ) =>
+      applyProviderCompatibility(
+        provider,
+        manifest.compatibility,
+        ModelManifest.BUNDLED_MODEL_MANIFEST.compatibility,
+      );
+    const providersRef = yield* Ref.make<ReadonlyArray<ServerProvider>>(
+      cachedProviders.map((provider) => classifyCompatibility(provider, initialManifest)),
+    );
     const workspaceRefreshesRef = yield* Ref.make<
       ReadonlyMap<ProviderInstance, ReadonlySet<string>>
     >(new Map());
@@ -656,6 +712,7 @@ export const ProviderRegistryLive = Layer.effect(
         readonly runtimeFence?: ProviderRuntimeFence | undefined;
       },
     ) {
+      const manifest = yield* manifestService.current;
       const nextProvidersWithUpdateState = yield* Effect.forEach(
         nextProviders,
         applyVolatileProviderState,
@@ -685,7 +742,11 @@ export const ProviderRegistryLive = Layer.effect(
             );
           }
 
-          const providers = orderProviderSnapshots([...mergedProviders.values()]);
+          const providers = orderProviderSnapshots(
+            [...mergedProviders.values()].map((provider) =>
+              classifyCompatibility(provider, manifest),
+            ),
+          );
           const providersToPersist = providers.filter((provider) =>
             updatedKeys.has(snapshotInstanceKey(provider)),
           );
@@ -720,6 +781,7 @@ export const ProviderRegistryLive = Layer.effect(
       return providers;
     });
 
+    const compatibilityRefreshRunning = yield* Ref.make(false);
     const syncProvider = Effect.fn("syncProvider")(function* (
       provider: ServerProvider,
       options?: {
@@ -731,7 +793,19 @@ export const ProviderRegistryLive = Layer.effect(
       if (options?.runtimeFence !== undefined && !(yield* options.runtimeFence.isCurrent)) {
         return yield* Ref.get(providersRef);
       }
-      return yield* upsertProviders([provider], options);
+      const providers = yield* upsertProviders([provider], options);
+      // Reclassify current health after fetching; a stale probe must never be republished.
+      if (
+        Option.isSome(manifestOption) &&
+        !(yield* Ref.getAndSet(compatibilityRefreshRunning, true))
+      ) {
+        yield* manifestService.refresh.pipe(
+          Effect.andThen(upsertProviders([], { persist: false })),
+          Effect.ensuring(Ref.set(compatibilityRefreshRunning, false)),
+          Effect.forkIn(serviceScope),
+        );
+      }
+      return providers;
     });
 
     const setProviderMaintenanceActionState = Effect.fn("setProviderMaintenanceActionState")(
@@ -1587,6 +1661,6 @@ export const ProviderRegistryLive = Layer.effect(
         return Stream.fromPubSub(changesPubSub);
       },
       subscribeChanges: PubSub.subscribe(changesPubSub).pipe(Effect.map(Stream.fromSubscription)),
-    } satisfies ProviderRegistryShape;
+    } satisfies ProviderRegistry.ProviderRegistryShape;
   }),
 );

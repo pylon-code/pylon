@@ -1,9 +1,4 @@
-import type {
-  ApprovalRequestId,
-  EnvironmentId,
-  ScopedThreadRef,
-  ThreadId,
-} from "@t3tools/contracts";
+import type { EnvironmentId, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 import { create } from "zustand";
 import { DraftId, useComposerDraftStore } from "./composerDraftStore";
 import { releaseDraftAttachments } from "./lib/attachmentUploadQueue";
@@ -18,7 +13,7 @@ export function questionAttachmentDraftPrefix(
 export function questionAttachmentDraftId(
   environmentId: EnvironmentId,
   threadId: ThreadId,
-  requestId: ApprovalRequestId,
+  requestId: string,
   questionId: string,
 ): DraftId {
   return DraftId.make(

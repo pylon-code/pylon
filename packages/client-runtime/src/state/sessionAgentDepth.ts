@@ -1,25 +1,24 @@
+import {
+  decodeProviderPresentation,
+  type ProviderPresentationActivity,
+  type SessionAgentDepthPresentation,
+} from "./providerPresentation.ts";
 import * as Option from "effect/Option";
 
-import {
-  decodeOrchestrationSessionActivity,
-  type OrchestrationThreadActivity,
-  type ProviderInstanceId,
-  type ServerProvider,
-  type SessionAgentDepthUpdatedActivityPayload,
-} from "@t3tools/contracts";
+import { type ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
 
-export type SessionAgentDepthSnapshot = SessionAgentDepthUpdatedActivityPayload & {
+export type SessionAgentDepthSnapshot = SessionAgentDepthPresentation & {
   readonly updatedAt: string;
 };
 
 export function deriveLatestSessionAgentDepth(
-  activities: ReadonlyArray<OrchestrationThreadActivity>,
+  activities: ReadonlyArray<ProviderPresentationActivity>,
   providerInstanceId: ProviderInstanceId,
 ): SessionAgentDepthSnapshot | null {
   for (let index = activities.length - 1; index >= 0; index -= 1) {
     const activity = activities[index];
     if (!activity || activity.kind !== "session.agent-depth.updated") continue;
-    const decoded = decodeOrchestrationSessionActivity(activity);
+    const decoded = decodeProviderPresentation(activity);
     if (Option.isNone(decoded) || decoded.value.kind !== "session.agent-depth.updated") continue;
     if (decoded.value.payload.providerInstanceId !== providerInstanceId) continue;
     return { ...decoded.value.payload, updatedAt: activity.createdAt };

@@ -10,7 +10,7 @@ import * as Layer from "effect/Layer";
  * macOS can also bind a separate IPv4 listener on a port held by an IPv6 `::` listener,
  * causing otherwise isolated tests to receive the other server's response.
  */
-const makeLayer = (websocket?: { readonly perMessageDeflate: true }) =>
+const makeLayer = () =>
   HttpServer.layerTestClient.pipe(
     Layer.provide(
       Layer.fresh(FetchHttpClient.layer).pipe(
@@ -21,10 +21,8 @@ const makeLayer = (websocket?: { readonly perMessageDeflate: true }) =>
       NodeHttpServer.layer(NodeHttp.createServer, {
         host: "127.0.0.1",
         port: 0,
-        ...(websocket ? { websocket } : {}),
       }),
     ),
   );
 
 export const loopbackHttpServerTest = makeLayer();
-export const loopbackHttpServerTestWithWsDeflate = makeLayer({ perMessageDeflate: true });

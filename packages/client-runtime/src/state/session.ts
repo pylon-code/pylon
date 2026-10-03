@@ -6,13 +6,13 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 import type { HttpClient } from "effect/unstable/http";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 
-import { RemoteEnvironmentAuthorization } from "../authorization/service.ts";
-import { EnvironmentRegistry } from "../connection/registry.ts";
+import * as RemoteEnvironmentAuthorization from "../authorization/service.ts";
+import * as EnvironmentRegistry from "../connection/registry.ts";
 import type { PreparedConnection } from "../connection/model.ts";
-import { EnvironmentSupervisor } from "../connection/supervisor.ts";
+import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import type { SupervisorConnectionState } from "../connection/model.ts";
 import { environmentEndpointUrl } from "../environment/endpoint.ts";
-import { ManagedRelayDpopSigner } from "../relay/managedRelay.ts";
+import * as ManagedRelay from "../relay/managedRelay.ts";
 import { rpcSessionOwner } from "../rpc/sessionOwner.ts";
 import { safeErrorLogAttributes } from "../errors/safeLog.ts";
 import { executeAuthenticatedEnvironmentHttpRequest } from "./environmentHttpAuth.ts";
@@ -87,8 +87,10 @@ export const fetchEnvironmentSessionState = Effect.fn(
   "clientRuntime.state.fetchEnvironmentSessionState",
 )(function* (input: {
   readonly prepared: PreparedConnection;
-  readonly signer: Option.Option<ManagedRelayDpopSigner["Service"]>;
-  readonly remoteAuthorization?: Option.Option<RemoteEnvironmentAuthorization["Service"]>;
+  readonly signer: Option.Option<ManagedRelay.ManagedRelayDpopSigner["Service"]>;
+  readonly remoteAuthorization?: Option.Option<
+    RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization["Service"]
+  >;
   readonly timeoutMs?: number;
 }) {
   return yield* executeAuthenticatedEnvironmentHttpRequest({
@@ -107,7 +109,7 @@ export const fetchEnvironmentSessionState = Effect.fn(
 export const currentSessionStateReceipt = Effect.fn(
   "clientRuntime.state.currentSessionStateReceipt",
 )(function* <E, R>(
-  supervisor: EnvironmentSupervisor["Service"],
+  supervisor: EnvironmentSupervisor.EnvironmentSupervisor["Service"],
   prepared: PreparedConnection,
   load: Effect.Effect<AuthSessionState, E, R>,
 ) {
@@ -137,14 +139,14 @@ export const currentSessionStateReceipt = Effect.fn(
 });
 
 export function createEnvironmentSessionAtoms<R, E>(
-  runtime: Atom.AtomRuntime<EnvironmentRegistry | HttpClient.HttpClient | R, E>,
+  runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | HttpClient.HttpClient | R, E>,
 ) {
   const initialConfigAtom = Atom.family((environmentId: EnvironmentId) =>
     runtime.atom(
       followStreamInEnvironment(
         environmentId,
         Stream.unwrap(
-          EnvironmentSupervisor.pipe(
+          EnvironmentSupervisor.EnvironmentSupervisor.pipe(
             Effect.map((supervisor) =>
               SubscriptionRef.changes(supervisor.session).pipe(
                 Stream.mapEffect(
@@ -172,7 +174,7 @@ export function createEnvironmentSessionAtoms<R, E>(
         followStreamInEnvironment(
           environmentId,
           Stream.unwrap(
-            EnvironmentSupervisor.pipe(
+            EnvironmentSupervisor.EnvironmentSupervisor.pipe(
               Effect.map((supervisor) =>
                 connectedInitialConfigChanges(
                   supervisor.state,
@@ -205,7 +207,7 @@ export function createEnvironmentSessionAtoms<R, E>(
       followStreamInEnvironment(
         environmentId,
         Stream.unwrap(
-          EnvironmentSupervisor.pipe(
+          EnvironmentSupervisor.EnvironmentSupervisor.pipe(
             Effect.map((supervisor) => SubscriptionRef.changes(supervisor.prepared)),
           ),
         ),
@@ -227,7 +229,7 @@ export function createEnvironmentSessionAtoms<R, E>(
       followStreamInEnvironment(
         environmentId,
         Stream.unwrap(
-          EnvironmentSupervisor.pipe(
+          EnvironmentSupervisor.EnvironmentSupervisor.pipe(
             Effect.map((supervisor) =>
               SubscriptionRef.changes(supervisor.session).pipe(
                 Stream.map(Option.map(rpcSessionOwner)),
@@ -253,16 +255,16 @@ export function createEnvironmentSessionAtoms<R, E>(
         if (prepared === null) {
           return Effect.never;
         }
-        return EnvironmentRegistry.pipe(
+        return EnvironmentRegistry.EnvironmentRegistry.pipe(
           Effect.flatMap((registry) =>
             registry.run(
               environmentId,
-              EnvironmentSupervisor.pipe(
+              EnvironmentSupervisor.EnvironmentSupervisor.pipe(
                 Effect.flatMap((supervisor) =>
                   Effect.gen(function* () {
-                    const signer = yield* Effect.serviceOption(ManagedRelayDpopSigner);
+                    const signer = yield* Effect.serviceOption(ManagedRelay.ManagedRelayDpopSigner);
                     const remoteAuthorization = yield* Effect.serviceOption(
-                      RemoteEnvironmentAuthorization,
+                      RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization,
                     );
                     const receipt = yield* currentSessionStateReceipt(
                       supervisor,

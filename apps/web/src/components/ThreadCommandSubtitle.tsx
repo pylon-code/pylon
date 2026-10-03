@@ -6,6 +6,11 @@ import { cn } from "~/lib/utils";
 
 import { MiddleTruncate } from "./ui/middle-truncate";
 
+export type ThreadCommandSubtitleVariant =
+  | "favicon-workspace-harness"
+  | "favicon-workspace"
+  | "favicon-branch-harness";
+
 export const COMMAND_PALETTE_META_ICON_CLASS = "size-3 shrink-0 text-muted-foreground/70";
 
 export function CommandPaletteMetaDot() {
@@ -27,6 +32,9 @@ export function ThreadCommandSubtitle(props: {
   isCurrent: boolean;
   driverKind?: ProviderDriverKind | null;
   providerDisplayName?: string | null;
+  acpRegistryAgentId?: string | undefined;
+  acpRegistryIconUrl?: string | undefined;
+  variant?: ThreadCommandSubtitleVariant;
   className?: string;
 }) {
   const isWorktree = props.worktreePath != null && props.worktreePath.trim().length > 0;
@@ -77,6 +85,8 @@ export function ThreadCommandSubtitle(props: {
           <ProviderInstanceIcon
             driverKind={props.driverKind}
             displayName={props.providerDisplayName ?? props.driverKind}
+            acpRegistryAgentId={props.acpRegistryAgentId}
+            acpRegistryIconUrl={props.acpRegistryIconUrl}
             iconClassName="size-3 shrink-0 opacity-70"
           />
         </>

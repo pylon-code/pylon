@@ -248,6 +248,24 @@ it.layer(TestLayer)("PrimeAgentTextGeneration", (it) => {
     ),
   );
 
+  it.effect("passes resolved link context and preserves deferred title refinement", () =>
+    withFakePrime(
+      { output: '{"title":"  Resolve Issue Subject  ","needsRefinement":true}' },
+      ({ textGeneration, captureDir }) =>
+        Effect.gen(function* () {
+          const result = yield* textGeneration.generateThreadTitle({
+            cwd: process.cwd(),
+            message: "Fix the linked issue",
+            linkedContext: "Issue #42: composer loses queued messages",
+            modelSelection: defaultSelection,
+          });
+          expect(result).toEqual({ title: "Resolve Issue Subject", needsRefinement: true });
+          const capture = yield* latestCapture(captureDir);
+          expect(capture.prompt).toContain("Issue #42: composer loses queued messages");
+        }),
+    ),
+  );
+
   it.effect("binds cwd, public package, home, environment, model, thinking, and service tier", () =>
     withFakePrime({}, ({ textGeneration, captureDir, root }) =>
       Effect.gen(function* () {

@@ -14,6 +14,7 @@ import {
   shouldHandleUsageLimitsCommand,
   USAGE_LIMITS_COMMAND,
   collectProviderUsageLimits,
+  collectExternalUsageLinks,
   sameUsageLimitCommandCoverage,
   withUsageLimitsCommands,
   collectLimitAccounts,
@@ -32,6 +33,7 @@ import {
   normalizeUsageWindow,
   createResetCreditAttempts,
   resetCreditOutcomeText,
+  usesChatGptSharing,
 } from "./usageLimits.ts";
 
 const now = Date.parse("2026-09-03T12:00:00.000Z");
@@ -1591,5 +1593,84 @@ describe("isUsageLimitsCommand", () => {
     expect(isUsageLimitsCommand("/usage-limits explain")).toBe(false);
     expect(isUsageLimitsCommand("Explain /usage-limits")).toBe(false);
     expect(isUsageLimitsCommand("/usage")).toBe(false);
+  });
+});
+
+describe("external usage settings", () => {
+  it("deduplicates destinations across accounts and environments without inventing quota pools", () => {
+    const managed = provider({
+      usageLimits: {
+        checkedAt: "2026-09-03T11:00:00.000Z",
+        windows: [],
+        unavailable: { reason: "unsupported", message: "Track usage in ChatGPT." },
+        externalUsage: { label: "ChatGPT usage", url: "https://chatgpt.com/#settings/Usage" },
+      },
+    });
+    const presentations = new Map([
+      [
+        EnvironmentId.make("a"),
+        {
+          entry: { target: { label: "A" } },
+          serverConfig: {
+            providers: [managed, { ...managed, instanceId: ProviderInstanceId.make("personal") }],
+          },
+        },
+      ],
+      [
+        EnvironmentId.make("b"),
+        { entry: { target: { label: "B" } }, serverConfig: { providers: [managed] } },
+      ],
+    ]);
+    expect(collectExternalUsageLinks(presentations)).toEqual([
+      {
+        ...managed.usageLimits!.externalUsage,
+        message: "Track usage in ChatGPT.",
+        accounts: [`${managed.instanceId} on A`, "personal on A", `${managed.instanceId} on B`],
+      },
+    ]);
+    expect(collectLimitAccounts(presentations)).toEqual([]);
+    expect(collectLimitNotices(presentations)).toEqual([]);
+  });
+  it("omits disabled, uninstalled and signed-out providers", () => {
+    const managed = provider({
+      usageLimits: {
+        checkedAt: "2026-09-03T11:00:00.000Z",
+        windows: [],
+        externalUsage: { label: "ChatGPT usage", url: "https://chatgpt.com/#settings/Usage" },
+      },
+    });
+    const presentations = new Map([
+      [
+        EnvironmentId.make("a"),
+        {
+          entry: { target: { label: "A" } },
+          serverConfig: {
+            providers: [
+              { ...managed, enabled: false },
+              { ...managed, installed: false },
+              { ...managed, auth: { status: "unauthenticated" as const } },
+              provider({}),
+            ],
+          },
+        },
+      ],
+    ]);
+    expect(collectExternalUsageLinks(presentations)).toEqual([]);
+  });
+});
+
+describe("ChatGPT sharing presentation", () => {
+  it("requires verified sharing metadata rather than the Codex driver or login type", () => {
+    const codex = provider({ auth: { status: "authenticated", type: "chatgpt" } });
+    expect(usesChatGptSharing(codex)).toBe(false);
+    expect(
+      usesChatGptSharing({ ...codex, auth: { ...codex.auth, subscriptionSharing: true } }),
+    ).toBe(true);
+    expect(
+      usesChatGptSharing({
+        ...codex,
+        auth: { status: "unauthenticated", subscriptionSharing: true },
+      }),
+    ).toBe(false);
   });
 });

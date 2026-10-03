@@ -22,7 +22,7 @@ import {
   RuntimeMode,
   ThreadId,
   type ModelSelection as ModelSelectionType,
-  type OrchestrationSessionStatus,
+  type OrchestrationV2RunStatus,
   type ProjectId as ProjectIdType,
   type ProviderInteractionMode as ProviderInteractionModeType,
   type RuntimeMode as RuntimeModeType,
@@ -31,6 +31,7 @@ import {
 import * as Schema from "effect/Schema";
 
 import { DraftComposerAttachmentSchema } from "../lib/composer-image-schema";
+import type { ComposerDispatchMode } from "@t3tools/client-runtime/state/composer-dispatch";
 import type { DraftComposerAttachment } from "../lib/composerImages";
 import { scopedThreadKey } from "../lib/scopedEntities";
 
@@ -77,6 +78,7 @@ export const QueuedThreadMessageSchema = Schema.Struct({
   context: Schema.optional(OrchestrationMessageContext),
   attachments: Schema.Array(DraftComposerAttachmentSchema),
   modelSelection: Schema.optional(ModelSelection),
+  dispatchMode: Schema.optional(Schema.Literals(["auto", "queue", "steer", "restart"])),
   runtimeMode: Schema.optional(RuntimeMode),
   interactionMode: Schema.optional(ProviderInteractionMode),
   sourceEpoch: Schema.optional(NonNegativeInt),
@@ -133,6 +135,13 @@ export interface QueuedThreadMessage {
   readonly interactionMode?: ProviderInteractionModeType;
   readonly sourceEpoch?: number;
   readonly deliveryHold?: ThreadOutboxDeliveryHold;
+  /**
+   * How this message should be delivered if a turn is still running when the
+   * outbox drains. Captured at enqueue time because the drain can fire long
+   * after the tap. Absent on rows written before follow-up behavior existed,
+   * which keep the previous always-queue delivery.
+   */
+  readonly dispatchMode?: ComposerDispatchMode;
   readonly creation?: QueuedThreadCreation;
   readonly destination?: QueuedThreadCreation;
   readonly createdAt: string;
@@ -143,6 +152,10 @@ export interface ThreadSettingsSnapshot {
   readonly runtimeMode: RuntimeModeType;
   readonly interactionMode: ProviderInteractionModeType;
   readonly sourceEpoch?: number;
+  readonly runtime?: {
+    readonly providerInstanceId: ModelSelectionType["instanceId"];
+    readonly status: OrchestrationV2RunStatus | "idle";
+  } | null;
   readonly session?: {
     readonly providerInstanceId?: ModelSelectionType["instanceId"] | undefined;
   } | null;
@@ -171,7 +184,8 @@ export function resolveQueuedThreadAdmission(input: {
   readonly providers: ReadonlyArray<ServerProvider> | null | undefined;
 }): ThreadOutboxAdmission {
   const providers = input.providers ?? [];
-  const boundInstanceId = input.thread.session?.providerInstanceId;
+  const boundInstanceId =
+    input.thread.runtime?.providerInstanceId ?? input.thread.session?.providerInstanceId;
   const queuedInstanceId = input.message.modelSelection?.instanceId;
   const queuedTransition =
     boundInstanceId !== undefined &&
@@ -427,7 +441,7 @@ export function resolveThreadOutboxDeliveryAction(input: {
   readonly threadExists: boolean;
   readonly shellStatus: EnvironmentShellStatus;
   readonly environmentConnected: boolean;
-  readonly threadStatus: OrchestrationSessionStatus | null;
+  readonly threadStatus: OrchestrationV2RunStatus | "idle" | null;
   readonly hasDeliveryHold?: boolean;
 }): ThreadOutboxDeliveryAction {
   if (input.hasDeliveryHold === true) return "wait";
@@ -471,7 +485,7 @@ export function resolveConfirmedThreadOutboxPlan(input: {
     | (ThreadSettingsSnapshot & {
         readonly session?:
           | (NonNullable<ThreadSettingsSnapshot["session"]> & {
-              readonly status: OrchestrationSessionStatus;
+              readonly status: OrchestrationV2RunStatus | "idle";
             })
           | null;
       })
@@ -518,7 +532,7 @@ export function resolveConfirmedThreadOutboxPlan(input: {
     threadExists: input.thread != null,
     shellStatus: input.shellStatus,
     environmentConnected: input.environmentConnected,
-    threadStatus: input.thread?.session?.status ?? null,
+    threadStatus: input.thread?.runtime?.status ?? input.thread?.session?.status ?? null,
   });
   if (deliveryAction === "wait") return { action: "wait" };
   if (deliveryAction === "remove") return { action: "remove" };

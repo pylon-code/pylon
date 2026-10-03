@@ -61,6 +61,7 @@ const clientSettings: ClientSettings = {
   panelAnimationDurationMs: 0,
   proactivePanelsEnabled: true,
   showSkillsInSlashMenu: false,
+  persistComposerContextStrip: true,
   providerModelPreferences: {},
   showProviderUsageInContextPopover: true,
   compactSidebarEnabled: false,

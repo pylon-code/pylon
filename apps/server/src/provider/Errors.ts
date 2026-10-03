@@ -154,8 +154,8 @@ export class ProviderUnsupportedError extends Schema.TaggedError<ProviderUnsuppo
 /**
  * ProviderInstanceNotFoundError - Lookup against the instance registry failed.
  *
- * Distinct from `ProviderUnsupportedError`: the driver is registered, but no
- * instance with the requested id has been bootstrapped — typically because
+ * The driver may be registered, but no instance with the requested id has
+ * been bootstrapped — typically because
  * the persisted instance id refers to an instance the user removed from
  * settings, or because routing is asked for an instance before the registry
  * has finished its first reload.
@@ -192,21 +192,6 @@ export class ProviderDriverError extends Schema.TaggedError<ProviderDriverError>
 }
 
 /**
- * ProviderSessionNotFoundError - Provider-facing session not found.
- */
-export class ProviderSessionNotFoundError extends Schema.TaggedError<ProviderSessionNotFoundError>()(
-  "ProviderSessionNotFoundError",
-  {
-    threadId: Schema.String,
-    cause: Schema.optional(Schema.Defect()),
-  },
-) {
-  override get message(): string {
-    return `Unknown provider thread: ${this.threadId}`;
-  }
-}
-
-/**
  * ProviderSessionDirectoryPersistenceError - Session directory persistence failure.
  */
 export class ProviderSessionDirectoryPersistenceError extends Schema.TaggedError<ProviderSessionDirectoryPersistenceError>()(
@@ -235,7 +220,6 @@ export type ProviderServiceError =
   | ProviderUnsupportedError
   | ProviderWorkspaceMissingError
   | ProviderInstanceNotFoundError
-  | ProviderSessionNotFoundError
   | ProviderSessionDirectoryPersistenceError
   | ProviderAdapterError
   | CheckpointServiceError;

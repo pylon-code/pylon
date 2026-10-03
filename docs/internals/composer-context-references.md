@@ -17,11 +17,14 @@ to the persisted attachment without changing the context ID or prose. Records co
 and do not grant asset access. Reads, clipboard downloads, and previews still require the source
 environment's authenticated asset path.
 
-`projection_thread_messages.context_json` preserves the record set. Event history is not rewritten.
-Commands, queued compaction messages, optimistic rows, and replay must carry context together with
-text and attachments; losing just the records leaves otherwise valid references unresolved.
-Pylon's source revisions, provider incarnation fences, and durable compaction ownership remain
-authoritative over when the message can be delivered.
+[`composerContext.ts`][contract] defines version 1 of the record union. Every record has
+`version`, `contextId`, `kind`, and `label`, plus kind-specific fields with bounded lengths. The
+union is open: a kind this build does not know decodes to `UnknownContextRecord` with its
+`payload` preserved, and known kinds are excluded from that member so a malformed image record
+fails its own schema rather than sliding through unchecked. `OrchestrationMessageContext` wraps
+the records with `ForwardCompatibleArray`, so one undecodable record is dropped instead of failing
+the whole message. The field is optional on the V2 conversation message and the commands that
+start or queue a turn; the orchestrator carries it through untouched.
 
 Unknown record kinds retain their payload for forward compatibility. A malformed known kind cannot
 fall through the unknown-kind schema. A bad record can be dropped without making the whole message

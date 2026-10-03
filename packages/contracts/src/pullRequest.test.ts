@@ -1,7 +1,7 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 import { VcsStatusInput } from "./git.ts";
-import { ThreadPullRequestLink } from "./orchestration.ts";
+import { ThreadPullRequestLink } from "./threadPullRequest.ts";
 
 import {
   PullRequestActionInput,

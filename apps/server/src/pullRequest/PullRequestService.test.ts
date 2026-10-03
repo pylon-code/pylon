@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 import * as KeyValueStore from "effect/unstable/persistence/KeyValueStore";
 import { assert, it } from "@effect/vitest";
+import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -18,19 +19,20 @@ import type {
   SourceControlProviderKind,
 } from "@t3tools/contracts";
 
-import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import * as ProjectService from "../project/ProjectService.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as PullRequestFilesViewed from "../persistence/PullRequestFilesViewed.ts";
+import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as SourceControlRateLimit from "../sourceControl/SourceControlRateLimit.ts";
-import { ForgejoCli } from "../sourceControl/ForgejoCli.ts";
+import * as ForgejoCli from "../sourceControl/ForgejoCli.ts";
 import * as ForgejoPullRequestProvider from "./ForgejoPullRequestProvider.ts";
 import {
   PullRequestProviderError,
   type ProviderChangeRequest,
   type PullRequestProviderApi,
 } from "./PullRequestProvider.ts";
-import { PullRequestProviderRegistry, fromProviders } from "./PullRequestProviderRegistry.ts";
+import * as PullRequestProviderRegistry from "./PullRequestProviderRegistry.ts";
 import * as PullRequestService from "./PullRequestService.ts";
 import * as PullRequestReadCache from "./PullRequestReadCache.ts";
 import {
@@ -198,24 +200,32 @@ function makeService(input: {
   readonly projects: ReadonlyArray<OrchestrationProjectShell>;
   readonly providers: ReadonlyArray<PullRequestProviderApi>;
   readonly resolveHandle?: SourceControlProviderRegistry.SourceControlProviderRegistry["Service"]["resolveHandle"];
+  readonly resolveRepositoryIdentity?: RepositoryIdentityResolver.RepositoryIdentityResolver["Service"]["resolve"];
 }) {
   // Built into the test's own scope rather than provided call by call: the marks store owns a
   // database, and `Effect.provide` would close it the moment the service was handed back.
   return Effect.flatMap(
     Layer.build(
       Layer.mergeAll(
-        Layer.succeed(PullRequestProviderRegistry, fromProviders(input.providers)),
+        Layer.succeed(
+          PullRequestProviderRegistry.PullRequestProviderRegistry,
+          PullRequestProviderRegistry.fromProviders(input.providers),
+        ),
         Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
+          resolveLink: () => undefined,
           resolveHandle:
             input.resolveHandle ?? (() => Effect.die("Unexpected provider refinement")),
         }),
-        Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
-          getProjectShells: (projectIds) =>
+        Layer.mock(ProjectService.ProjectService)({
+          listShells: (options) =>
             Effect.succeed(
-              input.projects.filter((project) => projectIds?.includes(project.id) ?? true),
+              input.projects.filter((project) => options?.projectIds?.includes(project.id) ?? true),
             ),
-          getProjectShellById: (projectId) =>
+          getShell: (projectId) =>
             Effect.succeed(Option.fromNullishOr(input.projects.find((p) => p.id === projectId))),
+        }),
+        Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
+          resolve: input.resolveRepositoryIdentity ?? (() => Effect.succeed(null)),
         }),
         SourceControlRateLimit.layer,
         // The real store over a database of its own, so the environment-kept marks are exercised
@@ -1586,6 +1596,90 @@ it.effect("stops new reads after a rate limit while leaving manual actions avail
   }),
 );
 
+for (const [provider, host] of [
+  ["github", "github.com"],
+  ["gitlab", "gitlab.com"],
+  ["forgejo", "code.example.test"],
+  ["bitbucket", "bitbucket.org"],
+  ["azure-devops", "dev.azure.com"],
+] as const) {
+  it.effect.each(["checks"] as const)(
+    `shares fresh ${provider} %s reads and respects rate-limit resets`,
+    (read) =>
+      Effect.gen(function* () {
+        let calls = 0;
+        let limited = false;
+        const repository = provider === "azure-devops" ? "web" : "acme/web";
+        const service = yield* makeService({
+          projects: [
+            project({ id: "p1", title: "web", workspaceRoot: "/repo", repository, provider, host }),
+          ],
+          providers: [
+            fakeProvider(provider, {
+              getChangeRequestChecks: () =>
+                Effect.gen(function* () {
+                  calls += 1;
+                  if (limited) {
+                    return yield* new PullRequestProviderError({
+                      provider,
+                      operation: "getChangeRequest",
+                      reason: "rate-limited",
+                      detail: "Retry after the reset.",
+                      retryAt: (yield* Clock.currentTimeMillis) + 120_000,
+                    });
+                  }
+                  return hostedChangeRequest("current details");
+                }),
+            }),
+          ],
+        });
+        const reference = {
+          projectId: "p1" as ProjectId,
+          repository,
+          number: 1,
+          allowStale: false,
+        };
+        const request: Effect.Effect<unknown, PullRequestService.PullRequestError> =
+          service[read](reference);
+        yield* Effect.all([request, request], { concurrency: 2 });
+        assert.strictEqual(calls, 1);
+        yield* TestClock.adjust("45 seconds");
+        limited = true;
+        assert.strictEqual((yield* Effect.exit(request))._tag, "Failure");
+        assert.strictEqual(calls, 2);
+        yield* TestClock.adjust("45 seconds");
+        assert.strictEqual((yield* Effect.exit(request))._tag, "Failure");
+        assert.strictEqual(calls, 2);
+        yield* TestClock.adjust("75 seconds");
+        limited = false;
+        const recovered = yield* service[read](reference);
+        assert.strictEqual(recovered?.state, "open");
+        assert.strictEqual(calls, 3);
+        yield* service.invalidate({ reference });
+        yield* service[read](reference);
+        assert.strictEqual(calls, 4);
+      }),
+  );
+}
+
+it.effect("does not fall back to full detail when checks are unsupported", () =>
+  Effect.gen(function* () {
+    const service = yield* makeService({
+      projects: [
+        project({ id: "p1", title: "web", workspaceRoot: "/repo", repository: "acme/web" }),
+      ],
+      providers: [
+        fakeProvider("github", {
+          getChangeRequest: () => Effect.die("Unexpected full detail read"),
+        }),
+      ],
+    });
+    assert.isNull(
+      yield* service.checks({ projectId: "p1" as ProjectId, repository: "acme/web", number: 1 }),
+    );
+  }),
+);
+
 it.effect("uses a manual rate limit to pause later reads", () =>
   Effect.gen(function* () {
     let listCalls = 0;
@@ -1944,6 +2038,33 @@ it.effect("rejects a different Forgejo HTTP port for an HTTP checkout", () =>
       )
       .pipe(Effect.flip);
     assert.strictEqual(failure._tag, "PullRequestUnavailableError");
+  }),
+);
+
+it.effect("resolves a project's repository identity when its shell has none cached", () =>
+  Effect.gen(function* () {
+    const resolved = project({
+      id: "web",
+      title: "web",
+      workspaceRoot: "/web",
+      repository: "acme/web",
+    });
+    const service = yield* makeService({
+      projects: [{ ...resolved, repositoryIdentity: null }],
+      providers: [
+        fakeProvider("github", {
+          getChangeRequestSummary: () => Effect.succeed(changeRequest(7, "2026-07-02T00:00:00Z")),
+        }),
+      ],
+      resolveRepositoryIdentity: () => Effect.succeed(resolved.repositoryIdentity ?? null),
+    });
+
+    const summary = yield* service.summary(
+      { projectId: "web" as ProjectId, host: "github.com", repository: "acme/web", number: 7 },
+      { recoverTransientFailure: false },
+    );
+
+    assert.strictEqual(summary.number, 7);
   }),
 );
 
@@ -5632,7 +5753,7 @@ it.effect("tracks Forgejo viewed files through its diff and refuses truncated ba
     let diffReads = 0;
     const provider = yield* ForgejoPullRequestProvider.make.pipe(
       Effect.provide(
-        Layer.mock(ForgejoCli)({
+        Layer.mock(ForgejoCli.ForgejoCli)({
           api: (input) => {
             assert.strictEqual(input.host, "forge.example:3000");
             const viewer = input.path === "user";

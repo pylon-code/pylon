@@ -7,11 +7,11 @@ environment. Google controls which models and account access are available throu
 
 ## Set up Antigravity
 
-On web or desktop, open **Settings → Providers**, choose the environment that runs your project, and
-enable Antigravity; it is off by default. Choose **Install Antigravity** to download Google's runtime
-to that environment, then choose **Sign in with Google** and complete the browser sign-in with the
-account you use for Antigravity. Wait for Pylon to confirm account access and load models before
-starting a thread. Provider setup is not available in the mobile app.
+On web or desktop, open **Settings > Providers**, choose the environment that runs
+your project, and enable Antigravity. Install its runtime there, then choose
+**Sign in** and complete the browser sign-in. Wait for T3 Code to confirm
+account access and load models before starting a thread. Once the runtime is installed,
+you can also sign in from **Settings > Provider accounts** in the mobile app.
 
 Installation continues if you leave settings or reconnect. Setup requires permission to operate the
 environment; update an older server if it does not offer Antigravity setup.
@@ -28,10 +28,11 @@ Google returns to a `127.0.0.1` address. It can finish directly when your browse
 environment's machine. From another device, the final page will usually fail to load because the
 sign-in listener is on the environment.
 
-Copy the full return address, including everything after `?`, into the return URL field in the web or
-desktop client where you started setup, then choose **Continue**. Keep the original address; do not
-replace it with the server's hostname. Only that Pylon sign-in session can finish the attempt, and the
-setup screen shows when it expires. If it expires, retry sign-in and use the new link.
+Copy the full return address, including everything after `?`, into the return URL
+field in the client where you started sign-in, then choose
+**Continue**. Keep the original address; do not replace it with the server's
+hostname. Only that T3 Code sign-in session can finish the attempt. If it expires,
+retry sign-in and use the new link.
 
 The return URL contains a temporary sign-in code. Paste it only into the setup field. A successful
 callback page alone does not confirm account access; wait for Pylon's confirmation.
@@ -131,6 +132,13 @@ for the agent to inspect with tools. ZIP archives and videos also use file paths
 These files do not count toward the native attachment budget or enable native video input.
 Unsupported image formats are rejected. The native limits can be lower than
 the general upload limit.
+Skills for every project go in `~/.gemini/config/skills` or
+`~/.gemini/antigravity-cli/skills`. Antigravity does not read `~/.agents/skills`,
+so a skill there only appears when the project itself is your home directory.
+
+Antigravity receives images directly. Every other attachment, including PDFs,
+text, audio, archives, and videos, is passed as a saved file path for the agent
+to inspect with its tools. A video path does not enable native video input.
 
 ### Subagents
 
@@ -159,7 +167,7 @@ desktop. Each has its own sign-in; downloaded runtimes are shared on the environ
 | Action                    | Effect                                                            |
 | ------------------------- | ----------------------------------------------------------------- |
 | Disable                   | Stops the instance's sessions and keeps its Google sign-in.       |
-| Sign out of Google        | Stops the instance's sessions and removes its saved Google login. |
+| Sign out                  | Stops the instance's sessions and removes its saved Google login. |
 | Remove downloaded runtime | Removes the shared installation and keeps Google credentials.     |
 
 All three keep thread history and workspace files. Sending `/logout` by itself in a thread signs out
@@ -180,6 +188,9 @@ login page. If asked to sign in again, use setup on web or desktop. The packaged
 to start, especially on Windows; health checks, model refresh, and sign-out each allow up to 90
 seconds.
 
+To check access and reload models, use **Refresh provider status** in web or desktop
+provider settings, or **Refresh models** in mobile thread settings. If asked to
+sign in again, use provider settings on web or desktop, or **Provider accounts** on mobile.
 When Pylon cannot send to Antigravity, the composer says why: it is not installed, it is signed out,
 no model is chosen, its models have not loaded, or the thread's saved model is no longer offered.
 

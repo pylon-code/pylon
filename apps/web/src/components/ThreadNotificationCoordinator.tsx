@@ -11,7 +11,7 @@ import {
 import { useCallback, useEffect, useRef } from "react";
 
 import { getClientSettings, useClientSettings } from "../hooks/useSettings";
-import { useEnvironments } from "../state/environments";
+import { useEnvironmentIds } from "../state/environments";
 import { environmentShell } from "../state/shell";
 import {
   projectAwarenessStates,
@@ -33,7 +33,7 @@ import { toastManager } from "./ui/toast";
 // Native delivery and event preferences build on ALGORITHM-0's Pylon PR #424;
 // browser/sound/toast/badge behavior comes from upstream #11481/#11570/#11569.
 export function ThreadNotificationCoordinator() {
-  const { environments } = useEnvironments();
+  const environmentIds = useEnvironmentIds();
   const mode = useClientSettings(notificationModeForClient);
   const pending = useRef(new Map<string, { environmentId: EnvironmentId; close: () => void }>());
   const onNotification = useCallback(
@@ -54,14 +54,14 @@ export function ThreadNotificationCoordinator() {
   );
 
   useEffect(() => {
-    const activeIds = new Set(environments.map(({ environmentId }) => environmentId));
+    const activeIds = new Set(environmentIds);
     for (const [tag, item] of pending.current) {
       if (activeIds.has(item.environmentId)) continue;
       item.close();
       pending.current.delete(tag);
     }
     setNotificationBadge(pending.current.size);
-  }, [environments]);
+  }, [environmentIds]);
 
   useEffect(() => {
     const clear = () => {
@@ -90,7 +90,7 @@ export function ThreadNotificationCoordinator() {
   }, [mode]);
 
   // Stay mounted while disabled to consume transitions without replay.
-  return environments.map(({ environmentId }) => (
+  return environmentIds.map((environmentId) => (
     <EnvironmentNotifications
       key={environmentId}
       environmentId={environmentId}
@@ -154,7 +154,10 @@ function EnvironmentNotifications({
         state.phase === "completed"
           ? "Thread completed"
           : state.phase === "failed"
-            ? "Thread failed"
+            ? snapshot.threads.find((thread) => thread.id === state.threadId)?.lastErrorClass ===
+              "usage_limit"
+              ? "Usage limit reached"
+              : "Thread failed"
             : state.phase === "waiting_for_approval"
               ? "Approval needed"
               : "Input needed";

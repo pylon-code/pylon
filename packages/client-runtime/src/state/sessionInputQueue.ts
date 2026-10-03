@@ -1,25 +1,24 @@
+import {
+  decodeProviderPresentation,
+  type ProviderPresentationActivity,
+  type SessionInputQueuePresentation,
+} from "./providerPresentation.ts";
 import * as Option from "effect/Option";
 
-import {
-  decodeOrchestrationSessionActivity,
-  type OrchestrationThreadActivity,
-  type ProviderInstanceId,
-  type ServerProvider,
-  type SessionInputQueueUpdatedActivityPayload,
-} from "@t3tools/contracts";
+import { type ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
 
-export type SessionInputQueueSnapshot = SessionInputQueueUpdatedActivityPayload & {
+export type SessionInputQueueSnapshot = SessionInputQueuePresentation & {
   readonly updatedAt: string;
 };
 
 export function deriveLatestSessionInputQueue(
-  activities: ReadonlyArray<OrchestrationThreadActivity>,
+  activities: ReadonlyArray<ProviderPresentationActivity>,
   providerInstanceId: ProviderInstanceId,
 ): SessionInputQueueSnapshot | null {
   for (let index = activities.length - 1; index >= 0; index -= 1) {
     const activity = activities[index];
     if (!activity || activity.kind !== "session.input-queue.updated") continue;
-    const decoded = decodeOrchestrationSessionActivity(activity);
+    const decoded = decodeProviderPresentation(activity);
     if (Option.isNone(decoded) || decoded.value.kind !== "session.input-queue.updated") continue;
     if (decoded.value.payload.providerInstanceId !== providerInstanceId) continue;
     return { ...decoded.value.payload, updatedAt: activity.createdAt };

@@ -36,6 +36,7 @@ import {
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   resolveEnvironmentMachineKind,
 } from "@t3tools/contracts";
+import { deriveThreadTitleSeed } from "@t3tools/client-runtime/operations";
 
 import { ComposerEditor, type ComposerEditorHandle } from "../../components/ComposerEditor";
 import type { ComposerTextPaste } from "../../native/T3ComposerEditor.types";
@@ -111,7 +112,7 @@ import {
   type ComposerDraft,
   waitForComposerDraftsLoaded,
 } from "../../state/use-composer-drafts";
-import { useEnvironmentServerConfig, useProjects } from "../../state/entities";
+import { useEnvironmentServerConfig, useProjects, useThreadShells } from "../../state/entities";
 import { useProjectClone } from "../../state/projectClones";
 import { projectEnvironment } from "../../state/projects";
 import { sourceControlEnvironment } from "../../state/sourceControl";
@@ -126,7 +127,6 @@ import {
   getProviderModelAdmissionAvailability,
   shouldRefreshProviderModelCatalog,
 } from "../../lib/providerModelSelection";
-import { deriveThreadTitleFromPrompt } from "../../lib/projectThreadStartTurn";
 import { armAgentAwarenessLiveActivityForLocalWork } from "../agent-awareness/remoteRegistration";
 import { enqueueThreadOutboxMessage } from "../../state/thread-outbox";
 import { removeThreadOutboxMessage } from "../../state/thread-outbox-removal";
@@ -524,6 +524,7 @@ export function NewTaskDraftScreen(props: {
     ownerKey: flow.draftKey,
     environmentId: selectedProject?.environmentId ?? null,
     projectCwd: composerWorkspaceCwd,
+    threadShells: useThreadShells(),
     pullRequestProjectId: selectedEnvironmentServerConfig?.environment.capabilities.pullRequests
       ? (selectedProject?.id ?? null)
       : null,
@@ -1400,7 +1401,10 @@ export function NewTaskDraftScreen(props: {
       // finds no work and ends the card within seconds.
       armAgentAwarenessLiveActivityForLocalWork({
         environmentId: selectedProject.environmentId,
-        threadTitle: deriveThreadTitleFromPrompt(initialMessageText),
+        threadTitle: deriveThreadTitleSeed({
+          text: initialMessageText,
+          attachments: draft.attachments,
+        }),
         projectTitle: selectedProject.title,
       });
     }
@@ -1823,6 +1827,7 @@ export function NewTaskDraftScreen(props: {
                               flow.selectedModelOption?.providerDriver ??
                               flow.selectedProviderStatus?.driver
                             }
+                            iconUrl={flow.selectedModelOption?.providerIconUrl}
                             size={size}
                           />
                         )}

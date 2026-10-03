@@ -25,7 +25,7 @@ import {
   createPullRequestEnvironmentAtoms,
   createPullRequestStackAtomFamily,
 } from "./pullRequests.ts";
-import { PullRequestDiffLoader } from "./pullRequestDiffHttp.ts";
+import * as PullRequestDiffLoader from "./pullRequestDiffHttp.ts";
 import { executeAtomQuery } from "./runtime.ts";
 
 class MutationRefused extends Data.TaggedError("MutationRefused") {}
@@ -78,8 +78,8 @@ const makeTestRuntime = Effect.fn("makeTestRuntime")(function* (client: WsRpcPro
     Layer.merge(
       Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, environmentRegistry),
       Layer.succeed(
-        PullRequestDiffLoader,
-        PullRequestDiffLoader.of({ load: () => Effect.die("unused") }),
+        PullRequestDiffLoader.PullRequestDiffLoader,
+        PullRequestDiffLoader.PullRequestDiffLoader.of({ load: () => Effect.die("unused") }),
       ),
     ),
   );

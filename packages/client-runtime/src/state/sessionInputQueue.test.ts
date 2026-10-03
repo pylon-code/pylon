@@ -1,6 +1,7 @@
+import type { ProviderPresentationActivity } from "./providerPresentation.ts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { ProviderInstanceId, type OrchestrationThreadActivity } from "@t3tools/contracts";
+import { ProviderInstanceId } from "@t3tools/contracts";
 
 import {
   deriveLatestSessionInputQueue,
@@ -19,7 +20,7 @@ const activity = (input: {
   readonly followUpCount: number;
   readonly steeringMode?: "all-at-once" | "one-at-a-time";
   readonly followUpMode?: "all-at-once" | "one-at-a-time";
-}): OrchestrationThreadActivity =>
+}): ProviderPresentationActivity =>
   ({
     id: input.id,
     kind: "session.input-queue.updated",
@@ -35,7 +36,7 @@ const activity = (input: {
       ...(input.followUpMode === undefined ? {} : { followUpMode: input.followUpMode }),
     },
     createdAt: `2026-08-09T00:00:0${input.id}.000Z`,
-  }) as OrchestrationThreadActivity;
+  }) as ProviderPresentationActivity;
 
 describe("session input queue state", () => {
   it("derives only the active provider instance snapshot", () => {

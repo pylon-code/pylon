@@ -1,21 +1,21 @@
 import { ProjectId, type PullRequestSummary, type VcsStatusResult } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
-import type { AnimationEvent } from "react";
 import * as Effect from "effect/Effect";
 import { AtomRegistry } from "effect/unstable/reactivity";
+import type { AnimationEvent } from "react";
 
 import {
   ChangeRequestStatusIcon,
   nextThreadChangeRequestSnapshot,
   prStatusIndicator,
-  resolveThreadPullRequestBadgePresentation,
-  synchronizeTerminalPulse,
   resolveDisplayedThreadPr,
   resolveDisplayedThreadPrProvider,
   resolveThreadPr,
   threadChangeRequestSnapshotsEqual,
   threadChangeRequestSnapshotsAtom,
   type ThreadChangeRequestSnapshot,
+  resolveThreadPullRequestBadgePresentation,
+  synchronizeTerminalPulse,
 } from "./ThreadStatusIndicators";
 import { newestPullRequestSummary } from "../state/pullRequests";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";

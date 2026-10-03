@@ -1,7 +1,7 @@
 import * as Schema from "effect/Schema";
 
 import { ForwardCompatibleArray, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
-import { RuntimeMode } from "./orchestration.ts";
+import { RuntimeMode } from "./providerPolicy.ts";
 
 /**
  * Stable access vocabulary shared by provider feature groups.

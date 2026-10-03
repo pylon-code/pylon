@@ -1,5 +1,6 @@
 import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import type { ClientSettings } from "@t3tools/contracts/settings";
+import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import {
   CircleAlertIcon,
@@ -28,6 +29,9 @@ const state = vi.hoisted(() => ({
   interrupted: false,
   sessionOnly: false,
   notifyCompletion: true,
+  limited: false,
+  subagent: false,
+  background: [] as Array<{ taskId: string; kind: "command" | "monitor" }>,
   add: vi.fn(
     (_toast: {
       title: string;
@@ -44,41 +48,68 @@ const state = vi.hoisted(() => ({
   }),
 }));
 
+const SHELL_NOW = DateTime.makeUnsafe("2026-09-13T09:00:00.000Z");
+
+function mockThreadShell() {
+  return {
+    id: "thread-1",
+    projectId: "project-1",
+    title: "Fix the login form",
+    providerInstanceId: "codex",
+    modelSelection: { instanceId: "codex", model: "gpt-5.4" },
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: null,
+    activeProviderThreadId: null,
+    lineage: {
+      rootThreadId: "thread-1",
+      parentThreadId: state.subagent ? "parent" : null,
+      relationshipToParent: state.subagent ? "subagent" : null,
+    },
+    forkedFrom: null,
+    createdBy: "user",
+    creationSource: "web",
+    latestRunId: state.sessionOnly ? null : state.turnId,
+    activeRunId: null,
+    status: state.completedAt
+      ? "completed"
+      : state.sessionOnly
+        ? "idle"
+        : state.interrupted
+          ? "interrupted"
+          : state.sessionError || state.turnError || state.limited
+            ? "failed"
+            : "running",
+    lastErrorClass: state.limited ? "usage_limit" : null,
+    pendingRuntimeRequest: state.input
+      ? { id: "request-1", kind: "user_input", createdAt: SHELL_NOW }
+      : state.approval
+        ? { id: "request-1", kind: "command", createdAt: SHELL_NOW }
+        : null,
+    latestVisibleMessage: null,
+    latestUserMessageAt: null,
+    hasActionableProposedPlan: false,
+    pendingBackgroundTasks: state.background,
+    itemCount: 0,
+    visibleItemCount: 0,
+    createdAt: SHELL_NOW,
+    updatedAt: SHELL_NOW,
+    latestRunRequestedAt: SHELL_NOW,
+    latestRunStartedAt: SHELL_NOW,
+    latestRunCompletedAt: state.completedAt ? DateTime.makeUnsafe(state.completedAt) : undefined,
+    archivedAt: state.archivedAt ? DateTime.makeUnsafe(state.archivedAt) : null,
+    settledOverride: null,
+    settledAt: null,
+    lastVisitedAt: null,
+    deletedAt: null,
+  };
+}
+
 vi.mock("@effect/atom-react", () => ({
   useAtomValue: () => ({
     status: state.live ? "live" : "disconnected",
-    snapshot: Option.some({
-      projects: [],
-      threads: [
-        {
-          id: "thread-1",
-          title: "Fix the login form",
-          projectId: "project",
-          modelSelection: { model: "test" },
-          archivedAt: state.archivedAt,
-          hasPendingUserInput: state.input,
-          hasPendingApprovals: state.approval,
-          session: state.sessionError
-            ? { status: "error" }
-            : state.sessionOnly
-              ? { status: "ready" }
-              : null,
-          latestTurn: state.sessionOnly
-            ? null
-            : {
-                turnId: state.turnId,
-                state: state.turnError
-                  ? "error"
-                  : state.interrupted
-                    ? "interrupted"
-                    : state.completedAt
-                      ? "completed"
-                      : "running",
-                completedAt: state.completedAt,
-              },
-        },
-      ],
-    }),
+    snapshot: Option.some({ projects: [], threads: [mockThreadShell()] }),
   }),
 }));
 vi.mock("@tanstack/react-router", () => ({
@@ -96,7 +127,7 @@ vi.mock("../hooks/useSettings", () => ({
   getClientSettings: () => ({ ...DEFAULT_CLIENT_SETTINGS, notificationMode: state.mode }),
 }));
 vi.mock("../state/environments", () => ({
-  useEnvironments: () => ({ environments: [{ environmentId: "env-1" }] }),
+  useEnvironmentIds: () => ["env-1"],
 }));
 vi.mock("../state/shell", () => ({
   environmentShell: { stateValueAtom: vi.fn() },
@@ -145,6 +176,9 @@ beforeEach(() => {
     interrupted: false,
     sessionOnly: false,
     notifyCompletion: true,
+    limited: false,
+    subagent: false,
+    background: [],
   });
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("window", new EventTarget());
@@ -166,6 +200,19 @@ afterEach(async () => {
 });
 
 describe("thread notifications", () => {
+  it.each([true, false])("keeps subagents silent with focus=%s", async (focused) => {
+    state.subagent = true;
+    state.focused = focused;
+    state.mode = "notifications-and-sound";
+    await render();
+    await complete();
+    state.input = true;
+    await render();
+    expect(state.sound).not.toHaveBeenCalled();
+    expect(state.add).not.toHaveBeenCalled();
+    expect(state.notification).not.toHaveBeenCalled();
+  });
+
   it("alerts once with system alerts off and opens the completed thread", async () => {
     await render();
     await complete();
@@ -232,6 +279,19 @@ describe("thread notifications", () => {
       });
     },
   );
+
+  it("alerts when only a dev server is left running, not while a monitor can wake the agent", async () => {
+    await render();
+    state.background = [{ taskId: "watch", kind: "monitor" }];
+    await complete();
+    expect(state.add).not.toHaveBeenCalled();
+    state.background = [{ taskId: "dev", kind: "command" }];
+    await render();
+    expect(state.add).toHaveBeenCalledTimes(1);
+    expect(state.add).toHaveBeenLastCalledWith(
+      expect.objectContaining({ title: "Thread completed" }),
+    );
+  });
 
   it("keeps background desktop alerts when in-app notifications are disabled", async () => {
     state.focused = false;

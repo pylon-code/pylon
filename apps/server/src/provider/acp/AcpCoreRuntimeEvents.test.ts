@@ -119,6 +119,8 @@ describe("AcpCoreRuntimeEvents", () => {
         threadId: "thread-1" as never,
         turnId,
         payload: {
+          nativePlanId: "plan-1",
+          kind: "items",
           plan: [{ step: "Inspect state", status: "inProgress" }],
         },
         source: "acp.cursor.extension",
@@ -187,6 +189,7 @@ describe("AcpCoreRuntimeEvents", () => {
           sessionId: "session-1",
           update: {
             sessionUpdate: "agent_thought_chunk",
+            messageId: "thought-1",
             content: { type: "text", text: "reasoning" },
           },
         },

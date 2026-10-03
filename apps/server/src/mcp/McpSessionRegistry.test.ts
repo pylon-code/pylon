@@ -49,6 +49,7 @@ it.effect("stores only a token hash, resolves the bearer token, and revokes by t
 
     const resolved = yield* registry.resolve(token);
     expect(resolved?.threadId).toBe(threadId);
+    expect(resolved?.capabilities).toEqual(new Set(["preview", "orchestration", "worktree"]));
 
     yield* registry.revokeThread(threadId);
     expect(yield* registry.resolve(token)).toBeUndefined();
@@ -78,6 +79,8 @@ it.effect(
             issued.config.authorizationHeader.replace(/^Bearer\s+/, ""),
           );
           expect(scope?.capabilities.has("pull-requests")).toBe(true);
+          expect(scope?.capabilities.has("orchestration")).toBe(true);
+          expect(scope?.capabilities.has("worktree")).toBe(true);
           expect(scope?.capabilities.has("preview")).toBe(browser);
           expect(scope?.capabilities.has("device")).toBe(device);
           expect(issued.config.capabilities).toEqual(scope?.capabilities);
@@ -176,12 +179,20 @@ it.effect("keeps the current exact credential when retired issue and cleanup arr
     };
     const first = yield* registry.issue(request);
     const firstToken = first.config.authorizationHeader.replace(/^Bearer\s+/, "");
-    const replacement = yield* registry.issueIfCurrent(request, Effect.succeed(true));
+    const replacement = yield* McpSessionRegistry.issueMcpCredentialIfCurrent(
+      registry,
+      request,
+      Effect.succeed(true),
+    );
     expect(replacement).toBeDefined();
     const replacementToken = replacement!.config.authorizationHeader.replace(/^Bearer\s+/, "");
     expect(yield* registry.resolve(firstToken)).toBeUndefined();
 
-    const retiredIssue = yield* registry.issueIfCurrent(request, Effect.succeed(false));
+    const retiredIssue = yield* McpSessionRegistry.issueMcpCredentialIfCurrent(
+      registry,
+      request,
+      Effect.succeed(false),
+    );
     expect(retiredIssue).toBeUndefined();
     yield* registry.revokeProviderSession(first.config.providerSessionId);
     expect((yield* registry.resolve(replacementToken))?.threadId).toBe(threadId);
@@ -217,7 +228,12 @@ for (const action of ["thread", "all", "replace", "expire"] as const) {
       expect(yield* registry.resolve(oldToken)).toBeDefined();
       if (action === "thread") yield* registry.revokeThread(request.threadId);
       else if (action === "all") yield* registry.revokeAll;
-      else if (action === "replace") yield* registry.issueIfCurrent(request, Effect.succeed(true));
+      else if (action === "replace")
+        yield* McpSessionRegistry.issueMcpCredentialIfCurrent(
+          registry,
+          request,
+          Effect.succeed(true),
+        );
       else {
         timestamp += 101;
         yield* registry.resolve(oldToken);

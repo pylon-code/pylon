@@ -1,7 +1,8 @@
-import type { OrchestrationThreadActivity, TurnId } from "@t3tools/contracts";
+import type { ProviderPresentationActivity } from "./providerPresentation.ts";
+import type { TurnId } from "@t3tools/contracts";
 
 export function deriveReportedTurnCosts(
-  activities: ReadonlyArray<OrchestrationThreadActivity>,
+  activities: ReadonlyArray<ProviderPresentationActivity>,
 ): ReadonlyMap<TurnId, number> {
   const costs = new Map<TurnId, number>();
   for (const activity of activities) {

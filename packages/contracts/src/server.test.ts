@@ -73,6 +73,7 @@ describe("ServerProvider", () => {
 
     expect(parsed.slashCommands).toEqual([]);
     expect(parsed.skills).toEqual([]);
+    expect(parsed.supportedRuntimeModes).toBeUndefined();
     expect(parsed.versionAdvisory).toBeUndefined();
     expect(parsed.distribution).toBeUndefined();
     expect(parsed.updateState).toBeUndefined();
@@ -82,6 +83,19 @@ describe("ServerProvider", () => {
     expect(supportsServerProviderBackgroundTextGeneration(parsed)).toBe(true);
     expect(supportsServerProviderConversationRollback(parsed)).toBe(false);
     expect(parsed.supportsMultipleInstances).toBeUndefined();
+  });
+
+  it("filters unknown runtime modes without expanding the reported supported modes", () => {
+    const parsed = decodeServerProvider({
+      ...baseProviderSnapshot,
+      supportedRuntimeModes: ["approval-required", "future-mode", "full-access"],
+    });
+
+    expect(parsed.supportedRuntimeModes).toEqual(["approval-required", "full-access"]);
+    expect(getServerProviderSupportedRuntimeModes(parsed)).toEqual([
+      "approval-required",
+      "full-access",
+    ]);
   });
 
   it("decodes truthful multiple-instance support and its actionable reason", () => {

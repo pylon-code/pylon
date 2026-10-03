@@ -34,3 +34,9 @@ Modules exposed through `file:` dependencies (such as `t3-markdown-text`) under
 its virtual store, and Metro bundles that copy. After editing a module's TypeScript, run `vp i`
 to refresh it before checking a dev client. Gradle and CocoaPods compile the worktree source
 directly, so native and JavaScript changes can otherwise appear to disagree.
+The [expo-notifications patch](../../patches/expo-notifications@57.0.15.patch) protects
+`NotificationCenterManager`'s delegates and pending responses with a lock. React runtimes can
+register and remove delegates concurrently during reloads or scene startup. Delivery snapshots
+delegates under the lock and invokes them after releasing it. Pending-response replay removes
+only the responses in its snapshot, preserving responses received during callbacks. Changes to
+this native patch require reinstalling dependencies and rebuilding the iOS app.

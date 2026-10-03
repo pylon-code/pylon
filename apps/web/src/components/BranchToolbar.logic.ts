@@ -118,6 +118,13 @@ export function resolveLockedWorkspaceLabel(
   return effectiveEnvMode === "worktree" ? resolveEnvModeLabel("worktree") : "Local checkout";
 }
 
+export function resolveWorkspaceDisplayName(path: string | null): string | null {
+  if (!path) return null;
+  const normalizedPath = path.replace(/[\\/]+$/, "");
+  if (normalizedPath.length === 0) return path;
+  return normalizedPath.split(/[\\/]/).at(-1) ?? normalizedPath;
+}
+
 export interface PreviousWorktreeSeed {
   branch: string | null;
   worktreePath: string;
@@ -327,3 +334,22 @@ export function shouldIncludeBranchPickerItem(input: {
     lowerItemValue.includes(sanitizedQuery)
   );
 }
+
+export function shouldShowComposerContextStrip(input: {
+  isDraftHeroState: boolean;
+  persistInActiveThreads: boolean;
+  hasActiveProject: boolean;
+  isGitRepo: boolean;
+  showEnvironmentIndicator: boolean;
+  /** A collapsed composer's controls currently fit in their measured strip host. */
+  hostsRestingComposerControls: boolean;
+}): boolean {
+  return (
+    input.hasActiveProject &&
+    (input.isDraftHeroState || input.persistInActiveThreads) &&
+    (input.isGitRepo || input.showEnvironmentIndicator || input.hostsRestingComposerControls)
+  );
+}
+
+// Labels collapse to icons when the strip's content no longer fits. A small
+// hysteresis on the way back out keeps the boundary from flapping.

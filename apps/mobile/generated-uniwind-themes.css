@@ -94,6 +94,8 @@
       --color-adaptive-amber-200-900-a60: oklch(92.4% 0.12 95.746);
       --color-adaptive-amber-500-a12-a16: oklch(76.9% 0.188 70.08 / 12%);
       --color-adaptive-amber-600-400: oklch(66.6% 0.179 58.318);
+      --color-adaptive-amber-500-a10-400-a10: oklch(76.9% 0.188 70.08 / 10%);
+      --color-adaptive-amber-500-a25-400-a25: oklch(76.9% 0.188 70.08 / 25%);
       --color-adaptive-amber-700-300: oklch(55.5% 0.163 48.998);
       --color-adaptive-amber-700-400: oklch(55.5% 0.163 48.998);
       --color-adaptive-amber-800-200: oklch(47.3% 0.137 46.201);
@@ -105,6 +107,7 @@
       --color-adaptive-blue-600-400: oklch(54.6% 0.245 262.881);
       --color-adaptive-black-a10-a25: rgb(0 0 0 / 10%);
       --color-adaptive-black-a15-a35: rgb(0 0 0 / 15%);
+      --color-adaptive-black-a2p5-white-a2p5: rgb(0 0 0 / 2.5%);
       --color-adaptive-emerald-500-a12-a16: oklch(69.6% 0.17 162.48 / 12%);
       --color-adaptive-emerald-600-400: oklch(59.6% 0.145 163.225);
       --color-adaptive-emerald-700-300: oklch(50.8% 0.118 165.612);
@@ -131,6 +134,8 @@
       --color-adaptive-neutral-800-200: oklch(26.9% 0 none);
       --color-adaptive-neutral-700-200: oklch(37.1% 0 none);
       --color-adaptive-neutral-950-50: oklch(14.5% 0 none);
+      --color-adaptive-neutral-950-a5-white-a5: oklch(14.5% 0 none / 5%);
+      --color-adaptive-neutral-950-a10-white-a10: oklch(14.5% 0 none / 10%);
       --color-adaptive-red-50-950-a80: oklch(97.1% 0.013 17.38);
       --color-adaptive-red-200-800: oklch(88.5% 0.062 18.334);
       --color-adaptive-red-600-a80-400-a80: oklch(57.7% 0.245 27.325 / 80%);
@@ -145,6 +150,8 @@
       --color-adaptive-rose-800-200: oklch(45.5% 0.188 13.697);
       --color-adaptive-sky-100-500-a18: oklch(95.1% 0.026 236.824);
       --color-adaptive-sky-500-a12-a16: oklch(68.5% 0.169 237.323 / 12%);
+      --color-adaptive-sky-500-a10-400-a10: oklch(68.5% 0.169 237.323 / 10%);
+      --color-adaptive-sky-500-a25-400-a25: oklch(68.5% 0.169 237.323 / 25%);
       --color-adaptive-sky-600-400: oklch(58.8% 0.158 241.966);
       --color-adaptive-sky-700-300: oklch(50% 0.134 242.749);
       --color-adaptive-sky-800-200: oklch(44.3% 0.11 240.79);
@@ -250,6 +257,8 @@
       --color-adaptive-amber-200-900-a60: oklch(41.4% 0.112 45.904 / 60%);
       --color-adaptive-amber-500-a12-a16: oklch(76.9% 0.188 70.08 / 16%);
       --color-adaptive-amber-600-400: oklch(82.8% 0.189 84.429);
+      --color-adaptive-amber-500-a10-400-a10: oklch(82.8% 0.189 84.429 / 10%);
+      --color-adaptive-amber-500-a25-400-a25: oklch(82.8% 0.189 84.429 / 25%);
       --color-adaptive-amber-700-300: oklch(87.9% 0.169 91.605);
       --color-adaptive-amber-700-400: oklch(82.8% 0.189 84.429);
       --color-adaptive-amber-800-200: oklch(92.4% 0.12 95.746);
@@ -261,6 +270,7 @@
       --color-adaptive-blue-600-400: oklch(70.7% 0.165 254.624);
       --color-adaptive-black-a10-a25: rgb(0 0 0 / 25%);
       --color-adaptive-black-a15-a35: rgb(0 0 0 / 35%);
+      --color-adaptive-black-a2p5-white-a2p5: rgb(255 255 255 / 2.5%);
       --color-adaptive-emerald-500-a12-a16: oklch(69.6% 0.17 162.48 / 16%);
       --color-adaptive-emerald-600-400: oklch(76.5% 0.177 163.223);
       --color-adaptive-emerald-700-300: oklch(84.5% 0.143 164.978);
@@ -287,6 +297,8 @@
       --color-adaptive-neutral-800-200: oklch(92.2% 0 none);
       --color-adaptive-neutral-700-200: oklch(92.2% 0 none);
       --color-adaptive-neutral-950-50: oklch(98.5% 0 none);
+      --color-adaptive-neutral-950-a5-white-a5: rgb(255 255 255 / 5%);
+      --color-adaptive-neutral-950-a10-white-a10: rgb(255 255 255 / 10%);
       --color-adaptive-red-50-950-a80: oklch(25.8% 0.092 26.042 / 80%);
       --color-adaptive-red-200-800: oklch(44.4% 0.177 26.899);
       --color-adaptive-red-600-a80-400-a80: oklch(70.4% 0.191 22.216 / 80%);
@@ -301,6 +313,8 @@
       --color-adaptive-rose-800-200: oklch(89.2% 0.058 10.001);
       --color-adaptive-sky-100-500-a18: oklch(68.5% 0.169 237.323 / 18%);
       --color-adaptive-sky-500-a12-a16: oklch(68.5% 0.169 237.323 / 16%);
+      --color-adaptive-sky-500-a10-400-a10: oklch(74.6% 0.16 232.661 / 10%);
+      --color-adaptive-sky-500-a25-400-a25: oklch(74.6% 0.16 232.661 / 25%);
       --color-adaptive-sky-600-400: oklch(74.6% 0.16 232.661);
       --color-adaptive-sky-700-300: oklch(82.8% 0.111 230.318);
       --color-adaptive-sky-800-200: oklch(90.1% 0.058 230.902);
@@ -406,6 +420,8 @@
       --color-adaptive-amber-200-900-a60: oklch(92.4% 0.12 95.746);
       --color-adaptive-amber-500-a12-a16: oklch(76.9% 0.188 70.08 / 12%);
       --color-adaptive-amber-600-400: oklch(66.6% 0.179 58.318);
+      --color-adaptive-amber-500-a10-400-a10: oklch(76.9% 0.188 70.08 / 10%);
+      --color-adaptive-amber-500-a25-400-a25: oklch(76.9% 0.188 70.08 / 25%);
       --color-adaptive-amber-700-300: oklch(55.5% 0.163 48.998);
       --color-adaptive-amber-700-400: oklch(55.5% 0.163 48.998);
       --color-adaptive-amber-800-200: oklch(47.3% 0.137 46.201);
@@ -417,6 +433,7 @@
       --color-adaptive-blue-600-400: oklch(54.6% 0.245 262.881);
       --color-adaptive-black-a10-a25: rgb(0 0 0 / 10%);
       --color-adaptive-black-a15-a35: rgb(0 0 0 / 15%);
+      --color-adaptive-black-a2p5-white-a2p5: rgb(0 0 0 / 2.5%);
       --color-adaptive-emerald-500-a12-a16: oklch(69.6% 0.17 162.48 / 12%);
       --color-adaptive-emerald-600-400: oklch(59.6% 0.145 163.225);
       --color-adaptive-emerald-700-300: oklch(50.8% 0.118 165.612);
@@ -443,6 +460,8 @@
       --color-adaptive-neutral-800-200: oklch(26.9% 0 none);
       --color-adaptive-neutral-700-200: oklch(37.1% 0 none);
       --color-adaptive-neutral-950-50: oklch(14.5% 0 none);
+      --color-adaptive-neutral-950-a5-white-a5: oklch(14.5% 0 none / 5%);
+      --color-adaptive-neutral-950-a10-white-a10: oklch(14.5% 0 none / 10%);
       --color-adaptive-red-50-950-a80: oklch(97.1% 0.013 17.38);
       --color-adaptive-red-200-800: oklch(88.5% 0.062 18.334);
       --color-adaptive-red-600-a80-400-a80: oklch(57.7% 0.245 27.325 / 80%);
@@ -457,6 +476,8 @@
       --color-adaptive-rose-800-200: oklch(45.5% 0.188 13.697);
       --color-adaptive-sky-100-500-a18: oklch(95.1% 0.026 236.824);
       --color-adaptive-sky-500-a12-a16: oklch(68.5% 0.169 237.323 / 12%);
+      --color-adaptive-sky-500-a10-400-a10: oklch(68.5% 0.169 237.323 / 10%);
+      --color-adaptive-sky-500-a25-400-a25: oklch(68.5% 0.169 237.323 / 25%);
       --color-adaptive-sky-600-400: oklch(58.8% 0.158 241.966);
       --color-adaptive-sky-700-300: oklch(50% 0.134 242.749);
       --color-adaptive-sky-800-200: oklch(44.3% 0.11 240.79);
@@ -562,6 +583,8 @@
       --color-adaptive-amber-200-900-a60: oklch(41.4% 0.112 45.904 / 60%);
       --color-adaptive-amber-500-a12-a16: oklch(76.9% 0.188 70.08 / 16%);
       --color-adaptive-amber-600-400: oklch(82.8% 0.189 84.429);
+      --color-adaptive-amber-500-a10-400-a10: oklch(82.8% 0.189 84.429 / 10%);
+      --color-adaptive-amber-500-a25-400-a25: oklch(82.8% 0.189 84.429 / 25%);
       --color-adaptive-amber-700-300: oklch(87.9% 0.169 91.605);
       --color-adaptive-amber-700-400: oklch(82.8% 0.189 84.429);
       --color-adaptive-amber-800-200: oklch(92.4% 0.12 95.746);
@@ -573,6 +596,7 @@
       --color-adaptive-blue-600-400: oklch(70.7% 0.165 254.624);
       --color-adaptive-black-a10-a25: rgb(0 0 0 / 25%);
       --color-adaptive-black-a15-a35: rgb(0 0 0 / 35%);
+      --color-adaptive-black-a2p5-white-a2p5: rgb(255 255 255 / 2.5%);
       --color-adaptive-emerald-500-a12-a16: oklch(69.6% 0.17 162.48 / 16%);
       --color-adaptive-emerald-600-400: oklch(76.5% 0.177 163.223);
       --color-adaptive-emerald-700-300: oklch(84.5% 0.143 164.978);
@@ -599,6 +623,8 @@
       --color-adaptive-neutral-800-200: oklch(92.2% 0 none);
       --color-adaptive-neutral-700-200: oklch(92.2% 0 none);
       --color-adaptive-neutral-950-50: oklch(98.5% 0 none);
+      --color-adaptive-neutral-950-a5-white-a5: rgb(255 255 255 / 5%);
+      --color-adaptive-neutral-950-a10-white-a10: rgb(255 255 255 / 10%);
       --color-adaptive-red-50-950-a80: oklch(25.8% 0.092 26.042 / 80%);
       --color-adaptive-red-200-800: oklch(44.4% 0.177 26.899);
       --color-adaptive-red-600-a80-400-a80: oklch(70.4% 0.191 22.216 / 80%);
@@ -613,6 +639,8 @@
       --color-adaptive-rose-800-200: oklch(89.2% 0.058 10.001);
       --color-adaptive-sky-100-500-a18: oklch(68.5% 0.169 237.323 / 18%);
       --color-adaptive-sky-500-a12-a16: oklch(68.5% 0.169 237.323 / 16%);
+      --color-adaptive-sky-500-a10-400-a10: oklch(74.6% 0.16 232.661 / 10%);
+      --color-adaptive-sky-500-a25-400-a25: oklch(74.6% 0.16 232.661 / 25%);
       --color-adaptive-sky-600-400: oklch(74.6% 0.16 232.661);
       --color-adaptive-sky-700-300: oklch(82.8% 0.111 230.318);
       --color-adaptive-sky-800-200: oklch(90.1% 0.058 230.902);
@@ -718,6 +746,8 @@
       --color-adaptive-amber-200-900-a60: oklch(92.4% 0.12 95.746);
       --color-adaptive-amber-500-a12-a16: oklch(76.9% 0.188 70.08 / 12%);
       --color-adaptive-amber-600-400: oklch(66.6% 0.179 58.318);
+      --color-adaptive-amber-500-a10-400-a10: oklch(76.9% 0.188 70.08 / 10%);
+      --color-adaptive-amber-500-a25-400-a25: oklch(76.9% 0.188 70.08 / 25%);
       --color-adaptive-amber-700-300: oklch(55.5% 0.163 48.998);
       --color-adaptive-amber-700-400: oklch(55.5% 0.163 48.998);
       --color-adaptive-amber-800-200: oklch(47.3% 0.137 46.201);
@@ -729,6 +759,7 @@
       --color-adaptive-blue-600-400: oklch(54.6% 0.245 262.881);
       --color-adaptive-black-a10-a25: rgb(0 0 0 / 10%);
       --color-adaptive-black-a15-a35: rgb(0 0 0 / 15%);
+      --color-adaptive-black-a2p5-white-a2p5: rgb(0 0 0 / 2.5%);
       --color-adaptive-emerald-500-a12-a16: oklch(69.6% 0.17 162.48 / 12%);
       --color-adaptive-emerald-600-400: oklch(59.6% 0.145 163.225);
       --color-adaptive-emerald-700-300: oklch(50.8% 0.118 165.612);
@@ -755,6 +786,8 @@
       --color-adaptive-neutral-800-200: oklch(26.9% 0 none);
       --color-adaptive-neutral-700-200: oklch(37.1% 0 none);
       --color-adaptive-neutral-950-50: oklch(14.5% 0 none);
+      --color-adaptive-neutral-950-a5-white-a5: oklch(14.5% 0 none / 5%);
+      --color-adaptive-neutral-950-a10-white-a10: oklch(14.5% 0 none / 10%);
       --color-adaptive-red-50-950-a80: oklch(97.1% 0.013 17.38);
       --color-adaptive-red-200-800: oklch(88.5% 0.062 18.334);
       --color-adaptive-red-600-a80-400-a80: oklch(57.7% 0.245 27.325 / 80%);
@@ -769,6 +802,8 @@
       --color-adaptive-rose-800-200: oklch(45.5% 0.188 13.697);
       --color-adaptive-sky-100-500-a18: oklch(95.1% 0.026 236.824);
       --color-adaptive-sky-500-a12-a16: oklch(68.5% 0.169 237.323 / 12%);
+      --color-adaptive-sky-500-a10-400-a10: oklch(68.5% 0.169 237.323 / 10%);
+      --color-adaptive-sky-500-a25-400-a25: oklch(68.5% 0.169 237.323 / 25%);
       --color-adaptive-sky-600-400: oklch(58.8% 0.158 241.966);
       --color-adaptive-sky-700-300: oklch(50% 0.134 242.749);
       --color-adaptive-sky-800-200: oklch(44.3% 0.11 240.79);
@@ -874,6 +909,8 @@
       --color-adaptive-amber-200-900-a60: oklch(41.4% 0.112 45.904 / 60%);
       --color-adaptive-amber-500-a12-a16: oklch(76.9% 0.188 70.08 / 16%);
       --color-adaptive-amber-600-400: oklch(82.8% 0.189 84.429);
+      --color-adaptive-amber-500-a10-400-a10: oklch(82.8% 0.189 84.429 / 10%);
+      --color-adaptive-amber-500-a25-400-a25: oklch(82.8% 0.189 84.429 / 25%);
       --color-adaptive-amber-700-300: oklch(87.9% 0.169 91.605);
       --color-adaptive-amber-700-400: oklch(82.8% 0.189 84.429);
       --color-adaptive-amber-800-200: oklch(92.4% 0.12 95.746);
@@ -885,6 +922,7 @@
       --color-adaptive-blue-600-400: oklch(70.7% 0.165 254.624);
       --color-adaptive-black-a10-a25: rgb(0 0 0 / 25%);
       --color-adaptive-black-a15-a35: rgb(0 0 0 / 35%);
+      --color-adaptive-black-a2p5-white-a2p5: rgb(255 255 255 / 2.5%);
       --color-adaptive-emerald-500-a12-a16: oklch(69.6% 0.17 162.48 / 16%);
       --color-adaptive-emerald-600-400: oklch(76.5% 0.177 163.223);
       --color-adaptive-emerald-700-300: oklch(84.5% 0.143 164.978);
@@ -911,6 +949,8 @@
       --color-adaptive-neutral-800-200: oklch(92.2% 0 none);
       --color-adaptive-neutral-700-200: oklch(92.2% 0 none);
       --color-adaptive-neutral-950-50: oklch(98.5% 0 none);
+      --color-adaptive-neutral-950-a5-white-a5: rgb(255 255 255 / 5%);
+      --color-adaptive-neutral-950-a10-white-a10: rgb(255 255 255 / 10%);
       --color-adaptive-red-50-950-a80: oklch(25.8% 0.092 26.042 / 80%);
       --color-adaptive-red-200-800: oklch(44.4% 0.177 26.899);
       --color-adaptive-red-600-a80-400-a80: oklch(70.4% 0.191 22.216 / 80%);
@@ -925,6 +965,8 @@
       --color-adaptive-rose-800-200: oklch(89.2% 0.058 10.001);
       --color-adaptive-sky-100-500-a18: oklch(68.5% 0.169 237.323 / 18%);
       --color-adaptive-sky-500-a12-a16: oklch(68.5% 0.169 237.323 / 16%);
+      --color-adaptive-sky-500-a10-400-a10: oklch(74.6% 0.16 232.661 / 10%);
+      --color-adaptive-sky-500-a25-400-a25: oklch(74.6% 0.16 232.661 / 25%);
       --color-adaptive-sky-600-400: oklch(74.6% 0.16 232.661);
       --color-adaptive-sky-700-300: oklch(82.8% 0.111 230.318);
       --color-adaptive-sky-800-200: oklch(90.1% 0.058 230.902);
@@ -1030,6 +1072,8 @@
       --color-adaptive-amber-200-900-a60: oklch(92.4% 0.12 95.746);
       --color-adaptive-amber-500-a12-a16: oklch(76.9% 0.188 70.08 / 12%);
       --color-adaptive-amber-600-400: oklch(66.6% 0.179 58.318);
+      --color-adaptive-amber-500-a10-400-a10: oklch(76.9% 0.188 70.08 / 10%);
+      --color-adaptive-amber-500-a25-400-a25: oklch(76.9% 0.188 70.08 / 25%);
       --color-adaptive-amber-700-300: oklch(55.5% 0.163 48.998);
       --color-adaptive-amber-700-400: oklch(55.5% 0.163 48.998);
       --color-adaptive-amber-800-200: oklch(47.3% 0.137 46.201);
@@ -1041,6 +1085,7 @@
       --color-adaptive-blue-600-400: oklch(54.6% 0.245 262.881);
       --color-adaptive-black-a10-a25: rgb(0 0 0 / 10%);
       --color-adaptive-black-a15-a35: rgb(0 0 0 / 15%);
+      --color-adaptive-black-a2p5-white-a2p5: rgb(0 0 0 / 2.5%);
       --color-adaptive-emerald-500-a12-a16: oklch(69.6% 0.17 162.48 / 12%);
       --color-adaptive-emerald-600-400: oklch(59.6% 0.145 163.225);
       --color-adaptive-emerald-700-300: oklch(50.8% 0.118 165.612);
@@ -1067,6 +1112,8 @@
       --color-adaptive-neutral-800-200: oklch(26.9% 0 none);
       --color-adaptive-neutral-700-200: oklch(37.1% 0 none);
       --color-adaptive-neutral-950-50: oklch(14.5% 0 none);
+      --color-adaptive-neutral-950-a5-white-a5: oklch(14.5% 0 none / 5%);
+      --color-adaptive-neutral-950-a10-white-a10: oklch(14.5% 0 none / 10%);
       --color-adaptive-red-50-950-a80: oklch(97.1% 0.013 17.38);
       --color-adaptive-red-200-800: oklch(88.5% 0.062 18.334);
       --color-adaptive-red-600-a80-400-a80: oklch(57.7% 0.245 27.325 / 80%);
@@ -1081,6 +1128,8 @@
       --color-adaptive-rose-800-200: oklch(45.5% 0.188 13.697);
       --color-adaptive-sky-100-500-a18: oklch(95.1% 0.026 236.824);
       --color-adaptive-sky-500-a12-a16: oklch(68.5% 0.169 237.323 / 12%);
+      --color-adaptive-sky-500-a10-400-a10: oklch(68.5% 0.169 237.323 / 10%);
+      --color-adaptive-sky-500-a25-400-a25: oklch(68.5% 0.169 237.323 / 25%);
       --color-adaptive-sky-600-400: oklch(58.8% 0.158 241.966);
       --color-adaptive-sky-700-300: oklch(50% 0.134 242.749);
       --color-adaptive-sky-800-200: oklch(44.3% 0.11 240.79);
@@ -1186,6 +1235,8 @@
       --color-adaptive-amber-200-900-a60: oklch(41.4% 0.112 45.904 / 60%);
       --color-adaptive-amber-500-a12-a16: oklch(76.9% 0.188 70.08 / 16%);
       --color-adaptive-amber-600-400: oklch(82.8% 0.189 84.429);
+      --color-adaptive-amber-500-a10-400-a10: oklch(82.8% 0.189 84.429 / 10%);
+      --color-adaptive-amber-500-a25-400-a25: oklch(82.8% 0.189 84.429 / 25%);
       --color-adaptive-amber-700-300: oklch(87.9% 0.169 91.605);
       --color-adaptive-amber-700-400: oklch(82.8% 0.189 84.429);
       --color-adaptive-amber-800-200: oklch(92.4% 0.12 95.746);
@@ -1197,6 +1248,7 @@
       --color-adaptive-blue-600-400: oklch(70.7% 0.165 254.624);
       --color-adaptive-black-a10-a25: rgb(0 0 0 / 25%);
       --color-adaptive-black-a15-a35: rgb(0 0 0 / 35%);
+      --color-adaptive-black-a2p5-white-a2p5: rgb(255 255 255 / 2.5%);
       --color-adaptive-emerald-500-a12-a16: oklch(69.6% 0.17 162.48 / 16%);
       --color-adaptive-emerald-600-400: oklch(76.5% 0.177 163.223);
       --color-adaptive-emerald-700-300: oklch(84.5% 0.143 164.978);
@@ -1223,6 +1275,8 @@
       --color-adaptive-neutral-800-200: oklch(92.2% 0 none);
       --color-adaptive-neutral-700-200: oklch(92.2% 0 none);
       --color-adaptive-neutral-950-50: oklch(98.5% 0 none);
+      --color-adaptive-neutral-950-a5-white-a5: rgb(255 255 255 / 5%);
+      --color-adaptive-neutral-950-a10-white-a10: rgb(255 255 255 / 10%);
       --color-adaptive-red-50-950-a80: oklch(25.8% 0.092 26.042 / 80%);
       --color-adaptive-red-200-800: oklch(44.4% 0.177 26.899);
       --color-adaptive-red-600-a80-400-a80: oklch(70.4% 0.191 22.216 / 80%);
@@ -1237,6 +1291,8 @@
       --color-adaptive-rose-800-200: oklch(89.2% 0.058 10.001);
       --color-adaptive-sky-100-500-a18: oklch(68.5% 0.169 237.323 / 18%);
       --color-adaptive-sky-500-a12-a16: oklch(68.5% 0.169 237.323 / 16%);
+      --color-adaptive-sky-500-a10-400-a10: oklch(74.6% 0.16 232.661 / 10%);
+      --color-adaptive-sky-500-a25-400-a25: oklch(74.6% 0.16 232.661 / 25%);
       --color-adaptive-sky-600-400: oklch(74.6% 0.16 232.661);
       --color-adaptive-sky-700-300: oklch(82.8% 0.111 230.318);
       --color-adaptive-sky-800-200: oklch(90.1% 0.058 230.902);
@@ -1342,6 +1398,8 @@
       --color-adaptive-amber-200-900-a60: oklch(92.4% 0.12 95.746);
       --color-adaptive-amber-500-a12-a16: oklch(76.9% 0.188 70.08 / 12%);
       --color-adaptive-amber-600-400: oklch(66.6% 0.179 58.318);
+      --color-adaptive-amber-500-a10-400-a10: oklch(76.9% 0.188 70.08 / 10%);
+      --color-adaptive-amber-500-a25-400-a25: oklch(76.9% 0.188 70.08 / 25%);
       --color-adaptive-amber-700-300: oklch(55.5% 0.163 48.998);
       --color-adaptive-amber-700-400: oklch(55.5% 0.163 48.998);
       --color-adaptive-amber-800-200: oklch(47.3% 0.137 46.201);
@@ -1353,6 +1411,7 @@
       --color-adaptive-blue-600-400: oklch(54.6% 0.245 262.881);
       --color-adaptive-black-a10-a25: rgb(0 0 0 / 10%);
       --color-adaptive-black-a15-a35: rgb(0 0 0 / 15%);
+      --color-adaptive-black-a2p5-white-a2p5: rgb(0 0 0 / 2.5%);
       --color-adaptive-emerald-500-a12-a16: oklch(69.6% 0.17 162.48 / 12%);
       --color-adaptive-emerald-600-400: oklch(59.6% 0.145 163.225);
       --color-adaptive-emerald-700-300: oklch(50.8% 0.118 165.612);
@@ -1379,6 +1438,8 @@
       --color-adaptive-neutral-800-200: oklch(26.9% 0 none);
       --color-adaptive-neutral-700-200: oklch(37.1% 0 none);
       --color-adaptive-neutral-950-50: oklch(14.5% 0 none);
+      --color-adaptive-neutral-950-a5-white-a5: oklch(14.5% 0 none / 5%);
+      --color-adaptive-neutral-950-a10-white-a10: oklch(14.5% 0 none / 10%);
       --color-adaptive-red-50-950-a80: oklch(97.1% 0.013 17.38);
       --color-adaptive-red-200-800: oklch(88.5% 0.062 18.334);
       --color-adaptive-red-600-a80-400-a80: oklch(57.7% 0.245 27.325 / 80%);
@@ -1393,6 +1454,8 @@
       --color-adaptive-rose-800-200: oklch(45.5% 0.188 13.697);
       --color-adaptive-sky-100-500-a18: oklch(95.1% 0.026 236.824);
       --color-adaptive-sky-500-a12-a16: oklch(68.5% 0.169 237.323 / 12%);
+      --color-adaptive-sky-500-a10-400-a10: oklch(68.5% 0.169 237.323 / 10%);
+      --color-adaptive-sky-500-a25-400-a25: oklch(68.5% 0.169 237.323 / 25%);
       --color-adaptive-sky-600-400: oklch(58.8% 0.158 241.966);
       --color-adaptive-sky-700-300: oklch(50% 0.134 242.749);
       --color-adaptive-sky-800-200: oklch(44.3% 0.11 240.79);
@@ -1498,6 +1561,8 @@
       --color-adaptive-amber-200-900-a60: oklch(41.4% 0.112 45.904 / 60%);
       --color-adaptive-amber-500-a12-a16: oklch(76.9% 0.188 70.08 / 16%);
       --color-adaptive-amber-600-400: oklch(82.8% 0.189 84.429);
+      --color-adaptive-amber-500-a10-400-a10: oklch(82.8% 0.189 84.429 / 10%);
+      --color-adaptive-amber-500-a25-400-a25: oklch(82.8% 0.189 84.429 / 25%);
       --color-adaptive-amber-700-300: oklch(87.9% 0.169 91.605);
       --color-adaptive-amber-700-400: oklch(82.8% 0.189 84.429);
       --color-adaptive-amber-800-200: oklch(92.4% 0.12 95.746);
@@ -1509,6 +1574,7 @@
       --color-adaptive-blue-600-400: oklch(70.7% 0.165 254.624);
       --color-adaptive-black-a10-a25: rgb(0 0 0 / 25%);
       --color-adaptive-black-a15-a35: rgb(0 0 0 / 35%);
+      --color-adaptive-black-a2p5-white-a2p5: rgb(255 255 255 / 2.5%);
       --color-adaptive-emerald-500-a12-a16: oklch(69.6% 0.17 162.48 / 16%);
       --color-adaptive-emerald-600-400: oklch(76.5% 0.177 163.223);
       --color-adaptive-emerald-700-300: oklch(84.5% 0.143 164.978);
@@ -1535,6 +1601,8 @@
       --color-adaptive-neutral-800-200: oklch(92.2% 0 none);
       --color-adaptive-neutral-700-200: oklch(92.2% 0 none);
       --color-adaptive-neutral-950-50: oklch(98.5% 0 none);
+      --color-adaptive-neutral-950-a5-white-a5: rgb(255 255 255 / 5%);
+      --color-adaptive-neutral-950-a10-white-a10: rgb(255 255 255 / 10%);
       --color-adaptive-red-50-950-a80: oklch(25.8% 0.092 26.042 / 80%);
       --color-adaptive-red-200-800: oklch(44.4% 0.177 26.899);
       --color-adaptive-red-600-a80-400-a80: oklch(70.4% 0.191 22.216 / 80%);
@@ -1549,6 +1617,8 @@
       --color-adaptive-rose-800-200: oklch(89.2% 0.058 10.001);
       --color-adaptive-sky-100-500-a18: oklch(68.5% 0.169 237.323 / 18%);
       --color-adaptive-sky-500-a12-a16: oklch(68.5% 0.169 237.323 / 16%);
+      --color-adaptive-sky-500-a10-400-a10: oklch(74.6% 0.16 232.661 / 10%);
+      --color-adaptive-sky-500-a25-400-a25: oklch(74.6% 0.16 232.661 / 25%);
       --color-adaptive-sky-600-400: oklch(74.6% 0.16 232.661);
       --color-adaptive-sky-700-300: oklch(82.8% 0.111 230.318);
       --color-adaptive-sky-800-200: oklch(90.1% 0.058 230.902);
@@ -1654,6 +1724,8 @@
       --color-adaptive-amber-200-900-a60: oklch(92.4% 0.12 95.746);
       --color-adaptive-amber-500-a12-a16: oklch(76.9% 0.188 70.08 / 12%);
       --color-adaptive-amber-600-400: oklch(66.6% 0.179 58.318);
+      --color-adaptive-amber-500-a10-400-a10: oklch(76.9% 0.188 70.08 / 10%);
+      --color-adaptive-amber-500-a25-400-a25: oklch(76.9% 0.188 70.08 / 25%);
       --color-adaptive-amber-700-300: oklch(55.5% 0.163 48.998);
       --color-adaptive-amber-700-400: oklch(55.5% 0.163 48.998);
       --color-adaptive-amber-800-200: oklch(47.3% 0.137 46.201);
@@ -1665,6 +1737,7 @@
       --color-adaptive-blue-600-400: oklch(54.6% 0.245 262.881);
       --color-adaptive-black-a10-a25: rgb(0 0 0 / 10%);
       --color-adaptive-black-a15-a35: rgb(0 0 0 / 15%);
+      --color-adaptive-black-a2p5-white-a2p5: rgb(0 0 0 / 2.5%);
       --color-adaptive-emerald-500-a12-a16: oklch(69.6% 0.17 162.48 / 12%);
       --color-adaptive-emerald-600-400: oklch(59.6% 0.145 163.225);
       --color-adaptive-emerald-700-300: oklch(50.8% 0.118 165.612);
@@ -1691,6 +1764,8 @@
       --color-adaptive-neutral-800-200: oklch(26.9% 0 none);
       --color-adaptive-neutral-700-200: oklch(37.1% 0 none);
       --color-adaptive-neutral-950-50: oklch(14.5% 0 none);
+      --color-adaptive-neutral-950-a5-white-a5: oklch(14.5% 0 none / 5%);
+      --color-adaptive-neutral-950-a10-white-a10: oklch(14.5% 0 none / 10%);
       --color-adaptive-red-50-950-a80: oklch(97.1% 0.013 17.38);
       --color-adaptive-red-200-800: oklch(88.5% 0.062 18.334);
       --color-adaptive-red-600-a80-400-a80: oklch(57.7% 0.245 27.325 / 80%);
@@ -1705,6 +1780,8 @@
       --color-adaptive-rose-800-200: oklch(45.5% 0.188 13.697);
       --color-adaptive-sky-100-500-a18: oklch(95.1% 0.026 236.824);
       --color-adaptive-sky-500-a12-a16: oklch(68.5% 0.169 237.323 / 12%);
+      --color-adaptive-sky-500-a10-400-a10: oklch(68.5% 0.169 237.323 / 10%);
+      --color-adaptive-sky-500-a25-400-a25: oklch(68.5% 0.169 237.323 / 25%);
       --color-adaptive-sky-600-400: oklch(58.8% 0.158 241.966);
       --color-adaptive-sky-700-300: oklch(50% 0.134 242.749);
       --color-adaptive-sky-800-200: oklch(44.3% 0.11 240.79);
@@ -1810,6 +1887,8 @@
       --color-adaptive-amber-200-900-a60: oklch(41.4% 0.112 45.904 / 60%);
       --color-adaptive-amber-500-a12-a16: oklch(76.9% 0.188 70.08 / 16%);
       --color-adaptive-amber-600-400: oklch(82.8% 0.189 84.429);
+      --color-adaptive-amber-500-a10-400-a10: oklch(82.8% 0.189 84.429 / 10%);
+      --color-adaptive-amber-500-a25-400-a25: oklch(82.8% 0.189 84.429 / 25%);
       --color-adaptive-amber-700-300: oklch(87.9% 0.169 91.605);
       --color-adaptive-amber-700-400: oklch(82.8% 0.189 84.429);
       --color-adaptive-amber-800-200: oklch(92.4% 0.12 95.746);
@@ -1821,6 +1900,7 @@
       --color-adaptive-blue-600-400: oklch(70.7% 0.165 254.624);
       --color-adaptive-black-a10-a25: rgb(0 0 0 / 25%);
       --color-adaptive-black-a15-a35: rgb(0 0 0 / 35%);
+      --color-adaptive-black-a2p5-white-a2p5: rgb(255 255 255 / 2.5%);
       --color-adaptive-emerald-500-a12-a16: oklch(69.6% 0.17 162.48 / 16%);
       --color-adaptive-emerald-600-400: oklch(76.5% 0.177 163.223);
       --color-adaptive-emerald-700-300: oklch(84.5% 0.143 164.978);
@@ -1847,6 +1927,8 @@
       --color-adaptive-neutral-800-200: oklch(92.2% 0 none);
       --color-adaptive-neutral-700-200: oklch(92.2% 0 none);
       --color-adaptive-neutral-950-50: oklch(98.5% 0 none);
+      --color-adaptive-neutral-950-a5-white-a5: rgb(255 255 255 / 5%);
+      --color-adaptive-neutral-950-a10-white-a10: rgb(255 255 255 / 10%);
       --color-adaptive-red-50-950-a80: oklch(25.8% 0.092 26.042 / 80%);
       --color-adaptive-red-200-800: oklch(44.4% 0.177 26.899);
       --color-adaptive-red-600-a80-400-a80: oklch(70.4% 0.191 22.216 / 80%);
@@ -1861,6 +1943,8 @@
       --color-adaptive-rose-800-200: oklch(89.2% 0.058 10.001);
       --color-adaptive-sky-100-500-a18: oklch(68.5% 0.169 237.323 / 18%);
       --color-adaptive-sky-500-a12-a16: oklch(68.5% 0.169 237.323 / 16%);
+      --color-adaptive-sky-500-a10-400-a10: oklch(74.6% 0.16 232.661 / 10%);
+      --color-adaptive-sky-500-a25-400-a25: oklch(74.6% 0.16 232.661 / 25%);
       --color-adaptive-sky-600-400: oklch(74.6% 0.16 232.661);
       --color-adaptive-sky-700-300: oklch(82.8% 0.111 230.318);
       --color-adaptive-sky-800-200: oklch(90.1% 0.058 230.902);

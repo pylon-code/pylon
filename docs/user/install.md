@@ -100,6 +100,7 @@ even when you connect from a phone or another computer.
 | OpenCode    | Install [OpenCode](https://opencode.ai), then run `opencode auth login`.                                  |
 | Antigravity | Install and sign in with Google from Pylon's provider settings.                                           |
 | Prime Agent | Install Prime Agent, then sign in with `/login`. See the [Prime Agent guide](./providers-prime-agent.md). |
+| Pi          | Configure Pi from **Settings → Providers**.                                                               |
 
 Provider CLIs must be on the server's `PATH`. If Pylon cannot find one, set its **Binary path** in
 provider settings, especially when using a version manager. Cursor's executable is `cursor-agent`,
@@ -119,7 +120,7 @@ stored secret; enter a new value to replace it or clear the field to remove it.
 
 For provider-specific setup and accounts, see [Codex](./providers-codex.md),
 [Claude](./providers-claude.md), [OpenCode](./providers-opencode.md),
-[Antigravity](./providers-antigravity.md), and [Prime Agent](./providers-prime-agent.md).
+[Antigravity](./providers-antigravity.md), [Prime Agent](./providers-prime-agent.md), and [Pi](./providers-pi.md).
 
 ## Next steps
 

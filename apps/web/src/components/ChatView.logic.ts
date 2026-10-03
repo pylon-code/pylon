@@ -1,35 +1,32 @@
+import * as Option from "effect/Option";
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
   ANTIGRAVITY_DEFAULT_MODEL,
   type AssetCreateUrlInput,
   type AssetCreateUrlResult,
   type ChatFileAttachment,
+  type CommandId,
   type EnvironmentId,
   isProviderDriverKind,
   ProjectId,
   type MessageId,
   type ModelSelection,
-  type PreviewAnnotationPayload,
+  type OrchestrationV2ProjectedTurnItem,
   type ProviderInteractionMode,
-  type ProviderDriverKind,
+  ProviderDriverKind,
+  type ProviderInstanceId,
   type ServerProvider,
   type ScopedProjectRef,
   type ScopedThreadRef,
   type ThreadId,
   type ThreadLinkedPullRequest,
-  type TurnId,
+  type RunId,
+  type WorktreeSetupSnapshot,
 } from "@t3tools/contracts";
-import {
-  isPrimeAgentDefaultModelUnavailable,
-  PRIME_AGENT_DEFAULT_MODEL_CHANGE_DESCRIPTION,
-  STARTED_THREAD_MODEL_CHANGE_DESCRIPTION,
-} from "@t3tools/shared/model";
-import { getProviderAdmissionAvailability } from "@t3tools/client-runtime/providerAvailability";
+import { worktreeSetupAgentStarted } from "@t3tools/client-runtime/worktree-setup";
+import * as DateTime from "effect/DateTime";
 import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
-import {
-  isActiveSubagentStatus,
-  type RuntimeSubagent,
-} from "@t3tools/client-runtime/state/subagentRuntime";
 import {
   squashAtomCommandFailure,
   type AtomCommandResult,
@@ -40,34 +37,41 @@ import {
   codexArtifactTemplateUsePrompt,
   type CodexArtifactTemplate,
 } from "@t3tools/client-runtime/codex-artifact-templates";
+import { presentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
-  type TurnDiffSummary,
   type ChatMessage,
   isImageAttachment,
   type SessionPhase,
   type Thread,
-  type ThreadShell,
+  type TurnDiffSummary,
 } from "../types";
-import { type ComposerImageAttachment, type DraftThreadState } from "../composerDraftStore";
+import {
+  type ComposerImageAttachment,
+  type ComposerDraftContent,
+  type DraftThreadState,
+} from "../composerDraftStore";
 import * as Schema from "effect/Schema";
 import { appAtomRegistry } from "../rpc/atomRegistry";
-import { environmentThreadDetails } from "../state/threads";
-import { stripInlineContextReferences } from "~/lib/composerContextReferences";
+import { environmentThreadShells, environmentThreadDetails } from "../state/threads";
+import { waitForAtomValue } from "../state/waitForAtomValue";
 import { filterTerminalContextsWithText, type TerminalContextDraft } from "../lib/terminalContext";
+import { stripInlineContextReferences } from "~/lib/composerContextReferences";
 import type { DraftThreadEnvMode } from "../composerDraftStore";
-import { collapseExpandedComposerCursor, type ComposerSubmissionIntent } from "../composer-logic";
-import type { ReviewCommentContext } from "../reviewCommentContext";
+import type { ComposerSubmissionIntent } from "../composer-logic";
 import type { TimelineEntry } from "../session-logic";
 import type { PreviewMiniPlayerSource } from "../previewMiniPlayerStore";
 import type { DesktopPreviewOverlay } from "../previewStateStore";
 import type { RightPanelSurface } from "../rightPanelStore";
+import {
+  NO_PROVIDER_MODEL_SELECTION,
+  resolveSelectableProviderInstanceEntry,
+  type ProviderInstanceEntry,
+} from "../providerInstances";
 
 export const LAST_INVOKED_SCRIPT_BY_PROJECT_KEY = "t3code:last-invoked-script-by-project";
 export const MAX_HIDDEN_MOUNTED_TERMINAL_THREADS = 10;
-export const MAX_HIDDEN_MOUNTED_PREVIEW_THREADS = 3;
-export const ENVIRONMENT_RECONNECT_WARNING_GRACE_MS = 2_000;
 
-export const LastInvokedScriptByProjectSchema = Schema.Record(ProjectId, Schema.String);
+export const ENVIRONMENT_RECONNECT_WARNING_GRACE_MS = 2_000;
 
 export function agentControlledBrowserCloseConfirmation(
   surfaces: readonly RightPanelSurface[],
@@ -120,16 +124,16 @@ export function shouldOpenProactivePullRequest(
 
 interface ProactivePanelObservation {
   threadKey: string;
-  runningTurnId: TurnId | null | undefined;
+  runningTurnId: RunId | null | undefined;
   targetKey: string | null | undefined;
-  userActionTurnId: TurnId | null;
+  userActionTurnId: RunId | null;
   userActionRevision: number;
 }
 
 /** Capture user intent before loading or metadata writes can defer panel activation. */
 export function observeProactivePanelUserChoice(
   previous: ProactivePanelObservation | null,
-  input: { threadKey: string; runningTurnId: TurnId | null; userActionRevision: number },
+  input: { threadKey: string; runningTurnId: RunId | null; userActionRevision: number },
 ): ProactivePanelObservation {
   const sameThread = previous?.threadKey === input.threadKey;
   const newTurn =
@@ -144,10 +148,28 @@ export function observeProactivePanelUserChoice(
   };
 }
 
+/** Follow a changed server link only when the panel still shows the previous linked PR. */
+export function shouldRetargetThreadPullRequestPanel(
+  previous: ThreadLinkedPullRequest | null,
+  current: ThreadLinkedPullRequest | null,
+  surface: RightPanelSurface | null,
+): boolean {
+  if (previous === null || current === null || surface?.kind !== "pull-request") return false;
+  const previousRepository = previous.repository.toLowerCase();
+  return (
+    (previous.projectId !== current.projectId ||
+      previousRepository !== current.repository.toLowerCase() ||
+      previous.number !== current.number) &&
+    surface.projectId === previous.projectId &&
+    surface.repository.toLowerCase() === previousRepository &&
+    surface.number === previous.number
+  );
+}
+
 export function shouldOpenProactiveTurnDiff(input: {
-  previousRunningTurnId: TurnId | null | undefined;
-  runningTurnId: TurnId | null;
-  settledTurnId: TurnId | null;
+  previousRunningTurnId: RunId | null | undefined;
+  runningTurnId: RunId | null;
+  settledTurnId: RunId | null;
   turnCompleted: boolean;
 }): boolean {
   return (
@@ -162,7 +184,9 @@ export function shouldOpenProactiveTurnDiff(input: {
 export function resolveProactiveTurnDiffAction(input: {
   checkpoint: Pick<TurnDiffSummary, "status" | "files"> | undefined;
   isGitRepo: boolean | undefined;
+  activeSurfaceKind: RightPanelSurface["kind"] | null;
 }): "defer" | "ignore" | "open" {
+  if (input.activeSurfaceKind === "pull-request") return "ignore";
   if (input.checkpoint === undefined || input.checkpoint.status === "missing") return "defer";
   if (input.isGitRepo === undefined) return "defer";
   if (
@@ -188,6 +212,17 @@ export function codexArtifactTemplatePromptToAppend(
     : codexArtifactTemplateUsePrompt(template);
 }
 
+export const LastInvokedScriptByProjectSchema = Schema.Record(ProjectId, Schema.String);
+
+export function resolveEffectiveInteractionMode(input: {
+  planModeEnabled: boolean;
+  composerInteractionMode: ProviderInteractionMode | null;
+  threadInteractionMode: ProviderInteractionMode | null | undefined;
+}): ProviderInteractionMode {
+  if (!input.planModeEnabled) return "default";
+  return input.composerInteractionMode ?? input.threadInteractionMode ?? "default";
+}
+
 export function shouldDockDraftHeroForSubmission(input: {
   isDraftHeroState: boolean;
   activeThreadKey: string | null;
@@ -203,7 +238,7 @@ export function shouldDockDraftHeroForSubmission(input: {
 export function shouldReleaseTimelineAnchorForToolActivity(input: {
   anchorMessageId: MessageId | null;
   liveFollowEnabled: boolean;
-  runningTurnId: TurnId | null;
+  runningTurnId: RunId | null;
   timelineEntries: ReadonlyArray<TimelineEntry>;
 }): boolean {
   if (input.anchorMessageId === null || !input.liveFollowEnabled || input.runningTurnId === null) {
@@ -211,7 +246,7 @@ export function shouldReleaseTimelineAnchorForToolActivity(input: {
   }
 
   return input.timelineEntries.some((timelineEntry) => {
-    if (timelineEntry.kind !== "work" || timelineEntry.entry.turnId !== input.runningTurnId) {
+    if (timelineEntry.kind !== "work" || timelineEntry.entry.runId !== input.runningTurnId) {
       return false;
     }
 
@@ -229,6 +264,26 @@ export {
   findRecordedWorktreeSetup,
   resolveVisibleWorktreeSetup,
 } from "@t3tools/client-runtime/worktree-setup";
+
+/** Keep setup visible across local dispatch, durable preparation, and the live stream. */
+export function resolveWorktreeSetupProgress(input: {
+  threadId: ThreadId;
+  localPreparing: boolean;
+  runStatus: NonNullable<Thread["latestRun"]>["status"] | undefined;
+  latest: WorktreeSetupSnapshot | null | undefined;
+  held: WorktreeSetupSnapshot | null;
+}) {
+  const latest = input.latest?.threadId === input.threadId ? input.latest : null;
+  const held = input.held?.threadId === input.threadId ? input.held : null;
+  const snapshot = latest && (!held || latest.sequence >= held.sequence) ? latest : held;
+  return {
+    snapshot,
+    isPreparingWorktree:
+      input.localPreparing ||
+      input.runStatus === "preparing" ||
+      (snapshot?.phase === "running" && !worktreeSetupAgentStarted(snapshot)),
+  };
+}
 
 export function resolveDraftHeroState(input: {
   isLocalDraftThread: boolean;
@@ -384,23 +439,22 @@ export function resolveThreadSwitchTimeline<T extends readonly unknown[]>(input:
 
 export function resolveDraftPromotionNavigationTarget(input: {
   serverThreadRef: ScopedThreadRef | null;
-  serverThread: Pick<Thread, "latestTurn" | "session" | "messages"> | null | undefined;
+  serverThread: Pick<Thread, "latestRun" | "latestUserMessageAt"> | null | undefined;
   backgroundSubmissionPending: boolean;
 }): ScopedThreadRef | null {
   if (input.backgroundSubmissionPending) {
     return null;
   }
-  const sessionStatus = input.serverThread?.session?.status;
-  const turnStarted = input.serverThread?.latestTurn?.startedAt != null;
+  const latestRun = input.serverThread?.latestRun ?? null;
+  const runStarted = latestRun?.startedAt != null;
   const startupStopped =
-    sessionStatus === "error" || sessionStatus === "stopped" || sessionStatus === "interrupted";
-  // A worktree bootstrap persists the user message before the turn, so the
-  // thread route can render the send and the live setup by itself. Otherwise
-  // keep the draft mounted until the server can render the running turn or
-  // its startup error.
-  const messagePersisted =
-    input.serverThread?.messages.some((message) => message.role === "user") ?? false;
-  return turnStarted || startupStopped || messagePersisted ? input.serverThreadRef : null;
+    latestRun?.status === "failed" ||
+    latestRun?.status === "interrupted" ||
+    latestRun?.status === "cancelled";
+  // Like main, promote once the server owns the send. The shared chat view
+  // keeps the optimistic message and setup progress mounted through the route swap.
+  const messagePersisted = input.serverThread?.latestUserMessageAt != null;
+  return runStarted || startupStopped || messagePersisted ? input.serverThreadRef : null;
 }
 
 export function scheduleEnvironmentReconnectWarning(showWarning: () => void): () => void {
@@ -457,45 +511,42 @@ export function buildLocalDraftThread(
   draftThread: DraftThreadState,
   fallbackModelSelection: ModelSelection,
 ): Thread {
-  return {
+  const timestamp = DateTime.makeUnsafe(draftThread.createdAt);
+  return presentThreadShell(draftThread.environmentId, {
     id: threadId,
-    environmentId: draftThread.environmentId,
     projectId: draftThread.projectId,
     title: "New thread",
+    providerInstanceId: fallbackModelSelection.instanceId,
     modelSelection: fallbackModelSelection,
     runtimeMode: draftThread.runtimeMode,
     interactionMode: draftThread.interactionMode,
-    session: null,
-    messages: [],
-    createdAt: draftThread.createdAt,
-    updatedAt: draftThread.createdAt,
+    branch: draftThread.branch,
+    worktreePath: draftThread.worktreePath,
+    activeProviderThreadId: null,
+    lineage: { rootThreadId: threadId, parentThreadId: null, relationshipToParent: null },
+    forkedFrom: null,
+    createdBy: "user",
+    creationSource: "web",
+    latestRunId: null,
+    activeRunId: null,
+    status: "idle",
+    pendingRuntimeRequest: null,
+    latestVisibleMessage: null,
+    latestUserMessageAt: null,
+    hasActionableProposedPlan: false,
+    itemCount: 0,
+    visibleItemCount: 0,
+    createdAt: timestamp,
+    updatedAt: timestamp,
     archivedAt: null,
     settledOverride: null,
     settledAt: null,
     deletedAt: null,
-    latestTurn: null,
-    branch: draftThread.branch,
-    worktreePath: draftThread.worktreePath,
-    checkpoints: [],
-    pullRequests: [],
-    activities: [],
-    proposedPlans: [],
-  };
-}
-
-export function buildLoadingThreadFromShell(shell: ThreadShell): Thread {
-  return {
-    ...shell,
-    messages: [],
-    proposedPlans: [],
-    activities: [],
-    checkpoints: [],
-    deletedAt: null,
-  };
+  });
 }
 
 export function shouldWriteThreadErrorToCurrentServerThread(input: {
-  activeServerThread:
+  serverThread:
     | {
         environmentId: EnvironmentId;
         id: ThreadId;
@@ -506,41 +557,95 @@ export function shouldWriteThreadErrorToCurrentServerThread(input: {
   targetThreadId: ThreadId;
 }): boolean {
   return Boolean(
-    input.activeServerThread &&
+    input.serverThread &&
     input.targetThreadId === input.routeThreadRef.threadId &&
-    input.activeServerThread.environmentId === input.routeThreadRef.environmentId &&
-    input.activeServerThread.id === input.targetThreadId,
+    input.serverThread.environmentId === input.routeThreadRef.environmentId &&
+    input.serverThread.id === input.targetThreadId,
   );
 }
 
-export function buildThreadTurnInterruptInput(thread: Pick<Thread, "id" | "session">): {
-  threadId: ThreadId;
-  turnId?: TurnId;
-} {
-  const runningTurnId = thread.session?.status === "running" ? thread.session.activeTurnId : null;
+/** Use the same enabled instance for the composer, provider status, and chat actions. */
+export function resolveComposerProviderSelection(input: {
+  entries: ReadonlyArray<ProviderInstanceEntry>;
+  candidateInstanceIds: ReadonlyArray<ProviderInstanceId | null | undefined>;
+  lockedProvider: ProviderDriverKind | null;
+  lockedInstanceId: ProviderInstanceId | null | undefined;
+}) {
+  const requestedInstanceId = input.candidateInstanceIds.find(
+    (candidate) => candidate != null && candidate !== NO_PROVIDER_MODEL_SELECTION.instanceId,
+  );
+  const requestedDriverKind =
+    input.lockedProvider ??
+    input.entries.find((entry) => entry.instanceId === requestedInstanceId)?.driverKind ??
+    input.entries[0]?.driverKind ??
+    ProviderDriverKind.make("unconfigured");
+  const lockedContinuationGroupKey = input.lockedProvider
+    ? (input.entries.find((entry) => entry.instanceId === input.lockedInstanceId)
+        ?.continuationGroupKey ?? null)
+    : null;
+  // Missing metadata must not move Antigravity history into another Google profile.
+  const requiresExactInstance =
+    input.lockedProvider === "antigravity" &&
+    input.lockedInstanceId != null &&
+    lockedContinuationGroupKey === null;
+  const compatibleEntries = input.entries.filter(
+    (entry) =>
+      (!input.lockedProvider || entry.driverKind === input.lockedProvider) &&
+      (!lockedContinuationGroupKey || entry.continuationGroupKey === lockedContinuationGroupKey) &&
+      (!requiresExactInstance || entry.instanceId === input.lockedInstanceId),
+  );
+  // An explicitly unavailable configured account must never fall through to another account.
+  const requestedEntry = input.entries.find((entry) => entry.instanceId === requestedInstanceId);
+  if (requestedEntry && !requestedEntry.isAvailable) {
+    return {
+      selectedProviderEntry: undefined,
+      requestedDriverKind,
+      lockedContinuationGroupKey,
+      unavailableProviderInstanceId: requestedEntry.instanceId,
+    };
+  }
+  const selectedProviderEntry =
+    input.candidateInstanceIds
+      .map((candidate) =>
+        compatibleEntries.find(
+          (entry) => entry.instanceId === candidate && entry.enabled && entry.isAvailable,
+        ),
+      )
+      .find((entry) => entry !== undefined) ??
+    resolveSelectableProviderInstanceEntry(
+      compatibleEntries.filter((entry) => entry.driverKind === requestedDriverKind),
+      undefined,
+    ) ??
+    resolveSelectableProviderInstanceEntry(compatibleEntries, undefined);
+  const unavailableProviderInstanceId = selectedProviderEntry
+    ? undefined
+    : input.lockedProvider
+      ? (input.lockedInstanceId ?? requestedInstanceId)
+      : requestedInstanceId;
   return {
-    threadId: thread.id,
-    ...(runningTurnId !== null ? { turnId: runningTurnId } : {}),
+    selectedProviderEntry,
+    requestedDriverKind,
+    lockedContinuationGroupKey,
+    unavailableProviderInstanceId,
   };
 }
 
-const NO_LOCAL_TIMELINE_MESSAGE_IDS: ReadonlySet<MessageId> = new Set();
-
-/**
- * Ids of timeline messages that exist only on this client: optimistic sends.
- * The timeline never anchors a rollback on them. Built from local state alone,
- * so its identity holds while a turn streams.
- */
-export function collectLocalTimelineMessageIds(
-  optimisticUserMessages: ReadonlyArray<Pick<ChatMessage, "id">>,
-): ReadonlySet<MessageId> {
-  if (optimisticUserMessages.length === 0) {
-    return NO_LOCAL_TIMELINE_MESSAGE_IDS;
-  }
-  return new Set(optimisticUserMessages.map((message) => message.id));
+/** Keep restored drafts and every plan control on the selected instance's supported mode. */
+export function resolveComposerInteractionMode(input: {
+  planModeEnabled: boolean;
+  provider: Pick<ServerProvider, "showInteractionModeToggle"> | null | undefined;
+  interactionMode: ProviderInteractionMode;
+}): { enabled: boolean; interactionMode: ProviderInteractionMode } {
+  const enabled =
+    input.planModeEnabled &&
+    input.provider != null &&
+    input.provider.showInteractionModeToggle !== false;
+  return {
+    enabled,
+    interactionMode: enabled ? input.interactionMode : "default",
+  };
 }
 
-/** Why the composer cannot send to Antigravity yet, or null when the server can take the turn. */
 export function getAntigravitySendBlockReason(
   provider:
     | Pick<ServerProvider, "driver" | "installed" | "auth" | "models" | "status">
@@ -556,12 +661,7 @@ export function getAntigravitySendBlockReason(
     return "Sign in to Antigravity in provider settings before sending.";
   }
   const slug = model.trim();
-  if (slug.length === 0) {
-    // With no catalog there is nothing to choose from; reloading it is the next step.
-    return provider.models.length === 0
-      ? "Refresh Antigravity models in provider settings before sending."
-      : "Choose an Antigravity model before sending.";
-  }
+  if (slug.length === 0) return "Choose an Antigravity model before sending.";
   // A restart clears the account status and catalog. Session startup checks
   // saved credentials and validates the model before sending the prompt.
   if (provider.auth.status === "unknown") return null;
@@ -582,23 +682,6 @@ export function getAntigravitySendBlockReason(
   return null;
 }
 
-/**
- * The interrupt a Stop action may send for the focused thread, or null when
- * nothing can be stopped. Mirrors the composer's Stop button: a running turn,
- * or a turn still awaiting provider admission (which has no turn id yet).
- */
-export function buildRunningThreadTurnInterruptInput(
-  thread: Pick<Thread, "id" | "session"> | null | undefined,
-  phase: SessionPhase,
-): { threadId: ThreadId; turnId?: TurnId } | null {
-  const sessionStatus = thread?.session?.status;
-  const running = phase === "running" && sessionStatus === "running";
-  if (!thread || !(running || sessionStatus === "starting")) {
-    return null;
-  }
-  return buildThreadTurnInterruptInput(thread);
-}
-
 export function reconcileMountedTerminalThreadIds(input: {
   currentThreadIds: ReadonlyArray<string>;
   openThreadIds: ReadonlyArray<string>;
@@ -606,30 +689,14 @@ export function reconcileMountedTerminalThreadIds(input: {
   activeThreadTerminalOpen: boolean;
   maxHiddenThreadCount?: number;
 }): string[] {
-  return reconcileRetainedMountedThreadIds({
-    currentThreadIds: input.currentThreadIds,
-    openThreadIds: input.openThreadIds,
-    activeThreadId: input.activeThreadId,
-    activeThreadOpen: input.activeThreadTerminalOpen,
-    maxHiddenThreadCount: input.maxHiddenThreadCount ?? MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
-  });
-}
-
-export function reconcileRetainedMountedThreadIds(input: {
-  currentThreadIds: ReadonlyArray<string>;
-  openThreadIds: ReadonlyArray<string>;
-  activeThreadId: string | null;
-  activeThreadOpen: boolean;
-  maxHiddenThreadCount: number;
-  retainInactiveActiveThread?: boolean;
-}): string[] {
   const openThreadIdSet = new Set(input.openThreadIds);
   const hiddenThreadIds = input.currentThreadIds.filter(
-    (threadId) =>
-      (threadId !== input.activeThreadId || input.retainInactiveActiveThread === true) &&
-      openThreadIdSet.has(threadId),
+    (threadId) => threadId !== input.activeThreadId && openThreadIdSet.has(threadId),
   );
-  const maxHiddenThreadCount = Math.max(0, input.maxHiddenThreadCount);
+  const maxHiddenThreadCount = Math.max(
+    0,
+    input.maxHiddenThreadCount ?? MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
+  );
   const nextThreadIds =
     hiddenThreadIds.length > maxHiddenThreadCount
       ? hiddenThreadIds.slice(-maxHiddenThreadCount)
@@ -637,7 +704,7 @@ export function reconcileRetainedMountedThreadIds(input: {
 
   if (
     input.activeThreadId &&
-    input.activeThreadOpen &&
+    input.activeThreadTerminalOpen &&
     !nextThreadIds.includes(input.activeThreadId)
   ) {
     nextThreadIds.push(input.activeThreadId);
@@ -754,23 +821,6 @@ export interface PullRequestDialogState {
   key: number;
 }
 
-export function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.addEventListener("load", () => {
-      if (typeof reader.result === "string") {
-        resolve(reader.result);
-        return;
-      }
-      reject(new Error("Could not read image data."));
-    });
-    reader.addEventListener("error", () => {
-      reject(reader.error ?? new Error("Failed to read image."));
-    });
-    reader.readAsDataURL(file);
-  });
-}
-
 export function resolveSendEnvMode(input: {
   requestedEnvMode: DraftThreadEnvMode;
   isGitRepo: boolean;
@@ -810,29 +860,6 @@ export function cloneComposerImageForRetry(
   } catch {
     return image;
   }
-}
-
-export function mergeFailedComposerSend<T extends { readonly id: string }>(input: {
-  readonly failedText: string;
-  readonly currentText: string;
-  readonly failedAttachments: ReadonlyArray<T>;
-  readonly currentAttachments: ReadonlyArray<T>;
-}): { readonly text: string; readonly attachments: T[] } {
-  const currentIds = new Set(input.currentAttachments.map((attachment) => attachment.id));
-  return {
-    text:
-      input.failedText.length === 0
-        ? input.currentText
-        : input.currentText.length === 0
-          ? input.failedText
-          : `${input.failedText}
-
-${input.currentText}`,
-    attachments: [
-      ...input.failedAttachments.filter((attachment) => !currentIds.has(attachment.id)),
-      ...input.currentAttachments,
-    ],
-  };
 }
 
 export function deriveComposerSendState(options: {
@@ -969,22 +996,8 @@ export function recallCheckoutIsRepo(
     : sessionCheckoutIsRepo.get(checkoutIsRepoKey(environmentId, cwd));
 }
 
-function threadHasStarted(thread: Thread | null | undefined): boolean {
-  return Boolean(
-    thread && (thread.latestTurn !== null || thread.messages.length > 0 || thread.session !== null),
-  );
-}
-
-/** A preparing session and persisted prompt still need their retry draft. */
-export function canFinalizePromotedDraft(thread: Thread | null | undefined): boolean {
-  return (
-    threadHasStarted(thread) &&
-    !(
-      thread?.latestTurn === null &&
-      thread.session?.status === "starting" &&
-      thread.session.providerName === null
-    )
-  );
+export function threadHasStarted(thread: Thread | null | undefined): boolean {
+  return Boolean(thread && (thread.latestRun !== null || thread.itemCount > 0 || thread.runtime));
 }
 
 /**
@@ -995,11 +1008,14 @@ export function canFinalizePromotedDraft(thread: Thread | null | undefined): boo
  * when the last user message landed, which every started thread has.
  */
 export function threadShellHasStarted(
-  shell: Pick<ThreadShell, "latestTurn" | "latestUserMessageAt" | "session"> | null | undefined,
+  shell:
+    | Pick<EnvironmentThreadShell, "latestRun" | "latestUserMessageAt" | "runtime">
+    | null
+    | undefined,
 ): boolean {
   return Boolean(
     shell &&
-    (shell.latestTurn !== null || shell.latestUserMessageAt !== null || shell.session !== null),
+    (shell.latestRun !== null || shell.latestUserMessageAt !== null || shell.runtime !== null),
   );
 }
 
@@ -1014,7 +1030,7 @@ export function deriveLockedProvider(input: {
   if (!threadHasStarted(input.thread)) {
     return null;
   }
-  const sessionProvider = input.thread?.session?.providerName ?? null;
+  const sessionProvider = input.thread?.runtime?.providerName ?? null;
   if (sessionProvider && isProviderDriverKind(sessionProvider)) {
     return sessionProvider;
   }
@@ -1034,16 +1050,9 @@ export function deriveLockedProvider(input: {
 }
 
 export function getStartedThreadModelChangeBlockReason(input: {
-  providers: ReadonlyArray<
-    Pick<ServerProvider, "instanceId" | "driver" | "requiresNewThreadForModelChange"> &
-      Partial<
-        Pick<
-          ServerProvider,
-          "continuation" | "enabled" | "installed" | "auth" | "availability" | "status"
-        >
-      >
-  >;
+  providers: ReadonlyArray<Pick<ServerProvider, "instanceId" | "requiresNewThreadForModelChange">>;
   hasStartedSession: boolean;
+  supportsProviderSwitchingViaHandoff?: boolean;
   currentModelSelection: ModelSelection;
   currentProviderInstanceId?: ModelSelection["instanceId"] | null | undefined;
   nextModelSelection: ModelSelection;
@@ -1051,68 +1060,31 @@ export function getStartedThreadModelChangeBlockReason(input: {
   if (!input.hasStartedSession) {
     return null;
   }
-  const currentInstanceId =
-    input.currentProviderInstanceId ?? input.currentModelSelection.instanceId;
-  if (input.nextModelSelection.instanceId !== currentInstanceId) {
-    const currentProvider = input.providers.find(
-      (provider) => provider.instanceId === currentInstanceId,
-    );
-    const targetProvider = input.providers.find(
-      (provider) => provider.instanceId === input.nextModelSelection.instanceId,
-    );
-    const currentContinuationKey = currentProvider?.continuation?.groupKey?.trim() ?? "";
-    const targetContinuationKey = targetProvider?.continuation?.groupKey?.trim() ?? "";
-    const targetAvailable =
-      targetProvider !== undefined &&
-      getProviderAdmissionAvailability({
-        provider: targetProvider,
-        instanceId: String(input.nextModelSelection.instanceId),
-        providerSnapshotKnown: true,
-      }).status === "available";
-    if (
-      currentProvider?.driver === targetProvider?.driver &&
-      currentContinuationKey.length > 0 &&
-      currentContinuationKey === targetContinuationKey &&
-      targetAvailable
-    ) {
+  const currentModelSelection = {
+    ...input.currentModelSelection,
+    instanceId: input.currentProviderInstanceId ?? input.currentModelSelection.instanceId,
+  };
+  if (
+    currentModelSelection.instanceId === input.nextModelSelection.instanceId &&
+    currentModelSelection.model === input.nextModelSelection.model
+  ) {
+    return null;
+  }
+  if (currentModelSelection.instanceId !== input.nextModelSelection.instanceId) {
+    if (input.supportsProviderSwitchingViaHandoff === true) {
       return null;
     }
     return {
-      title: "Start a new chat to change providers",
-      description: targetAvailable
-        ? "A started thread stays bound to the exact provider account that created its session."
-        : "The selected compatible provider account is unavailable on this environment.",
+      title: "Start a new chat to switch providers",
+      description: "This thread does not support switching providers after it has started.",
     };
   }
-  // A stale device can observe the session binding before the exact persisted
-  // model arrives. Selecting an explicit model for that binding is remediation;
-  // never synthesize it by copying the old provider's model or options.
-  if (input.currentModelSelection.instanceId !== currentInstanceId) {
-    return null;
-  }
-  const currentModelSelection = input.currentModelSelection;
-  if (currentModelSelection.model === input.nextModelSelection.model) {
-    return null;
-  }
   const currentProvider = input.providers.find(
-    (snapshot) => snapshot.instanceId === currentInstanceId,
+    (snapshot) => snapshot.instanceId === currentModelSelection.instanceId,
   );
   const nextProvider = input.providers.find(
     (snapshot) => snapshot.instanceId === input.nextModelSelection.instanceId,
   );
-  if (
-    isPrimeAgentDefaultModelUnavailable({
-      providerDriver: nextProvider?.driver,
-      nextModel: input.nextModelSelection.model,
-      currentModel: currentModelSelection.model,
-      hasStartedSession: input.hasStartedSession,
-    })
-  ) {
-    return {
-      title: "Start a new chat to use Prime Agent Default",
-      description: PRIME_AGENT_DEFAULT_MODEL_CHANGE_DESCRIPTION,
-    };
-  }
   if (
     currentProvider?.requiresNewThreadForModelChange !== true &&
     nextProvider?.requiresNewThreadForModelChange !== true
@@ -1121,7 +1093,7 @@ export function getStartedThreadModelChangeBlockReason(input: {
   }
   return {
     title: "Start a new chat to change models",
-    description: STARTED_THREAD_MODEL_CHANGE_DESCRIPTION,
+    description: "This provider does not allow switching models after a conversation has started.",
   };
 }
 
@@ -1129,63 +1101,35 @@ export async function waitForStartedServerThread(
   threadRef: ScopedThreadRef,
   timeoutMs = 1_000,
 ): Promise<boolean> {
-  const threadAtom = environmentThreadDetails.detailAtom(threadRef);
-  const getThread = () => appAtomRegistry.get(threadAtom);
-  const thread = getThread();
-
-  if (threadHasStarted(thread)) {
-    return true;
-  }
-
-  return await new Promise<boolean>((resolve) => {
-    let settled = false;
-    let timeoutId: ReturnType<typeof globalThis.setTimeout> | null = null;
-    const finish = (result: boolean) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      if (timeoutId !== null) {
-        globalThis.clearTimeout(timeoutId);
-      }
-      unsubscribe();
-      resolve(result);
-    };
-
-    const unsubscribe = appAtomRegistry.subscribe(threadAtom, (thread) => {
-      if (!threadHasStarted(thread)) {
-        return;
-      }
-      finish(true);
-    });
-
-    if (threadHasStarted(getThread())) {
-      finish(true);
-      return;
-    }
-
-    timeoutId = globalThis.setTimeout(() => {
-      finish(false);
-    }, timeoutMs);
+  const threadAtom = environmentThreadShells.threadShellAtom(threadRef);
+  return waitForAtomValue({
+    registry: appAtomRegistry,
+    atom: threadAtom,
+    predicate: threadHasStarted,
+    timeoutMs,
   });
 }
 
+/**
+ * Runs `revert` (the rollback command `requestId`) and resolves once the
+ * message's run is rolled back. Rejects with the server's reason as soon as
+ * the thread records that this rollback failed.
+ */
 export async function waitForRevertedMessage(
   threadRef: ScopedThreadRef,
   messageId: MessageId,
   turnCount: number,
+  requestId: CommandId,
   revert: () => Promise<void>,
   timeoutMs = 120_000,
 ): Promise<void> {
-  const threadAtom = environmentThreadDetails.detailAtom(threadRef);
-  const initial = appAtomRegistry.get(threadAtom);
+  const threadAtom = environmentThreadDetails.stateAtom(threadRef);
+  const readProjection = () => Option.getOrNull(appAtomRegistry.get(threadAtom).data);
+  const initial = readProjection();
   if (!initial?.messages.some((message) => message.id === messageId)) {
     throw new Error("The message to rewind is no longer available.");
   }
-  const sourceRevision = initial.checkpoints.reduce(
-    (revision, checkpoint) => Math.max(revision, checkpoint.checkpointTurnCount),
-    0,
-  );
+  const messageRunId = initial.messages.find((message) => message.id === messageId)?.runId;
   return new Promise<void>((resolve, reject) => {
     let settled = false;
     let accepted = false;
@@ -1200,34 +1144,21 @@ export async function waitForRevertedMessage(
       else resolve();
     };
     const inspect = () => {
-      const thread = appAtomRegistry.get(threadAtom);
+      const thread = readProjection();
       if (!thread) return;
-      const status = thread.rollbackStatus;
-      // The durable rollback status describes the admitted source and target.
-      // Uncorrelated failure activities may belong to another client's rejected
-      // request and must never consume this client's recovered composer draft.
-      const matchesRequest =
-        status !== null &&
-        status !== undefined &&
-        status.sourceRevision === sourceRevision &&
-        status.targetTurnCount === turnCount &&
-        (status.updatedAt !== initial.rollbackStatus?.updatedAt ||
-          status.state !== initial.rollbackStatus?.state);
-      if (!accepted || !matchesRequest) return;
-      if (status.state === "failed" || status.state === "manual-recovery") {
-        finish(new Error(status.detail ?? "The thread could not be rewound."));
-      } else if (
-        status.state === "completed" &&
-        !thread.messages.some((message) => message.id === messageId) &&
-        thread.checkpoints.every((checkpoint) => checkpoint.checkpointTurnCount <= turnCount) &&
-        (turnCount === 0
-          ? thread.latestTurn === null
-          : thread.checkpoints.some(
-              (checkpoint) => checkpoint.turnId === thread.latestTurn?.turnId,
-            ))
-      ) {
-        finish();
+      const failure = thread.thread.rollbackFailure;
+      if (failure?.requestId === requestId) {
+        finish(new Error(failure.message));
+        return;
       }
+      if (
+        accepted &&
+        thread.runs.some(
+          (run) =>
+            run.id === messageRunId && run.ordinal > turnCount && run.status === "rolled_back",
+        )
+      )
+        finish();
     };
     unsubscribe = appAtomRegistry.subscribe(threadAtom, inspect);
     timeout = globalThis.setTimeout(() => {
@@ -1247,101 +1178,62 @@ export interface LocalDispatchSnapshot {
   preparingWorktree: boolean;
   submissionIntent: ComposerSubmissionIntent;
   latestUserMessageId: ChatMessage["id"] | null;
-  latestTurnTurnId: TurnId | null;
-  latestTurnRequestedAt: string | null;
-  latestTurnStartedAt: string | null;
-  latestTurnCompletedAt: string | null;
-  sessionStatus: NonNullable<Thread["session"]>["status"] | null;
-  sessionUpdatedAt: string | null;
-  latestTurnStartFailureId: string | null;
-}
-
-export function latestTurnStartFailureId(
-  activeThread: Thread | undefined,
-  latestUserMessageId: ChatMessage["id"] | null,
-): string | null {
-  if (latestUserMessageId === null) return null;
-  return (
-    activeThread?.activities.findLast((activity) => {
-      if (activity.kind !== "provider.turn.start.failed") return false;
-      const payload =
-        typeof activity.payload === "object" && activity.payload !== null
-          ? (activity.payload as { readonly requestId?: unknown })
-          : null;
-      return payload?.requestId === latestUserMessageId;
-    })?.id ?? null
-  );
-}
-
-export function isCompactCommandMessage(message: ChatMessage): boolean {
-  const text = message.text.trim().toLowerCase();
-  return message.role === "user" && text === "/compact" && !message.attachments?.length;
-}
-
-// The server owns the compaction lifecycle end to end: it opens `compactionQueue`
-// when the request is admitted, moves it to "draining" while queued prompts
-// replay, and clears it on every terminal path, including a failed compaction
-// and a stopped or errored session. That record is the only durable answer to
-// "is this thread compacting", and it survives a reload or a second client.
-//
-// Deriving the indicator from the last `/compact` message instead left it lit
-// for the whole life of the turn that `/compact` opened, because the
-// continuation turn keeps that message's `requestedAt`. Nothing settled it
-// either: a local `/compact` never produces a `context-compaction` activity,
-// and the server's compaction request id is the command id, never the message
-// id the old check compared it against.
-export function deriveIsCompacting(input: {
-  readonly activeThread: Thread | undefined;
-  readonly optimisticCompactionMessage: ChatMessage | undefined;
-  readonly isSendBusy: boolean;
-}): boolean {
-  if (input.activeThread?.session?.compactionQueue !== undefined) return true;
-  // A `/compact` dispatched from this client has no server record until the
-  // command lands. Cover that window alone, and drop the indicator as soon as
-  // the dispatch fails admission.
-  const optimistic = input.optimisticCompactionMessage;
-  return (
-    input.isSendBusy &&
-    optimistic !== undefined &&
-    isCompactCommandMessage(optimistic) &&
-    latestTurnStartFailureId(input.activeThread, optimistic.id) === null
-  );
+  latestRunId: RunId | null;
+  latestRunRequestedAt: string | null;
+  latestRunStartedAt: string | null;
+  latestRunCompletedAt: string | null;
+  runtimeStatus: NonNullable<Thread["runtime"]>["status"] | null;
+  runtimeUpdatedAt: string | null;
 }
 
 export function createLocalDispatchSnapshot(
   activeThread: Thread | undefined,
   options?: {
     preparingWorktree?: boolean;
+    latestUserMessageId?: ChatMessage["id"] | null;
     submissionIntent?: ComposerSubmissionIntent;
   },
 ): LocalDispatchSnapshot {
-  const latestTurn = activeThread?.latestTurn ?? null;
-  const session = activeThread?.session ?? null;
-  const latestUserMessage = activeThread?.messages.findLast((message) => message.role === "user");
+  const latestRun = activeThread?.latestRun ?? null;
+  const runtime = activeThread?.runtime ?? null;
   return {
     startedAt: new Date().toISOString(),
     preparingWorktree: Boolean(options?.preparingWorktree),
     submissionIntent: options?.submissionIntent ?? "foreground",
-    latestUserMessageId: latestUserMessage?.id ?? null,
-    latestTurnTurnId: latestTurn?.turnId ?? null,
-    latestTurnRequestedAt: latestTurn?.requestedAt ?? null,
-    latestTurnStartedAt: latestTurn?.startedAt ?? null,
-    latestTurnCompletedAt: latestTurn?.completedAt ?? null,
-    sessionStatus: session?.status ?? null,
-    sessionUpdatedAt: session?.updatedAt ?? null,
-    latestTurnStartFailureId: latestTurnStartFailureId(activeThread, latestUserMessage?.id ?? null),
+    latestUserMessageId: options?.latestUserMessageId ?? null,
+    latestRunId: latestRun?.runId ?? null,
+    latestRunRequestedAt: latestRun?.requestedAt ?? null,
+    latestRunStartedAt: latestRun?.startedAt ?? null,
+    latestRunCompletedAt: latestRun?.completedAt ?? null,
+    runtimeStatus: runtime?.status ?? null,
+    runtimeUpdatedAt: runtime?.updatedAt ?? null,
   };
+}
+
+/**
+ * The timeline renders committed user rows from `visibleTurnItems`, but
+ * `message.updated` can land in `projection.messages` one event earlier than
+ * the matching `turn-item.updated`. Basing optimistic eviction on visible user
+ * turn items avoids dropping steer rows in that gap.
+ */
+export function deriveCommittedServerUserMessageIds(
+  visibleTurnItems: ReadonlyArray<OrchestrationV2ProjectedTurnItem>,
+): ReadonlySet<ChatMessage["id"]> {
+  return new Set(
+    visibleTurnItems.flatMap((row) =>
+      row.item.type === "user_message" ? [row.item.messageId] : [],
+    ),
+  );
 }
 
 export function hasServerAcknowledgedLocalDispatch(input: {
   localDispatch: LocalDispatchSnapshot | null;
   phase: SessionPhase;
-  latestTurn: Thread["latestTurn"] | null;
-  latestUserMessageId: ChatMessage["id"] | null;
-  session: Thread["session"] | null;
+  latestRun: Thread["latestRun"] | null;
+  latestUserMessageId?: ChatMessage["id"] | null;
+  runtime: Thread["runtime"] | null;
   hasPendingApproval: boolean;
   hasPendingUserInput: boolean;
-  latestTurnStartFailureId?: string | null;
   threadError: string | null | undefined;
 }): boolean {
   if (!input.localDispatch) {
@@ -1350,57 +1242,34 @@ export function hasServerAcknowledgedLocalDispatch(input: {
   if (input.hasPendingApproval || input.hasPendingUserInput || Boolean(input.threadError)) {
     return true;
   }
-  if (
-    input.latestTurnStartFailureId !== undefined &&
-    input.latestTurnStartFailureId !== null &&
-    input.latestTurnStartFailureId !== input.localDispatch.latestTurnStartFailureId
-  ) {
-    return true;
-  }
-  const compactionQueue = input.session?.compactionQueue;
-  if (
-    compactionQueue &&
-    input.latestUserMessageId !== input.localDispatch.latestUserMessageId &&
-    (input.session?.pendingTurnMessageId === input.latestUserMessageId ||
-      compactionQueue.inFlightMessageId === input.latestUserMessageId ||
-      compactionQueue.queued.some((message) => message.messageId === input.latestUserMessageId))
-  ) {
-    // The persisted compaction FIFO is an acknowledgment even while the
-    // provider is starting. Keep the composer available for another message.
-    return true;
-  }
   if (input.phase === "connecting") {
     return false;
   }
 
-  const latestTurn = input.latestTurn ?? null;
-  const session = input.session ?? null;
+  const latestRun = input.latestRun ?? null;
+  const runtime = input.runtime ?? null;
   const latestUserMessageChanged =
-    input.localDispatch.latestUserMessageId !== input.latestUserMessageId;
-  const latestTurnChanged =
-    input.localDispatch.latestTurnTurnId !== (latestTurn?.turnId ?? null) ||
-    input.localDispatch.latestTurnRequestedAt !== (latestTurn?.requestedAt ?? null) ||
-    input.localDispatch.latestTurnStartedAt !== (latestTurn?.startedAt ?? null) ||
-    input.localDispatch.latestTurnCompletedAt !== (latestTurn?.completedAt ?? null);
+    input.localDispatch.latestUserMessageId !== (input.latestUserMessageId ?? null);
+  const latestRunChanged =
+    input.localDispatch.latestRunId !== (latestRun?.runId ?? null) ||
+    input.localDispatch.latestRunRequestedAt !== (latestRun?.requestedAt ?? null) ||
+    input.localDispatch.latestRunStartedAt !== (latestRun?.startedAt ?? null) ||
+    input.localDispatch.latestRunCompletedAt !== (latestRun?.completedAt ?? null);
 
   if (input.phase === "running") {
-    // Steering adds a user message to the current running turn without
-    // necessarily changing any of the turn timestamps. Treat that projected
-    // message as the server acknowledgment so the composer does not remain
-    // stuck in its local "Sending" state until the turn settles.
     if (latestUserMessageChanged) {
       return true;
     }
-    if (!latestTurnChanged) {
+    if (!latestRunChanged) {
       return false;
     }
-    if (latestTurn?.startedAt === null || latestTurn === null) {
+    if (latestRun?.startedAt === null || latestRun === null) {
       return false;
     }
     if (
-      session?.activeTurnId !== null &&
-      session?.activeTurnId !== undefined &&
-      latestTurn?.turnId !== session.activeTurnId
+      runtime?.activeRunId !== null &&
+      runtime?.activeRunId !== undefined &&
+      latestRun?.runId !== runtime.activeRunId
     ) {
       return false;
     }
@@ -1408,27 +1277,9 @@ export function hasServerAcknowledgedLocalDispatch(input: {
   }
 
   return (
-    latestTurnChanged ||
-    input.localDispatch.sessionStatus !== (session?.status ?? null) ||
-    input.localDispatch.sessionUpdatedAt !== (session?.updatedAt ?? null)
-  );
-}
-
-/** Follow a changed server link only while the panel shows the previous link. */
-export function shouldRetargetThreadPullRequestPanel(
-  previous: ThreadLinkedPullRequest | null,
-  current: ThreadLinkedPullRequest | null,
-  surface: RightPanelSurface | null,
-): boolean {
-  if (previous === null || current === null || surface?.kind !== "pull-request") return false;
-  const previousRepository = previous.repository.toLowerCase();
-  return (
-    (previous.projectId !== current.projectId ||
-      previousRepository !== current.repository.toLowerCase() ||
-      previous.number !== current.number) &&
-    surface.projectId === previous.projectId &&
-    surface.repository.toLowerCase() === previousRepository &&
-    surface.number === previous.number
+    latestRunChanged ||
+    input.localDispatch.runtimeStatus !== (runtime?.status ?? null) ||
+    input.localDispatch.runtimeUpdatedAt !== (runtime?.updatedAt ?? null)
   );
 }
 
@@ -1460,37 +1311,111 @@ export function shouldRefocusComposerOnWindowFocus(
   );
 }
 
-export interface PlanFollowUpComposerSnapshot {
-  readonly prompt: string;
-  readonly terminalContexts: ReadonlyArray<TerminalContextDraft>;
-  readonly reviewComments: ReadonlyArray<ReviewCommentContext>;
-  readonly previewAnnotations: ReadonlyArray<PreviewAnnotationPayload>;
+export function mergeFailedComposerSend<T extends { readonly id: string }>(input: {
+  readonly failedText: string;
+  readonly currentText: string;
+  readonly failedAttachments: ReadonlyArray<T>;
+  readonly currentAttachments: ReadonlyArray<T>;
+}): { readonly text: string; readonly attachments: T[] } {
+  const currentIds = new Set(input.currentAttachments.map((attachment) => attachment.id));
+  return {
+    text:
+      input.failedText.length === 0
+        ? input.currentText
+        : input.currentText.length === 0
+          ? input.failedText
+          : `${input.failedText}
+
+${input.currentText}`,
+    attachments: [
+      ...input.failedAttachments.filter((attachment) => !currentIds.has(attachment.id)),
+      ...input.currentAttachments,
+    ],
+  };
 }
 
-/**
- * Puts back everything a plan follow-up send cleared when the send fails. The
- * caller clears the composer before awaiting the send, so every field it held
- * has to be written back here: a dropped field silently discards user context.
- */
-export function restorePlanFollowUpComposer(input: {
-  readonly snapshot: PlanFollowUpComposerSnapshot;
-  readonly writePrompt: (prompt: string) => void;
-  readonly writeTerminalContexts: (contexts: ReadonlyArray<TerminalContextDraft>) => void;
-  readonly writeReviewComments: (comments: ReadonlyArray<ReviewCommentContext>) => void;
-  readonly writePreviewAnnotations: (annotations: ReadonlyArray<PreviewAnnotationPayload>) => void;
-  readonly resetCursor: (options: {
-    cursor: number;
-    prompt: string;
-    detectTrigger: boolean;
-  }) => void;
-}): void {
-  input.writePrompt(input.snapshot.prompt);
-  input.writeTerminalContexts(input.snapshot.terminalContexts);
-  input.writeReviewComments(input.snapshot.reviewComments);
-  input.writePreviewAnnotations(input.snapshot.previewAnnotations);
-  input.resetCursor({
-    cursor: collapseExpandedComposerCursor(input.snapshot.prompt, input.snapshot.prompt.length),
-    prompt: input.snapshot.prompt,
-    detectTrigger: true,
+/** Keep the sent snapshot alongside edits made while the request was in flight. */
+export function mergeFailedComposerDraft(input: {
+  readonly failed: ComposerDraftContent;
+  readonly current: ComposerDraftContent;
+}) {
+  const currentImageIds = new Set(input.current.images.map((image) => image.id));
+  const failedImageById = new Map(input.failed.images.map((image) => [image.id, image]));
+  const promptAndImages = mergeFailedComposerSend({
+    failedText: input.failed.prompt,
+    currentText: input.current.prompt,
+    failedAttachments: input.failed.images
+      .filter((image) => !currentImageIds.has(image.id))
+      .map(cloneComposerImageForRetry),
+    currentAttachments: input.current.images.map((image) =>
+      failedImageById.get(image.id)?.previewUrl === image.previewUrl
+        ? cloneComposerImageForRetry(image)
+        : image,
+    ),
   });
+  const mergeAttachments = <T extends { readonly id: string }>(
+    failed: ReadonlyArray<T>,
+    current: ReadonlyArray<T>,
+  ) =>
+    mergeFailedComposerSend({
+      failedText: "",
+      currentText: "",
+      failedAttachments: failed,
+      currentAttachments: current,
+    }).attachments;
+  const currentThreadContextIds = new Set(
+    input.current.threadContexts.map((context) => context.contextId),
+  );
+  return {
+    prompt: promptAndImages.text,
+    images: promptAndImages.attachments,
+    persistedAttachments: [
+      ...input.failed.persistedAttachments.filter(
+        (attachment) => !currentImageIds.has(attachment.id),
+      ),
+      ...input.current.persistedAttachments,
+    ],
+    files: mergeAttachments(input.failed.files, input.current.files),
+    terminalContexts: mergeAttachments(
+      input.failed.terminalContexts,
+      input.current.terminalContexts,
+    ),
+    previewAnnotations: mergeAttachments(
+      input.failed.previewAnnotations,
+      input.current.previewAnnotations,
+    ),
+    reviewComments: mergeAttachments(input.failed.reviewComments, input.current.reviewComments),
+    threadContexts: [
+      ...input.failed.threadContexts.filter(
+        (context) => !currentThreadContextIds.has(context.contextId),
+      ),
+      ...input.current.threadContexts,
+    ],
+  };
+}
+
+export function composerViewOwnsTarget(input: {
+  readonly routeThreadKey: string;
+  readonly currentRouteThreadKey: string | null;
+  readonly composerDraftKey: string;
+  readonly currentComposerDraftKey: string | null;
+}): boolean {
+  return (
+    input.currentRouteThreadKey === input.routeThreadKey &&
+    input.currentComposerDraftKey === input.composerDraftKey
+  );
+}
+
+/** A rejected optimistic row must disappear even when newer draft content exists. */
+export function recoverFailedComposerSend(input: {
+  readonly failedMessageId: MessageId;
+  readonly failed: ComposerDraftContent;
+  readonly current: ComposerDraftContent;
+  readonly removeOptimisticMessage: (messageId: MessageId) => void;
+  readonly writeDraft: (draft: ComposerDraftContent) => void;
+}) {
+  const draft = mergeFailedComposerDraft(input);
+  input.removeOptimisticMessage(input.failedMessageId);
+  input.writeDraft(draft);
+  return draft;
 }

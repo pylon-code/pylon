@@ -1,4 +1,5 @@
-import { EventId, TurnId, type OrchestrationThreadActivity } from "@t3tools/contracts";
+import type { ProviderPresentationActivity } from "./providerPresentation.ts";
+import { EventId, TurnId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { deriveReportedTurnCosts, formatReportedTurnCost } from "./turnCosts.ts";
@@ -7,7 +8,7 @@ function activity(input: {
   id: string;
   turnId: string | null;
   value: unknown;
-}): OrchestrationThreadActivity {
+}): ProviderPresentationActivity {
   return {
     id: EventId.make(input.id),
     createdAt: "2026-08-09T00:00:00.000Z",

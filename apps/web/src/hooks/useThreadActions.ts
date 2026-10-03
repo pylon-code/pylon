@@ -6,6 +6,7 @@ import {
 } from "@t3tools/client-runtime/environment";
 import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { canSnooze, threadWokeAt } from "@t3tools/client-runtime/state/thread-settled";
+import { threadRuntimeCanArchive } from "@t3tools/client-runtime/state/models";
 import { EnvironmentId, type ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Schema from "effect/Schema";
@@ -30,6 +31,7 @@ import {
   readEnvironmentSupportsActiveReorder,
   readEnvironmentSupportsSettlement,
   readEnvironmentSupportsSnooze,
+  readEnvironmentSupportsVisitedTracking,
   readEnvironmentThreadRefs,
   readProject,
   readThreadShell,
@@ -37,8 +39,8 @@ import {
   watchThreadActionProjection,
   readThreadShells,
 } from "../state/entities";
-import { useTerminalUiStateStore } from "../terminalUiStateStore";
 import { useUiStateStore } from "../uiStateStore";
+import { useTerminalUiStateStore } from "../terminalUiStateStore";
 import { buildThreadRouteParams, resolveThreadRouteRef } from "../threadRoutes";
 import { formatWorktreePathForDisplay, getOrphanedWorktreePathForThread } from "../worktreeCleanup";
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
@@ -55,7 +57,7 @@ export class ThreadArchiveBlockedError extends Schema.TaggedError<ThreadArchiveB
   },
 ) {
   override get message(): string {
-    return "Cannot archive a running thread.";
+    return "Cannot archive while the provider is active.";
   }
 }
 
@@ -190,6 +192,32 @@ export async function navigateAfterThreadDeletion(navigate: () => Promise<void>)
   }
 }
 
+/**
+ * Marks a thread unread. Servers with visited tracking own the unread marker
+ * (thread.mark-unread rewinds the server-side visited watermark, syncing the
+ * marker to every device); older servers keep the browser-local marker.
+ */
+function useMarkThreadUnread() {
+  const markThreadUnreadMutation = useAtomCommand(threadEnvironment.markUnread, {
+    reportFailure: false,
+  });
+  const markThreadUnreadLocal = useUiStateStore((state) => state.markThreadUnread);
+  return useCallback(
+    (target: ScopedThreadRef) => {
+      if (readEnvironmentSupportsVisitedTracking(target.environmentId)) {
+        void markThreadUnreadMutation({
+          environmentId: target.environmentId,
+          input: { threadId: target.threadId },
+        });
+        return;
+      }
+      const thread = readThreadShell(target);
+      markThreadUnreadLocal(scopedThreadKey(target), thread?.latestRun?.completedAt);
+    },
+    [markThreadUnreadLocal, markThreadUnreadMutation],
+  );
+}
+
 export function useThreadActions() {
   const closeTerminal = useAtomCommand(terminalEnvironment.close);
   const archiveThreadMutation = useAtomCommand(threadEnvironment.archive, {
@@ -228,6 +256,7 @@ export function useThreadActions() {
   const unsnoozeThreadMutation = useAtomCommand(threadEnvironment.unsnooze, {
     reportFailure: false,
   });
+  const markThreadUnread = useMarkThreadUnread();
   const stopThreadSession = useAtomCommand(threadEnvironment.stopSession);
   const removeWorktree = useAtomCommand(vcsEnvironment.removeWorktree, {
     reportFailure: false,
@@ -277,7 +306,12 @@ export function useThreadActions() {
       ThreadUndo.invalidateThread(scopedThreadKey(target));
       const result = await unarchiveThreadMutation({
         environmentId: target.environmentId,
-        input: { threadId: target.threadId, expectedSessionOwner: opts.expectedSessionOwner },
+        input: {
+          threadId: target.threadId,
+          ...(opts.expectedSessionOwner === undefined
+            ? {}
+            : { expectedSessionOwner: opts.expectedSessionOwner }),
+        },
       });
       if (result._tag === "Failure") {
         return result;
@@ -311,7 +345,7 @@ export function useThreadActions() {
       const resolved = resolveThreadTarget(target);
       if (!resolved) return AsyncResult.success(undefined);
       const { thread, threadRef } = resolved;
-      if (thread.session?.status === "running" && thread.session.activeTurnId != null) {
+      if (!threadRuntimeCanArchive(thread.runtime)) {
         return AsyncResult.failure(
           Cause.fail(
             new ThreadArchiveBlockedError({
@@ -362,7 +396,7 @@ export function useThreadActions() {
           // Return only while still on the draft created by this archive.
           undo: () =>
             unarchiveThread(threadRef, {
-              expectedSessionOwner: action.sessionOwner ?? undefined,
+              ...(action.sessionOwner == null ? {} : { expectedSessionOwner: action.sessionOwner }),
               navigate:
                 archivedDraftRoute !== null &&
                 router.state.location.href === archivedDraftRoute.href &&
@@ -458,7 +492,7 @@ export function useThreadActions() {
         shouldDeleteWorktree = confirmationResult.value;
       }
 
-      if (thread.session && thread.session.status !== "stopped") {
+      if (thread.runtime !== null) {
         await stopThreadSession({
           environmentId: threadRef.environmentId,
           input: { threadId: threadRef.threadId },
@@ -599,7 +633,11 @@ export function useThreadActions() {
       // inactivity) stays suppressed until real activity clears the pin.
       return unsettleThreadMutation({
         environmentId: target.environmentId,
-        input: { threadId: target.threadId, reason: "user", expectedSessionOwner },
+        input: {
+          threadId: target.threadId,
+          reason: "user",
+          ...(expectedSessionOwner === undefined ? {} : { expectedSessionOwner }),
+        },
       });
     },
     [unsettleThreadMutation],
@@ -657,7 +695,9 @@ export function useThreadActions() {
         input: {
           threadId: target.threadId,
           ...(orderKey !== undefined ? { orderKey } : {}),
-          expectedSessionOwner: opts.expectedSessionOwner,
+          ...(opts.expectedSessionOwner === undefined
+            ? {}
+            : { expectedSessionOwner: opts.expectedSessionOwner }),
         },
       });
     },
@@ -691,7 +731,9 @@ export function useThreadActions() {
             undo: () =>
               pinThread(target, {
                 ...(orderKey === undefined ? {} : { orderKey }),
-                expectedSessionOwner: action.sessionOwner ?? undefined,
+                ...(action.sessionOwner == null
+                  ? {}
+                  : { expectedSessionOwner: action.sessionOwner }),
               }),
             failureTitle: "Failed to undo unpin",
           });
@@ -771,7 +813,9 @@ export function useThreadActions() {
                 if (wasPinned) {
                   const pinning = pinThread(target, {
                     ...(pinOrderKey == null ? {} : { orderKey: pinOrderKey }),
-                    expectedSessionOwner: action.sessionOwner ?? undefined,
+                    ...(action.sessionOwner == null
+                      ? {}
+                      : { expectedSessionOwner: action.sessionOwner }),
                   });
                   intents.acknowledgeOwnIntent();
                   const pinned = await pinning;
@@ -783,7 +827,9 @@ export function useThreadActions() {
                     input: {
                       threadId: target.threadId,
                       snoozedUntil,
-                      expectedSessionOwner: action.sessionOwner ?? undefined,
+                      ...(action.sessionOwner == null
+                        ? {}
+                        : { expectedSessionOwner: action.sessionOwner }),
                     },
                   });
                 }
@@ -899,7 +945,11 @@ export function useThreadActions() {
       ThreadUndo.invalidateThread(scopedThreadKey(target));
       return unsnoozeThreadMutation({
         environmentId: target.environmentId,
-        input: { threadId: target.threadId, reason: "user", expectedSessionOwner },
+        input: {
+          threadId: target.threadId,
+          reason: "user",
+          ...(expectedSessionOwner === undefined ? {} : { expectedSessionOwner }),
+        },
       });
     },
     [unsnoozeThreadMutation],
@@ -1027,6 +1077,7 @@ export function useThreadActions() {
       confirmAndUnpinThread,
       reorderPinnedThread,
       reorderActiveThread,
+      markThreadUnread,
       setThreadAutoSettle,
     }),
     [
@@ -1034,6 +1085,7 @@ export function useThreadActions() {
       confirmAndDeleteThread,
       confirmAndUnpinThread,
       deleteThread,
+      markThreadUnread,
       pinThread,
       reorderPinnedThread,
       reorderActiveThread,

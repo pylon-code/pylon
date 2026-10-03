@@ -47,6 +47,12 @@ import {
 } from "../prime/PrimeAgentDistributionVerifier.ts";
 import { makePrimeAgentDaemonManager } from "../prime/PrimeAgentDaemonManager.ts";
 import { fencePrimeAgentAdapter } from "../prime/PrimeAgentGenerationFence.ts";
+import { makeLegacyAdapterV2 } from "../legacy/LegacyAdapterV2Bridge.ts";
+import { LegacyAdapterV2Maintenance } from "../legacy/LegacyAdapterV2Maintenance.ts";
+import {
+  PRIME_AGENT_DAEMON_RESUME_CURSOR,
+  PRIME_AGENT_ACP_RESUME_CURSOR,
+} from "../prime/PrimeAgentResumeCursor.ts";
 import { inspectPrimeAgentSelectedDistribution } from "../prime/PrimeAgentManagedToolStore.ts";
 import {
   PrimeAgentOwnershipReceiptStore,
@@ -211,6 +217,7 @@ export type PrimeAgentDriverEnv =
   | Crypto.Crypto
   | FileSystem.FileSystem
   | HttpClient.HttpClient
+  | LegacyAdapterV2Maintenance
   | Path.Path
   | ProviderEventLoggers
   | ServerConfig
@@ -820,6 +827,16 @@ export const PrimeAgentDriver: ProviderDriver<
               ...(backend.fallbackMessage ? { startupWarning: backend.fallbackMessage } : {}),
             });
       const adapter = fencePrimeAgentAdapter(rawAdapter, runtimeFence);
+      const maintenance = yield* LegacyAdapterV2Maintenance;
+      const orchestrationAdapter = makeLegacyAdapterV2({
+        instanceId,
+        adapter,
+        maintenance,
+        resumeCursor:
+          backend.runtime === "daemon"
+            ? PRIME_AGENT_DAEMON_RESUME_CURSOR
+            : PRIME_AGENT_ACP_RESUME_CURSOR,
+      });
 
       return {
         instanceId,
@@ -829,7 +846,7 @@ export const PrimeAgentDriver: ProviderDriver<
         accentColor,
         enabled,
         snapshot,
-        adapter,
+        orchestrationAdapter,
         textGeneration,
         capacity,
         runtimeFence,

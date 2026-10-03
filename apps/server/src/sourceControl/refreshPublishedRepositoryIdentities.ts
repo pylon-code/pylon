@@ -3,7 +3,6 @@ import * as Path from "effect/Path";
 import type { ProjectId } from "@t3tools/contracts";
 
 import type * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
-import type { ProjectionRepositoryError } from "../persistence/Errors.ts";
 
 interface PublishedRepositorySnapshot {
   readonly projects: ReadonlyArray<{ readonly id: ProjectId; readonly workspaceRoot: string }>;
@@ -14,13 +13,10 @@ interface PublishedRepositorySnapshot {
 }
 
 /** Refresh the published checkout and any project root that owns it. */
-const refreshPublishedRepositoryIdentities = Effect.fnUntraced(function* (
+const refreshPublishedRepositoryIdentities = Effect.fnUntraced(function* <E>(
   cwd: string,
   snapshots: {
-    readonly getShellSnapshot: () => Effect.Effect<
-      PublishedRepositorySnapshot,
-      ProjectionRepositoryError
-    >;
+    readonly getShellSnapshot: () => Effect.Effect<PublishedRepositorySnapshot, E>;
   },
   identities: RepositoryIdentityResolver.RepositoryIdentityResolver["Service"],
 ) {

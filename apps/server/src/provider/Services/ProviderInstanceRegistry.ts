@@ -28,7 +28,7 @@ import type { ProviderInstance } from "../ProviderDriver.ts";
 
 export interface ProviderInstanceRegistryShape {
   /** Re-run admission for an unavailable instance using the current registry config. */
-  readonly retryUnavailable: (instanceId: ProviderInstanceId) => Effect.Effect<void>;
+  readonly retryUnavailable?: (instanceId: ProviderInstanceId) => Effect.Effect<void>;
   /**
    * Look up one instance by id. Returns `undefined` (not Option) when the
    * id is unknown — callers branch on falsy and emit

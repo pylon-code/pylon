@@ -14,7 +14,6 @@ function sideQuestionErrorReason(error: ProviderServiceError): SideQuestionError
       return "unsupported";
     case "ProviderAdapterSessionNotFoundError":
     case "ProviderAdapterSessionClosedError":
-    case "ProviderSessionNotFoundError":
     case "ProviderInstanceNotFoundError":
     case "ProviderValidationError":
       return "session-not-ready";

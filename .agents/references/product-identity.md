@@ -11,7 +11,7 @@ The desktop product identity is deliberately independent from T3 Code so both ap
 - macOS/Windows application ID: `com.pylon.code` (`com.pylon.code.dev.*` for local development);
 - renderer protocols: `pylon-code://` and `pylon-code-dev://`;
 - runtime home: `~/.pylon-code` unless explicitly overridden;
-- Electron profiles: `pylon-code` and `pylon-code-dev`;
+- Electron profiles: `pylon-code-v2`, `pylon-code-nightly-v2`, and `pylon-code-dev`; the v2 profiles isolate Chromium state from v1, while Windows migrates only the safeStorage `Local State` key from the prior channel profile;
 - Linux executable/registration: `pylon`, the per-channel desktop entries `com.pylon.code.desktop`, `com.pylon.code.nightly.desktop` and `com.pylon.code.dev.desktop`, and the matching `com.pylon.code[.nightly|.dev]` WM class and Wayland app ID (Electron derives both from the desktop entry, and XDG portals require a dotted ID);
 - packaged app and artifacts: `Pylon (Alpha)` / `Pylon (Nightly)` and `Pylon-*`.
 

@@ -1,10 +1,7 @@
+import { type ProviderPresentationActivity } from "./providerPresentation.ts";
 import { describe, expect, it } from "vite-plus/test";
 
-import {
-  ProviderDriverKind,
-  ProviderInstanceId,
-  type OrchestrationThreadActivity,
-} from "@t3tools/contracts";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
 
 import {
   deriveCurrentSessionResources,
@@ -20,7 +17,7 @@ const makeActivity = (input: {
   readonly id: string;
   readonly createdAt: string;
   readonly payload: unknown;
-}): OrchestrationThreadActivity =>
+}): ProviderPresentationActivity =>
   ({
     id: input.id,
     kind: "session.resources.updated",
@@ -33,7 +30,7 @@ const makeActivity = (input: {
       ...(input.payload as Record<string, unknown>),
     },
     createdAt: input.createdAt,
-  }) as OrchestrationThreadActivity;
+  }) as ProviderPresentationActivity;
 
 describe("deriveLatestSessionResources", () => {
   it("returns the latest valid bounded catalog", () => {

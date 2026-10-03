@@ -88,7 +88,7 @@ import {
   BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES,
   type ProviderConversationAnchorReceipt,
   type ProviderConversationAnchorBinding,
-} from "../Services/ProviderAdapter.ts";
+} from "../legacy/ProviderAdapter.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "../Layers/EventNdjsonLogger.ts";
 import { primeAgentSessionDirectory } from "../Layers/PrimeAgentAdapter.ts";
 import type {

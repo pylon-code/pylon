@@ -7,7 +7,7 @@ import {
   createMemoryHistory,
   createRootRoute,
   createRouter,
-  RouterProvider,
+  RouterContextProvider,
 } from "@tanstack/react-router";
 import { act, StrictMode, type ReactNode } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
@@ -163,7 +163,9 @@ async function openSettings() {
   await act(() => {
     renderer = create(
       <StrictMode>
-        <RouterProvider router={router} />
+        <RouterContextProvider router={router}>
+          <IntegrationsSettingsPanel />
+        </RouterContextProvider>
       </StrictMode>,
     );
   });

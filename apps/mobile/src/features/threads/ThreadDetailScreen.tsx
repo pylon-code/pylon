@@ -1,50 +1,47 @@
+import { UsageLimitRecoveryCard } from "./UsageLimitRecoveryCard";
+import { useNavigation } from "@react-navigation/native";
 import type { WorktreeSetupCardProps } from "./worktree-setup-card";
 import type { ComposerTextPaste } from "../../native/T3ComposerEditor.types";
 import { type EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
-import type { ContextWindowSnapshot } from "@t3tools/client-runtime/state/context-window";
-import {
-  isSessionCompactionInProgress,
-  type SessionCompactionControlSnapshot,
-} from "@t3tools/client-runtime/state/context-compaction";
-import type { SessionGoalSnapshot } from "@t3tools/client-runtime/state/session-goal";
-import type { SessionAgentDepthSnapshot } from "@t3tools/client-runtime/state/session-agent-depth";
-import type { SessionInputQueueSnapshot } from "@t3tools/client-runtime/state/session-input-queue";
-import type { SessionResourcesSnapshot } from "@t3tools/client-runtime/state/session-resources";
-import type { RuntimeSubagent } from "@t3tools/client-runtime/state/subagentRuntime";
-import {
-  appendCodexArtifactTemplateUsePrompt,
-  type CodexArtifactTemplate,
-} from "@t3tools/client-runtime/codex-artifact-templates";
+import { collectProviderUsageLimits } from "@t3tools/shared/usageLimits";
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import type {
   CodexFeedbackSubmission,
   EnvironmentThreadStatus,
 } from "@t3tools/client-runtime/state/threads";
-import { isRollbackActive, type RollbackTarget } from "@t3tools/client-runtime/rollback";
-import { getMobileRollbackStatusPresentation } from "./rollback-status-presentation";
 import { useKeyboardChatComposerInset, useKeyboardScrollToEnd } from "@legendapp/list/keyboard";
 import { resolveProviderSkillsForCwd } from "@t3tools/client-runtime/providerSkills";
 import type { LegendListRef } from "@legendapp/list/react-native";
 import { HeaderHeightContext } from "@react-navigation/elements";
-import { useNavigation } from "@react-navigation/native";
 import type {
-  ApprovalRequestId,
   EnvironmentId,
   MessageId,
   ModelSelection,
-  OrchestrationThreadShell,
-  OrchestrationRollbackStatus,
   ProviderApprovalDecision,
-  ProviderAskSessionSideQuestionResult,
   ProviderInteractionMode,
-  ProviderRefineSessionHarnessResult,
-  ProviderSessionSideQuestionRequestId,
   RuntimeMode,
+  RuntimeRequestId,
   ServerConfig as T3ServerConfig,
-  SessionInteractionRequestId,
-  SessionInteractionResponse,
   ThreadId,
-  UserInputQuestion,
+  UsageLimitsReport,
 } from "@t3tools/contracts";
+import {
+  appendCodexArtifactTemplateUsePrompt,
+  type CodexArtifactTemplate,
+} from "@t3tools/client-runtime/codex-artifact-templates";
+import type { ThreadUserInputQuestion } from "@t3tools/client-runtime/state/thread-requests";
+import { presentPendingBackgroundWork } from "@t3tools/client-runtime/state/thread-execution";
+import { resolveSubagentPillSegment } from "@t3tools/client-runtime/state/thread-subagents";
+import {
+  formatModelSelectionEffort,
+  type ProviderSubagentStatus,
+} from "@t3tools/client-runtime/state/thread-execution";
+import { formatModelSlugName } from "@t3tools/shared/model";
+import { isProviderNativeSubagentThread } from "@t3tools/contracts";
+import type { QueuedRunEdit } from "../../state/queued-run-edit";
+import type { FollowUpBehavior } from "../../lib/followUpBehavior";
+import type { ContextWindowSnapshot } from "@t3tools/client-runtime/state/context-window";
+import type { ActiveTurnComposerAction } from "@t3tools/client-runtime/state/composer-dispatch";
 import * as Haptics from "expo-haptics";
 import { BlurTargetView } from "expo-blur";
 import { GlassBlurTargetContext } from "../../lib/glassBlurTarget";
@@ -63,8 +60,6 @@ import {
   AppState,
   Keyboard,
   Platform,
-  Pressable,
-  Text,
   useWindowDimensions,
   View,
   type GestureResponderEvent,
@@ -81,6 +76,7 @@ import Animated, {
   ReduceMotion,
   useAnimatedReaction,
   useAnimatedStyle,
+  useDerivedValue,
   useSharedValue,
   withTiming,
 } from "react-native-reanimated";
@@ -93,28 +89,26 @@ import type { StatusTone } from "../../components/StatusPill";
 import type { DraftComposerAttachment } from "../../lib/composerImages";
 import { RenderErrorBoundary, RenderFailureView } from "../../components/RenderErrorBoundary";
 import { CHAT_CONTENT_MAX_WIDTH, type LayoutVariant } from "../../lib/layout";
-import { IOS_NAV_BAR_HEIGHT } from "../../lib/layoutMetrics";
 import { editPendingThreadMessage } from "../../state/edit-pending-thread-message";
 import { useLiveDeviceState } from "../../state/device";
 import { threadDevicePreviews } from "../devices/threadDevicePreviews";
 import type { QueuedThreadMessage } from "../../state/thread-outbox-model";
 import { scopedThreadKey } from "../../lib/scopedEntities";
+import { threadEnvironment } from "../../state/threads";
+import { useAtomCommand } from "../../state/use-atom-command";
 import { useDelayedStatus } from "../../lib/useDelayedStatus";
 import type {
   PendingApproval,
   PendingUserInput,
   PendingUserInputDraftAnswer,
   ThreadFeedEntry,
+  ThreadFeedLatestRun,
 } from "../../lib/threadActivity";
-import type {
-  PendingSessionInteraction,
-  SessionInteractionPresentationState,
-} from "../../lib/sessionInteractions";
 import { PendingApprovalCard } from "./PendingApprovalCard";
+import { ComposerUsageLimits } from "./ComposerUsageLimits";
 import { ComposerFeedback } from "./ComposerFeedback";
 import { PendingUserInputCard } from "./PendingUserInputCard";
-import { PendingSessionInteractionCard } from "./PendingSessionInteractionCard";
-import { SessionPresentationSurface } from "./SessionPresentationSurface";
+import { ProviderSubagentBar } from "./ProviderSubagentBar";
 import { ThreadCreationFailedCard } from "./ThreadCreationFailedCard";
 import {
   FLOATING_WORKING_CONTROL_COVERAGE,
@@ -133,15 +127,17 @@ import {
   COMPOSER_TRANSITION_DURATION_MS,
   ThreadComposer,
 } from "./ThreadComposer";
-import { ThreadFeed } from "./ThreadFeed";
-import type { SessionCompactionMenuAction } from "./sessionCompactionMenu";
+import { ThreadFeed, type ThreadFeedHistoryControls } from "./ThreadFeed";
+import { useThreadTurnSubagents } from "./ThreadAgentsSheet";
+import { ComposerQueuedEditBanner } from "./ComposerQueuedEdit";
+import { useThreadQueuedCount } from "./ThreadQueueControl";
 import type { ThreadContentPresentation } from "./threadContentPresentation";
 import { resolveThreadFeedSubmissionAnchor } from "./thread-feed-live-follow";
 
 export interface ThreadDetailScreenProps {
   readonly worktreeSetup?: WorktreeSetupCardProps | null;
   readonly setupWorkingStartedAt?: string | null;
-  readonly selectedThread: OrchestrationThreadShell;
+  readonly selectedThread: EnvironmentThreadShell;
   readonly contentPresentation: ThreadContentPresentation;
   readonly screenTone: StatusTone;
   readonly connectionError: string | null;
@@ -149,16 +145,12 @@ export interface ThreadDetailScreenProps {
   readonly feedbackSubmissions: ReadonlyArray<CodexFeedbackSubmission>;
   readonly onDismissFeedback: (id: MessageId) => void;
   readonly selectedThreadFeed: ReadonlyArray<ThreadFeedEntry>;
-  readonly sessionAgents: ReadonlyArray<RuntimeSubagent>;
-  readonly contextWindow: ContextWindowSnapshot | null;
-  readonly sessionResources: SessionResourcesSnapshot | null;
-  readonly sessionAgentDepth: SessionAgentDepthSnapshot | null;
-  readonly sessionInputQueue: SessionInputQueueSnapshot | null;
-  readonly sessionGoal: SessionGoalSnapshot | null;
-  readonly sessionCompaction: SessionCompactionControlSnapshot | null;
-  readonly sessionCompactionScopeKey: string | null;
-  readonly sessionCompactionPendingAction: SessionCompactionMenuAction | null;
+  readonly activityRun: ThreadFeedLatestRun | null;
   readonly activeWorkStartedAt: string | null;
+  /** The live work is a provider-native subagent's runless root turn. */
+  readonly runlessWorkActive?: boolean;
+  /** Set on a provider-native subagent thread, which shows status instead of a composer. */
+  readonly providerSubagentStatus?: ProviderSubagentStatus | null;
   readonly isCompacting: boolean;
   /**
    * The server has not created this thread yet. "preparing" runs while the
@@ -176,38 +168,33 @@ export interface ThreadDetailScreenProps {
       }
     | null;
   readonly activePendingApproval: PendingApproval | null;
-  readonly respondingApprovalId: ApprovalRequestId | null;
+  readonly respondingApprovalId: RuntimeRequestId | null;
   readonly activePendingUserInput: PendingUserInput | null;
   readonly activePendingUserInputDrafts: Record<string, PendingUserInputDraftAnswer>;
   readonly activePendingUserInputAnswers: Record<string, string | ReadonlyArray<string>> | null;
-  readonly respondingUserInputId: ApprovalRequestId | null;
-  readonly activePendingInteraction: PendingSessionInteraction | null;
-  readonly sessionInteractionPresentation: SessionInteractionPresentationState;
-  readonly interactionSubmitting: boolean;
-  readonly interactionError: string | null;
-  readonly interactionCanRetry: boolean;
+  readonly respondingUserInputId: RuntimeRequestId | null;
   readonly draftMessage: string;
   readonly draftAttachments: ReadonlyArray<DraftComposerAttachment>;
+  readonly contextWindow: ContextWindowSnapshot | null;
   readonly connectionStateLabel: EnvironmentConnectionPhase;
   /** Message sync status for the selected thread (drives the composer status pill). */
   readonly threadSyncStatus?: EnvironmentThreadStatus;
-  /** Non-null when older turns exist beyond the loaded window. */
-  readonly loadEarlier?: { readonly loading: boolean; readonly onLoadEarlier: () => void } | null;
-  readonly rollbackStatus: OrchestrationRollbackStatus | null | undefined;
-  readonly rollbackStatusUncertain: boolean;
-  readonly rollbackTargets: ReadonlyMap<string, RollbackTarget>;
-  readonly rollbackTargetIdle: boolean;
-  readonly rollbackCommandPending: boolean;
-  readonly onRevertMessage: (target: RollbackTarget) => void;
-  readonly onRecoverRollback: (
-    action: "retry-verification" | "resume-compensation",
-  ) => Promise<void>;
+  /** Progressive history controls for oversized mobile thread opens. */
+  readonly historyControls?: ThreadFeedHistoryControls;
   readonly activeThreadBusy: boolean;
+  readonly canStopThread: boolean;
+  /** Set while a queued message is open in the composer for editing. */
+  readonly queuedRunEdit: QueuedRunEdit | null;
+  readonly composerDraftKey: string | null;
+  readonly followUpBehavior: FollowUpBehavior;
+  readonly canSteerActiveTurn: boolean;
+  readonly isSavingQueuedEdit: boolean;
+  readonly onCancelQueuedRunEdit: () => void;
+  readonly onRemoveQueuedEditAttachment: (attachmentId: string) => void;
   readonly environmentId: EnvironmentId;
   readonly projectWorkspaceRoot: string | null;
   readonly threadCwd: string | null;
   readonly localOutboxCount: number;
-  readonly onManagePendingSends: () => void;
   readonly queuedMessages: ReadonlyArray<QueuedThreadMessage>;
   readonly dispatchingMessageId: MessageId | null;
   readonly serverConfig: T3ServerConfig | null;
@@ -222,54 +209,28 @@ export interface ThreadDetailScreenProps {
   readonly onNativePasteText: (paste: ComposerTextPaste) => Promise<void>;
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
-  readonly onReloadSessionResources: () => Promise<void>;
-  readonly onRefineSessionHarness: () => Promise<ProviderRefineSessionHarnessResult | null>;
-  readonly onAskSessionSideQuestion: (
-    requestId: ProviderSessionSideQuestionRequestId,
-    question: string,
-  ) => Promise<ProviderAskSessionSideQuestionResult | null>;
-  readonly onCancelSessionSideQuestion: (
-    requestId: ProviderSessionSideQuestionRequestId,
-  ) => Promise<void>;
-  readonly onSetSessionAgentDepth: (maxDepth: number) => Promise<void>;
-  readonly onSendMessage: () => Promise<MessageId | null>;
-  readonly onQueueFollowUp: () => Promise<MessageId | null>;
-  readonly onClearSessionInputQueue: () => Promise<boolean>;
-  readonly onRemoveOnlySessionInputQueueItem: (queue: "steering" | "follow-up") => Promise<boolean>;
-  readonly onSetSessionInputQueueMode: (
-    queue: "steering" | "follow-up",
-    mode: "all-at-once" | "one-at-a-time",
-  ) => Promise<boolean>;
-  readonly onRunSessionCompactionAction: (action: SessionCompactionMenuAction) => Promise<boolean>;
-  readonly onCancelSessionAgent: (agentId: string) => Promise<boolean>;
-  readonly onMessageSessionAgent: (
-    agentId: string,
-    message: string,
-  ) => Promise<"delivered" | "queued" | "delivery-unknown" | null>;
+  readonly onSendMessage: (followUp?: ActiveTurnComposerAction) => Promise<MessageId | null>;
   readonly onReconnectEnvironment: () => void;
+  /** Whether the model picker may offer providers other than this thread's. */
+  readonly canSwitchThreadProvider: boolean;
   readonly onUpdateThreadModelSelection: (modelSelection: ModelSelection) => void;
   readonly onUpdateThreadRuntimeMode: (runtimeMode: RuntimeMode) => void;
   readonly onUpdateThreadInteractionMode: (interactionMode: ProviderInteractionMode) => void;
   readonly onRespondToApproval: (
-    requestId: ApprovalRequestId,
+    requestId: RuntimeRequestId,
     decision: ProviderApprovalDecision,
   ) => Promise<unknown>;
   readonly onSelectUserInputOption: (
-    requestId: ApprovalRequestId,
-    question: UserInputQuestion,
-    label: string,
+    requestId: RuntimeRequestId,
+    question: ThreadUserInputQuestion,
+    value: string,
   ) => void;
   readonly onChangeUserInputCustomAnswer: (
-    requestId: ApprovalRequestId,
+    requestId: RuntimeRequestId,
     questionId: string,
     customAnswer: string,
   ) => void;
   readonly onSubmitUserInput: () => Promise<unknown>;
-  readonly onRespondToInteraction: (
-    requestId: SessionInteractionRequestId,
-    response: SessionInteractionResponse,
-  ) => Promise<unknown>;
-  readonly onRetryInteraction: () => Promise<unknown>;
   readonly onDismissUserInput: () => Promise<unknown>;
   readonly showContent?: boolean;
 }
@@ -349,56 +310,6 @@ const USER_INPUT_TOGGLE_TIMING = {
   easing: Easing.out(Easing.cubic),
 };
 
-function RollbackStatusSurface(props: {
-  readonly status: OrchestrationRollbackStatus | null | undefined;
-  readonly pending: boolean;
-  readonly onRecover: (action: "retry-verification" | "resume-compensation") => Promise<void>;
-}) {
-  if (!props.status) return null;
-  const presentation = getMobileRollbackStatusPresentation(props.status);
-  const { severe, title, actions } = presentation;
-  return (
-    <View
-      accessibilityRole={presentation.accessibilityRole}
-      accessibilityLiveRegion={presentation.accessibilityLiveRegion}
-      className={`mb-3 gap-2 rounded-2xl border px-3 py-2.5 ${
-        severe ? "border-red-500/50 bg-red-500/10" : "border-adaptive-neutral-300-700 bg-screen"
-      }`}
-    >
-      <Text className={`font-t3-semibold text-sm ${severe ? "text-red-500" : "text-foreground"}`}>
-        {title}
-      </Text>
-      <Text className="font-t3-regular text-xs text-foreground-muted">{presentation.detail}</Text>
-      {actions.length > 0 ? (
-        <View className="flex-row flex-wrap gap-2">
-          {actions.includes("retry-verification") ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Retry rollback verification"
-              disabled={props.pending}
-              onPress={() => void props.onRecover("retry-verification")}
-              className="min-h-11 justify-center rounded-xl border border-adaptive-neutral-300-700 px-3 disabled:opacity-50"
-            >
-              <Text className="font-t3-medium text-sm text-foreground">Retry verification</Text>
-            </Pressable>
-          ) : null}
-          {actions.includes("resume-compensation") ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Resume rollback compensation"
-              disabled={props.pending}
-              onPress={() => void props.onRecover("resume-compensation")}
-              className="min-h-11 justify-center rounded-xl border border-adaptive-neutral-300-700 px-3 disabled:opacity-50"
-            >
-              <Text className="font-t3-medium text-sm text-foreground">Resume compensation</Text>
-            </Pressable>
-          ) : null}
-        </View>
-      ) : null}
-    </View>
-  );
-}
-
 export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: ThreadDetailScreenProps) {
   const navigation = useNavigation();
   const deviceState = useLiveDeviceState(props.environmentId);
@@ -448,10 +359,29 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     }
   }, []);
   const windowHeight = useWindowDimensions().height;
-  const navigationHeaderHeight = useContext(HeaderHeightContext) || insets.top + IOS_NAV_BAR_HEIGHT;
+  const navigationHeaderHeight = useContext(HeaderHeightContext) || insets.top + 44;
   const agentLabel = `${props.selectedThread.modelSelection.instanceId} agent`;
   const selectedThreadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
+  const queuedCount = useThreadQueuedCount({
+    environmentId: props.environmentId,
+    threadId: props.selectedThread.id,
+  });
+  const turnSubagents = useThreadTurnSubagents({
+    environmentId: props.environmentId,
+    threadId: props.selectedThread.id,
+  });
+  const agentsSegment = resolveSubagentPillSegment(turnSubagents);
   const composerEditorRef = useRef<ComposerEditorHandle>(null);
+  // A provider-native subagent shows status instead of a composer.
+  const isProviderSubagent = isProviderNativeSubagentThread(props.selectedThread.source);
+  // Entering edit mode from the queue sheet should land in a ready composer,
+  // not require a second tap on a composer already holding the message.
+  const editingRunId = props.queuedRunEdit?.runId ?? null;
+  useEffect(() => {
+    if (editingRunId === null) return;
+    const frame = requestAnimationFrame(() => composerEditorRef.current?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [editingRunId]);
   const draftMessageRef = useRef(props.draftMessage);
   draftMessageRef.current = props.draftMessage;
   const composerOverlayRef = useRef<View>(null);
@@ -507,6 +437,10 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   // One floating pill above the composer: it reads the connection phase while
   // disconnected, the sync state while messages load, then the working timer
   // once the feed is settled.
+  // The shell's roster is the server's post-settlement view of what still runs.
+  const pendingBackgroundWork = presentPendingBackgroundWork(
+    props.selectedThread.pendingBackgroundTasks,
+  );
   const floatingStatus = ((): FloatingWorkingStatus | null => {
     const connectionStatus = connectionFloatingStatus({
       connectionError: props.connectionError,
@@ -517,11 +451,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     if (connectionStatus !== null) {
       return connectionStatus;
     }
-    if (
-      props.activePendingApproval !== null ||
-      props.activePendingUserInput !== null ||
-      props.activePendingInteraction !== null
-    ) {
+    if (props.activePendingApproval !== null || props.activePendingUserInput !== null) {
       return null;
     }
     if (props.creationState?.kind === "preparing") {
@@ -540,18 +470,22 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     }
     // Prime reports compaction through its own control snapshot; every other
     // provider reports it as a compacting turn.
-    if (
-      (isSessionCompactionInProgress(props.sessionCompaction) || props.isCompacting) &&
-      contentPresentationKind === "ready"
-    ) {
+    if (props.isCompacting && contentPresentationKind === "ready") {
       return { kind: "compacting" };
     }
     if (props.activeWorkStartedAt !== null && contentPresentationKind === "ready") {
-      const step = props.selectedThread.planProgress?.step;
       return {
         kind: "working",
         startedAt: props.activeWorkStartedAt,
-        ...(step ? { step } : {}),
+      };
+    }
+    if (pendingBackgroundWork !== null && contentPresentationKind === "ready") {
+      return {
+        kind: "waiting",
+        label: pendingBackgroundWork.title,
+        accessibilityLabel: `${pendingBackgroundWork.title}: ${pendingBackgroundWork.items
+          .map((item) => item.label)
+          .join(", ")}`,
       };
     }
     return null;
@@ -563,6 +497,8 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   // reserves no status space.
   const showFloatingStatus =
     showWorkingControl ||
+    queuedCount > 0 ||
+    agentsSegment !== null ||
     devicePreviews.length > 0 ||
     props.connectionStateLabel !== "connected" ||
     props.queuedMessages.some((message) => message.deliveryHold === undefined) ||
@@ -578,7 +514,8 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
         ((entry.message.attachments?.length ?? 0) > 0 ||
           entry.message.text.trim().toLowerCase() !== "/compact"),
     ) ||
-    (Boolean(props.loadEarlier) && props.selectedThread.latestUserMessageAt !== null);
+    (props.historyControls?.hasMoreHistory === true &&
+      props.selectedThread.latestUserMessageAt !== null);
   const composerChrome = composerExpanded ? COMPOSER_EXPANDED_CHROME : COMPOSER_COLLAPSED_CHROME;
   const composerOverlapHeight = composerChrome + composerBottomInset;
   // While a user-input request is pending, the questionnaire owns the
@@ -588,8 +525,70 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   // keyboard animations coherent. Collapse state is keyed by request id so a
   // new request re-expands automatically.
   const [collapsedUserInputRequestId, setCollapsedUserInputRequestId] =
-    useState<ApprovalRequestId | null>(null);
+    useState<RuntimeRequestId | null>(null);
   const activeUserInputRequestId = props.activePendingUserInput?.requestId ?? null;
+  // The open /usage-limits panel for this thread, model and turn. Only the open
+  // moment is stored: the rows read live provider data, so a redeemed reset
+  // credit or refreshed probe shows through. Anything that spends quota closes
+  // it: a new turn from any source, or the agent resuming after an approval or
+  // answered question.
+  const [usageLimitsPanel, setUsageLimitsPanel] = useState<{
+    readonly key: string;
+    readonly threadKey: string;
+    readonly now: number;
+  } | null>(null);
+  // A pending approval or question is part of the key: once it is answered,
+  // from this client or any other, the agent resumes and spends quota.
+  const usageLimitsKey = [
+    selectedThreadKey,
+    props.selectedThread.modelSelection.instanceId,
+    props.selectedThread.latestRun?.runId ?? "",
+    props.activePendingApproval?.requestId ?? props.activePendingUserInput?.requestId ?? "",
+  ].join(":");
+  // Drop the snapshot as soon as the key changes so it cannot resurface stale.
+  if (usageLimitsPanel !== null && usageLimitsPanel.key !== usageLimitsKey) {
+    setUsageLimitsPanel(null);
+  }
+  const usageLimitsReport = useMemo(
+    () =>
+      usageLimitsPanel !== null && usageLimitsPanel.key === usageLimitsKey
+        ? collectProviderUsageLimits(
+            props.selectedThread.modelSelection.instanceId,
+            props.serverConfig?.providers ?? [],
+            props.serverConfig?.usageLimitSources ?? [],
+            usageLimitsPanel.now,
+          )
+        : null,
+    [
+      props.selectedThread.modelSelection.instanceId,
+      props.serverConfig,
+      usageLimitsKey,
+      usageLimitsPanel,
+    ],
+  );
+  const showUsageLimits = useCallback(
+    (report: UsageLimitsReport | null) =>
+      setUsageLimitsPanel(
+        report === null
+          ? null
+          : {
+              key: usageLimitsKey,
+              threadKey: selectedThreadKey,
+              now: Date.parse(report.createdAt),
+            },
+      ),
+    [selectedThreadKey, usageLimitsKey],
+  );
+  const dismissUsageLimits = useCallback(() => setUsageLimitsPanel(null), []);
+  // A send may resolve after navigating away, so only the originating
+  // thread's panel is cleared; a panel opened elsewhere in the meantime stays.
+  const clearUsageLimitsFor = useCallback(
+    (threadKey: string) =>
+      setUsageLimitsPanel((current) =>
+        current !== null && current.threadKey === threadKey ? null : current,
+      ),
+    [],
+  );
   const userInputCollapsed =
     activeUserInputRequestId !== null && collapsedUserInputRequestId === activeUserInputRequestId;
   // The card's height RESERVES keyboard space at all times instead of
@@ -672,6 +671,13 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     (value) => {
       combinedContentInsetEndAdjustment.value = value;
     },
+    [userInputCoverageApplies],
+  );
+  // The floating control is anchored to the bar's top edge, so ride it up
+  // with the expanded card instead of drawing it over the questions.
+  const floatingControlLift = useDerivedValue(
+    () =>
+      userInputCoverageApplies ? userInputCardProgress.value * userInputCardCoverage.value : 0,
     [userInputCoverageApplies],
   );
   const { freeze, scrollMessageToEnd } = useKeyboardScrollToEnd({ listRef });
@@ -768,6 +774,12 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   const layoutVariant = props.layoutVariant ?? "compact";
   const isSplitLayout = layoutVariant === "split";
   const contentMaxWidth = isSplitLayout ? CHAT_CONTENT_MAX_WIDTH : undefined;
+  const providerSubagentProvider = props.serverConfig?.providers.find(
+    (provider) => provider.instanceId === props.selectedThread.modelSelection.instanceId,
+  );
+  const providerSubagentCatalogModel = providerSubagentProvider?.models.find(
+    (model) => model.slug === props.selectedThread.modelSelection.model,
+  );
   const workspaceContentWidth = useWorkspaceContentWidth();
   // Clearing animated width can retain the unfolded width after Android resumes folded.
   // Assign both layouts explicitly so the dock always follows its current parent.
@@ -786,31 +798,65 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
       ? resolveProviderSkillsForCwd(provider, props.threadCwd ?? props.projectWorkspaceRoot)
       : [];
   }, [props.projectWorkspaceRoot, props.serverConfig, props.threadCwd, selectedInstanceId]);
-  const aboveEditorWidgets = useMemo(
-    () =>
-      props.sessionInteractionPresentation.widgets.filter(
-        (widget) => widget.placement === "aboveEditor",
-      ),
-    [props.sessionInteractionPresentation.widgets],
-  );
-  const belowEditorWidgets = useMemo(
-    () =>
-      props.sessionInteractionPresentation.widgets.filter(
-        (widget) => widget.placement === "belowEditor",
-      ),
-    [props.sessionInteractionPresentation.widgets],
-  );
-  const hasBelowEditorWidgets = belowEditorWidgets.length > 0;
-  const hasAboveEditorPresentation =
-    props.sessionInteractionPresentation.notification !== null ||
-    props.sessionInteractionPresentation.statuses.length > 0 ||
-    aboveEditorWidgets.length > 0;
-
   useLayoutEffect(() => {
     selectedThreadKeyRef.current = selectedThreadKey;
     // A replaced or unmounted native editor may not emit a blur event.
     setComposerFocused(false);
   }, [selectedThreadKey, showContent]);
+
+  const visitThread = useAtomCommand(threadEnvironment.visit, { reportFailure: false });
+  const lastDispatchedVisitRef = useRef<string | null>(null);
+  const lastVisitDispatchRef = useRef({ threadKey: selectedThreadKey, at: 0 });
+  const selectedThreadId = props.selectedThread.id;
+  const selectedThreadUpdatedAt = props.selectedThread.updatedAt;
+  const selectedThreadLastVisitedAt = props.selectedThread.lastVisitedAt;
+  const selectedThreadCompletedAt = props.selectedThread.latestRun?.completedAt;
+  useEffect(() => {
+    // Records the server-side visited watermark while the thread is on
+    // screen (mirror of web ChatView), so the "Done" marker clears on every
+    // device. Field absent → the server predates visited tracking.
+    if (!showContent || selectedThreadLastVisitedAt === undefined) return;
+    const threadUpdatedAtMs = Date.parse(selectedThreadUpdatedAt);
+    if (Number.isNaN(threadUpdatedAtMs)) return;
+    const lastVisitedAtMs = selectedThreadLastVisitedAt
+      ? Date.parse(selectedThreadLastVisitedAt)
+      : NaN;
+    if (!Number.isNaN(lastVisitedAtMs) && lastVisitedAtMs >= threadUpdatedAtMs) return;
+    // Dedupe per watermark — the effect re-runs before the command echo lands.
+    const dispatchKey = `${selectedThreadKey}:${selectedThreadUpdatedAt}`;
+    if (lastDispatchedVisitRef.current === dispatchKey) return;
+    const dispatch = () => {
+      lastDispatchedVisitRef.current = dispatchKey;
+      lastVisitDispatchRef.current = { threadKey: selectedThreadKey, at: Date.now() };
+      void visitThread({
+        environmentId: props.environmentId,
+        input: { threadId: selectedThreadId, visitedAt: selectedThreadUpdatedAt },
+      });
+    };
+    // Completion clears unread state immediately; streaming watermarks use the
+    // same ten-second trailing throttle as web, keeping the newest update.
+    const completedAtMs = selectedThreadCompletedAt ? Date.parse(selectedThreadCompletedAt) : NaN;
+    const hasUnseenCompletion =
+      !Number.isNaN(completedAtMs) &&
+      (Number.isNaN(lastVisitedAtMs) || completedAtMs > lastVisitedAtMs);
+    const previous = lastVisitDispatchRef.current;
+    const elapsed = Date.now() - previous.at;
+    if (previous.threadKey !== selectedThreadKey || hasUnseenCompletion || elapsed >= 10_000) {
+      dispatch();
+      return;
+    }
+    const timer = setTimeout(dispatch, 10_000 - elapsed);
+    return () => clearTimeout(timer);
+  }, [
+    props.environmentId,
+    selectedThreadId,
+    selectedThreadKey,
+    selectedThreadLastVisitedAt,
+    selectedThreadCompletedAt,
+    selectedThreadUpdatedAt,
+    showContent,
+    visitThread,
+  ]);
 
   useEffect(() => {
     setAnchorMessageId(null);
@@ -878,48 +924,43 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     selectedThreadKey,
   ]);
 
-  // handleSendMessage is handed to the memoized composer, so its identity has to
-  // survive a streaming turn. The anchor inputs are read once the send resolves
-  // and never during render, so committed state is the right source: keeping them
-  // in deps would rebuild the callback on every delta and re-render the whole
-  // composer subtree with it.
-  const submissionAnchorInputsRef = useRef({
-    hasUserMessage: false,
-    hasStartedTurn: false,
-    queuedMessageCount: 0,
-  });
-  useEffect(() => {
-    submissionAnchorInputsRef.current = {
-      hasUserMessage: selectedThreadFeed.some(
+  const handleSendMessage = useCallback(
+    async (followUp?: ActiveTurnComposerAction) => {
+      const targetThreadKey = selectedThreadKey;
+      const hasUserMessage = selectedThreadFeed.some(
         (entry) => entry.type === "message" && entry.message.role === "user",
-      ),
-      hasStartedTurn: props.selectedThread.latestTurn !== null,
-      queuedMessageCount: props.localOutboxCount,
-    };
-  }, [selectedThreadFeed, props.selectedThread.latestTurn, props.localOutboxCount]);
+      );
+      const messageId = await props.onSendMessage(followUp);
+      if (messageId === null || selectedThreadKeyRef.current !== targetThreadKey) {
+        return messageId;
+      }
 
-  const handleSendMessage = useCallback(async () => {
-    const targetThreadKey = selectedThreadKey;
-    const { hasUserMessage, hasStartedTurn, queuedMessageCount } =
-      submissionAnchorInputsRef.current;
-    const messageId = await props.onSendMessage();
-    if (messageId === null || selectedThreadKeyRef.current !== targetThreadKey) {
+      // A sent message makes the snapshot stale; a refused send leaves it in place.
+      clearUsageLimitsFor(targetThreadKey);
+
+      setSubmittedMessageId(messageId);
+      setAnchorMessageId(
+        resolveThreadFeedSubmissionAnchor({
+          currentAnchorMessageId: anchorMessageId,
+          submittedMessageId: messageId,
+          hasStartedTurn: props.selectedThread.latestRun !== null,
+          hasUserMessage,
+          queuedMessageCount: props.localOutboxCount,
+        }),
+      );
+      composerEditorRef.current?.blur();
       return messageId;
-    }
-
-    setSubmittedMessageId(messageId);
-    setAnchorMessageId((currentAnchorMessageId) =>
-      resolveThreadFeedSubmissionAnchor({
-        currentAnchorMessageId,
-        submittedMessageId: messageId,
-        hasStartedTurn,
-        hasUserMessage,
-        queuedMessageCount,
-      }),
-    );
-    composerEditorRef.current?.blur();
-    return messageId;
-  }, [props.onSendMessage, selectedThreadKey]);
+    },
+    [
+      anchorMessageId,
+      clearUsageLimitsFor,
+      props.onSendMessage,
+      props.selectedThread.latestRun,
+      props.localOutboxCount,
+      selectedThreadFeed,
+      selectedThreadKey,
+    ],
+  );
 
   const handleEditPendingMessage = useCallback(async (message: QueuedThreadMessage) => {
     try {
@@ -1038,11 +1079,15 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               setupWorkingStartedAt={props.setupWorkingStartedAt}
               queuedMessages={props.queuedMessages}
               dispatchingMessageId={props.dispatchingMessageId}
-              onEditPendingMessage={handleEditPendingMessage}
+              // A native subagent has no composer to edit a pending message in;
+              // Cancel on the edit banner would discard it.
+              onEditPendingMessage={isProviderSubagent ? null : handleEditPendingMessage}
               contentPresentation={props.contentPresentation}
               agentLabel={agentLabel}
-              latestTurn={props.selectedThread.latestTurn}
+              threadTitle={props.selectedThread.title}
+              latestRun={props.activityRun}
               activeWorkStartedAt={props.activeWorkStartedAt}
+              runlessWorkActive={props.runlessWorkActive ?? false}
               listRef={listRef}
               freeze={freeze}
               anchorMessageId={anchorMessageId}
@@ -1054,17 +1099,13 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 (showFloatingStatus ? FLOATING_WORKING_CONTROL_COVERAGE : 0)
               }
               contentMaxWidth={contentMaxWidth}
+              historyControls={props.historyControls}
               layoutVariant={layoutVariant}
               usesAutomaticContentInsets={props.usesAutomaticContentInsets}
               onHeaderMaterialVisibilityChange={props.onHeaderMaterialVisibilityChange}
               onEndFollowEnabledChange={setEndFollowEnabled}
               skills={selectedProviderSkills}
               onUseArtifactTemplate={handleUseArtifactTemplate}
-              rollbackTargets={props.rollbackTargets}
-              rollbackTargetIdle={props.rollbackTargetIdle}
-              rollbackCommandPending={props.rollbackCommandPending}
-              onRevertMessage={props.onRevertMessage}
-              loadEarlier={props.loadEarlier ?? null}
             />
           </RenderErrorBoundary>
         </BlurTargetView>
@@ -1098,6 +1139,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               <FloatingWorkingControl
                 colorScheme={isDarkMode ? "dark" : "light"}
                 status={floatingStatus}
+                lift={floatingControlLift}
                 devicePreview={
                   devicePreviews.length > 0
                     ? { count: devicePreviews.length, onPress: openDevicePreview }
@@ -1105,8 +1147,41 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 }
                 showScrollToEnd={showScrollToEndButton}
                 onScrollToEnd={handleScrollToEnd}
+                agents={agentsSegment}
+                onOpenAgents={() => {
+                  Keyboard.dismiss();
+                  navigation.navigate("ThreadAgents", {
+                    environmentId: props.environmentId,
+                    threadId: props.selectedThread.id,
+                  });
+                }}
+                queuedCount={queuedCount}
+                onOpenQueue={() => {
+                  Keyboard.dismiss();
+                  navigation.navigate("ThreadQueue", {
+                    environmentId: props.environmentId,
+                    threadId: props.selectedThread.id,
+                  });
+                }}
               />
               <View className="w-full self-center" style={{ maxWidth: contentMaxWidth }}>
+                {props.queuedRunEdit !== null ? (
+                  <Animated.View
+                    className="shrink-0"
+                    entering={FadeInDown.duration(180)}
+                    exiting={FadeOut.duration(120)}
+                  >
+                    <ComposerQueuedEditBanner
+                      saving={props.isSavingQueuedEdit}
+                      onCancel={props.onCancelQueuedRunEdit}
+                    />
+                  </Animated.View>
+                ) : null}
+                <UsageLimitRecoveryCard
+                  key={props.selectedThread.latestRun?.runId}
+                  thread={props.selectedThread}
+                  environmentId={props.environmentId}
+                />
                 {props.feedbackSubmissions.map((submission) => (
                   <ComposerFeedback
                     key={submission.id}
@@ -1114,14 +1189,18 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                     onDismiss={() => props.onDismissFeedback(submission.id)}
                   />
                 ))}
-                {hasAboveEditorPresentation ? (
-                  <View className="px-4">
-                    <SessionPresentationSurface
-                      notification={props.sessionInteractionPresentation.notification}
-                      statuses={props.sessionInteractionPresentation.statuses}
-                      widgets={aboveEditorWidgets}
+                {usageLimitsReport && activeUserInputRequestId === null ? (
+                  <Animated.View
+                    className="shrink-0 px-4 pb-3"
+                    entering={FadeInDown.duration(220)}
+                    exiting={FadeOut.duration(140)}
+                  >
+                    <ComposerUsageLimits
+                      report={usageLimitsReport}
+                      environmentId={props.environmentId}
+                      onClose={dismissUsageLimits}
                     />
-                  </View>
+                  </Animated.View>
                 ) : null}
                 {props.creationState?.kind === "failed" ? (
                   <Animated.View
@@ -1140,35 +1219,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                   </Animated.View>
                 ) : null}
 
-                <View className="px-4">
-                  <RollbackStatusSurface
-                    status={props.rollbackStatus}
-                    pending={props.rollbackCommandPending || props.rollbackStatusUncertain}
-                    onRecover={props.onRecoverRollback}
-                  />
-                  {props.localOutboxCount > 0 &&
-                  props.rollbackTargets.size > 0 &&
-                  !isRollbackActive(props.rollbackStatus) &&
-                  !props.rollbackStatusUncertain ? (
-                    <View
-                      accessibilityRole="summary"
-                      className="mb-3 rounded-xl border border-adaptive-neutral-300-700 bg-screen px-3 py-2"
-                    >
-                      <Text className="text-sm font-semibold text-foreground">
-                        Rollback paused for queued messages
-                      </Text>
-                      <Text className="mt-1 text-xs leading-5 text-foreground-muted">
-                        Send or cancel the queued{" "}
-                        {props.localOutboxCount === 1 ? "message" : "messages"} before starting
-                        rollback.
-                      </Text>
-                    </View>
-                  ) : null}
-                </View>
-
-                {props.activePendingApproval ||
-                props.activePendingUserInput ||
-                props.activePendingInteraction ? (
+                {props.activePendingApproval || props.activePendingUserInput ? (
                   <Animated.View
                     className="shrink-0 gap-3 px-4 pb-3"
                     // The questionnaire replaces the composer, so it must pad
@@ -1207,17 +1258,6 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                         onDismiss={props.onDismissUserInput}
                       />
                     ) : null}
-                    {props.activePendingInteraction ? (
-                      <PendingSessionInteractionCard
-                        key={props.activePendingInteraction.requestId}
-                        interaction={props.activePendingInteraction}
-                        submitting={props.interactionSubmitting}
-                        error={props.interactionError}
-                        canRetry={props.interactionCanRetry}
-                        onRespond={props.onRespondToInteraction}
-                        onRetry={props.onRetryInteraction}
-                      />
-                    ) : null}
                   </Animated.View>
                 ) : null}
               </View>
@@ -1233,85 +1273,98 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                     : undefined
                 }
               >
-                <GlassBlurTargetContext value={feedBlurTarget}>
-                  <ThreadComposer
-                    editorRef={composerEditorRef}
-                    draftMessage={props.draftMessage}
-                    draftAttachments={props.draftAttachments}
-                    placeholder="Ask the repo agent, or run a command…"
-                    contentMaxWidth={contentMaxWidth}
-                    connectionState={props.connectionStateLabel}
-                    environmentLabel={props.environmentLabel}
-                    selectedThread={props.selectedThread}
-                    hasCompactableConversation={hasCompactableConversation && !props.isCompacting}
-                    serverConfig={props.serverConfig}
-                    localOutboxCount={props.localOutboxCount}
-                    onManagePendingSends={props.onManagePendingSends}
-                    contextWindow={props.contextWindow}
-                    sessionResources={props.sessionResources}
-                    sessionAgentDepth={props.sessionAgentDepth}
-                    sessionAgents={props.sessionAgents}
-                    sessionInputQueue={props.sessionInputQueue}
-                    sessionGoal={props.sessionGoal}
-                    sessionCompaction={props.sessionCompaction}
-                    sessionCompactionScopeKey={props.sessionCompactionScopeKey}
-                    sessionCompactionPendingAction={props.sessionCompactionPendingAction}
-                    activeThreadBusy={props.activeThreadBusy}
-                    sessionInputBlocked={
-                      props.activePendingApproval !== null ||
-                      props.activePendingUserInput !== null ||
-                      props.activePendingInteraction !== null ||
-                      props.rollbackStatusUncertain ||
-                      props.rollbackStatus?.state === "pending" ||
-                      props.rollbackStatus?.state === "recovering" ||
-                      props.rollbackStatus?.state === "manual-recovery"
-                    }
-                    environmentId={props.environmentId}
-                    projectCwd={props.threadCwd ?? props.projectWorkspaceRoot}
-                    // Follow-ups typed during setup wait in the draft: queueing
-                    // them against a thread id the server may still reject
-                    // would strand them in the outbox.
-                    sendBlockedReason={
-                      props.creationState?.kind === "preparing" ? "Starting the task…" : null
-                    }
-                    bottomInset={hasBelowEditorWidgets ? 0 : composerBottomInset}
-                    onChangeDraftMessage={props.onChangeDraftMessage}
-                    onPickDraftMedia={props.onPickDraftMedia}
-                    onPickDraftFiles={props.onPickDraftFiles}
-                    onNativePasteImages={props.onNativePasteImages}
-                    onNativePasteText={props.onNativePasteText}
-                    onRemoveDraftImage={props.onRemoveDraftImage}
-                    onStopThread={props.onStopThread}
-                    onReloadSessionResources={props.onReloadSessionResources}
-                    onRefineSessionHarness={props.onRefineSessionHarness}
-                    onAskSessionSideQuestion={props.onAskSessionSideQuestion}
-                    onCancelSessionSideQuestion={props.onCancelSessionSideQuestion}
-                    onSetSessionAgentDepth={props.onSetSessionAgentDepth}
-                    onSendMessage={handleSendMessage}
-                    onQueueFollowUp={props.onQueueFollowUp}
-                    onClearSessionInputQueue={props.onClearSessionInputQueue}
-                    onRemoveOnlySessionInputQueueItem={props.onRemoveOnlySessionInputQueueItem}
-                    onSetSessionInputQueueMode={props.onSetSessionInputQueueMode}
-                    onRunSessionCompactionAction={props.onRunSessionCompactionAction}
-                    onCancelSessionAgent={props.onCancelSessionAgent}
-                    onMessageSessionAgent={props.onMessageSessionAgent}
-                    onUpdateModelSelection={props.onUpdateThreadModelSelection}
-                    onUpdateRuntimeMode={props.onUpdateThreadRuntimeMode}
-                    onUpdateInteractionMode={props.onUpdateThreadInteractionMode}
-                    onExpandedChange={setComposerExpanded}
-                    onEditorFocusChange={handleComposerFocusChange}
-                  />
-                </GlassBlurTargetContext>
+                {isProviderSubagent ? (
+                  <View
+                    className="self-center px-3 pt-1.5"
+                    style={{
+                      width: "100%",
+                      maxWidth: contentMaxWidth,
+                      paddingBottom: composerBottomInset + 6,
+                    }}
+                  >
+                    <ProviderSubagentBar
+                      provider={providerSubagentProvider ?? null}
+                      modelLabel={
+                        providerSubagentCatalogModel?.name ??
+                        formatModelSlugName(props.selectedThread.modelSelection.model)
+                      }
+                      effortLabel={formatModelSelectionEffort(
+                        props.selectedThread.modelSelection,
+                        providerSubagentProvider?.models,
+                      )}
+                      status={props.providerSubagentStatus ?? null}
+                      onOpenParent={
+                        props.selectedThread.lineage.parentThreadId === null
+                          ? null
+                          : () =>
+                              navigation.navigate("Thread", {
+                                environmentId: String(props.environmentId),
+                                threadId: String(props.selectedThread.lineage.parentThreadId),
+                              })
+                      }
+                    />
+                  </View>
+                ) : (
+                  <>
+                    <GlassBlurTargetContext value={feedBlurTarget}>
+                      <ThreadComposer
+                        editorRef={composerEditorRef}
+                        draftMessage={props.draftMessage}
+                        draftAttachments={props.draftAttachments}
+                        contextWindow={props.contextWindow}
+                        placeholder="Ask the repo agent, or run a command…"
+                        contentMaxWidth={contentMaxWidth}
+                        connectionState={props.connectionStateLabel}
+                        environmentLabel={props.environmentLabel}
+                        selectedThread={props.selectedThread}
+                        hasCompactableConversation={
+                          hasCompactableConversation && !props.isCompacting
+                        }
+                        serverConfig={props.serverConfig}
+                        queueCount={props.localOutboxCount}
+                        activeThreadBusy={props.activeThreadBusy}
+                        canStopThread={props.canStopThread}
+                        environmentId={props.environmentId}
+                        projectCwd={props.threadCwd ?? props.projectWorkspaceRoot}
+                        // Follow-ups typed during setup wait in the draft: queueing
+                        // them against a thread id the server may still reject
+                        // would strand them in the outbox.
+                        sendBlockedReason={
+                          props.creationState?.kind === "preparing" ? "Starting the task…" : null
+                        }
+                        draftKey={props.composerDraftKey ?? undefined}
+                        followUpBehavior={props.followUpBehavior}
+                        canSteerActiveTurn={props.canSteerActiveTurn}
+                        queuedEdit={
+                          props.queuedRunEdit === null
+                            ? null
+                            : {
+                                existingAttachments: props.queuedRunEdit.existingAttachments,
+                                saving: props.isSavingQueuedEdit,
+                                onRemoveExistingAttachment: props.onRemoveQueuedEditAttachment,
+                              }
+                        }
+                        bottomInset={composerBottomInset}
+                        onChangeDraftMessage={props.onChangeDraftMessage}
+                        onPickDraftMedia={props.onPickDraftMedia}
+                        onPickDraftFiles={props.onPickDraftFiles}
+                        onNativePasteImages={props.onNativePasteImages}
+                        onNativePasteText={props.onNativePasteText}
+                        onRemoveDraftImage={props.onRemoveDraftImage}
+                        onStopThread={props.onStopThread}
+                        onSendMessage={handleSendMessage}
+                        onShowUsageLimits={showUsageLimits}
+                        canSwitchProvider={props.canSwitchThreadProvider}
+                        onUpdateModelSelection={props.onUpdateThreadModelSelection}
+                        onUpdateRuntimeMode={props.onUpdateThreadRuntimeMode}
+                        onUpdateInteractionMode={props.onUpdateThreadInteractionMode}
+                        onExpandedChange={setComposerExpanded}
+                        onEditorFocusChange={handleComposerFocusChange}
+                      />
+                    </GlassBlurTargetContext>
+                  </>
+                )}
               </View>
-
-              {hasBelowEditorWidgets ? (
-                <View
-                  className="w-full self-center px-4"
-                  style={{ maxWidth: contentMaxWidth, paddingBottom: composerBottomInset }}
-                >
-                  <SessionPresentationSurface widgets={belowEditorWidgets} />
-                </View>
-              ) : null}
             </View>
           </Animated.View>
         </KeyboardStickyView>

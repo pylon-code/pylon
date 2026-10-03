@@ -730,6 +730,7 @@ it.live.skipIf(!configuredGraduationArtifact || !runMultipleInstanceProof)(
               endpoint: `http://127.0.0.1:9/mcp/native-proof-${index}`,
               authorizationHeader: `Bearer mcp-${credentialSentinel}`,
               capabilities: new Set(["preview"]),
+              browserToolsAvailable: false,
             });
             yield* Effect.addFinalizer(() =>
               Effect.sync(() => {

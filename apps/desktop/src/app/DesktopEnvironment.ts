@@ -36,6 +36,8 @@ export class DesktopEnvironment extends Context.Service<
     readonly path: Path.Path;
     readonly dirname: string;
     readonly platform: NodeJS.Platform;
+    readonly userDataDirName: string;
+    readonly legacyUserDataDirName: string;
     readonly processArch: string;
     readonly isPackaged: boolean;
     readonly isDevelopment: boolean;
@@ -84,8 +86,6 @@ export class DesktopEnvironment extends Context.Service<
     readonly linuxWmClass: string;
     readonly linuxApplicationsDir: string;
     readonly appImagePath: Option.Option<string>;
-    readonly userDataDirName: string;
-    readonly legacyUserDataDirName: string;
     readonly defaultDesktopSettings: DesktopAppSettings.DesktopSettings;
     readonly runtimeInfo: DesktopRuntimeInfo;
     readonly resolvePickFolderDefaultPath: (rawOptions: unknown) => Option.Option<string>;
@@ -213,8 +213,8 @@ const make = Effect.fn("desktop.environment.make")(function* (
   });
   const userDataDirName = byChannel(channel, {
     dev: "pylon-code-dev",
-    nightly: "pylon-code-nightly",
-    stable: "pylon-code",
+    nightly: "pylon-code-nightly-v2",
+    stable: "pylon-code-v2",
   });
   const legacyUserDataDirName = byChannel(channel, {
     dev: "Pylon (Dev)",

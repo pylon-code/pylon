@@ -66,6 +66,63 @@ Settling clears a thread's position, while pinning and snoozing keep it until yo
 again; the settled shelf keeps sorting by settlement time. If dragging is unavailable for one
 environment, update the Pylon server running there.
 
+On web and desktop, drag a thread between sections to change its state. Drag a thread up into
+the pinned section to pin it at the spot you drop it; drag a pinned thread down into the active
+list to unpin it. Dragging a thread onto the **Settled** header settles it, and dragging a settled
+thread into the active list un-settles it. A snoozed thread can be dragged out of the snoozed
+shelf, which wakes it, but threads cannot be dragged into the shelf because snoozing needs a wake
+time. Dragging a pinned thread out of the pinned section does not ask for unpin confirmation.
+Pinned and active boundary labels appear only while dragging, without moving the rows. The
+other rows slide aside to show where the thread will land. When you cross into another section,
+the dragged thread shows the action the drop performs, with its icon: **Pin**, **Unpin**,
+**Settle**, **Un-settle**, or **Wake**. Its status and hover actions hide during the drag. A pinned
+thread keeps its pin only while it stays in the pinned section; once it leaves, the badge takes
+over. Reordering within the same section shows no badge. When there are no pins, drag to the top
+edge to pin a thread. Section labels stay readable for the whole drag, and the section the
+thread is over takes the accent color. Section labels also
+identify empty sections and a collapsed settled shelf.
+
+Drag within the pinned or active section to change its order. Other rows slide aside to show the
+spot where the thread will land. Drops into either section keep the position you choose. On
+mobile, open a thread's menu and choose **Arrange threads**. Drag a handle within or between
+**Pinned** and **Active** to reorder, pin, or unpin. Drop onto the **Settled** divider to
+settle a thread. The dragged card shows the action before you release it. Expand **Snoozed**
+or **Settled** to drag a parked thread back into either live section. Each drop saves; **Done** returns to the thread list.
+**Move up** and **Move down** are also available in the thread menu. The server
+saves the order, so it survives a refresh and appears on your other connected devices.
+
+On web and desktop, the list also animates section changes made with thread actions such as
+**Pin**, **Settle**, and **Snooze**. These transitions respect your system's reduced-motion
+preference. While dragging, rows follow the insertion gap without replaying a second transition
+after the drop.
+
+New threads appear above the active threads you have arranged. Settling clears a thread's active
+position, so using **Un-settle** returns it to the top. Pinning and snoozing preserve its active
+position until you move it again. Thread activity does not change the order. The settled shelf
+continues to use settlement time.
+
+If dragging is unavailable for one environment, update the T3 Code server running in that
+environment. Pinned and active reordering require server support. Threads from older servers keep
+their default order until the server is updated.
+
+To generate a fresh title from the conversation, open a thread's menu and choose
+**Regenerate title**. The action is unavailable while title generation is in progress
+or when the connected environment needs a server update.
+
+Agents connected through T3 Code can use the same server-owned metadata workflow to
+rename a thread, regenerate its title, or link and unlink a pull request. These changes
+appear on web, desktop, and mobile without requiring the originating browser to remain
+open.
+
+### Fold working threads (beta)
+
+On web and desktop, turn on **Settings → General → Working section (beta)** to move threads that
+are working or monitoring into a collapsed **Working** section at the bottom of the sidebar. A
+thread returns to the top of the active list when it finishes, fails, or needs an approval or
+answer. Pinned threads stay in the pinned section.
+
+While this is on, the active list is ordered by when each thread last came back to you, so you
+cannot drag to reorder it. Your saved order returns when you turn it off.
 On web and desktop, you can also drag files from your computer onto any thread row, including search
 results. The thread opens with the files attached in its composer; nothing is sent automatically.
 See [attach files](./composer.md#attach-files) for limits.
@@ -157,12 +214,38 @@ them together.
 
 ## Inspect agent work
 
+**Limited** means the provider stopped on a usage or rate limit. The conversation
+keeps the provider's explanation. Retry after the limit resets, or switch to
+another provider instance.
+On web and desktop, press **Resume** in an empty composer to continue a limited
+or interrupted turn manually.
+Queued messages stay saved while the limit blocks the thread. They run after
+the continuation finishes. If the queue was held by a restart, resume it then.
+
+When the provider reports a reset time, choose **Resume at reset** to schedule a
+continuation. You can cancel it from the thread. Enable **Auto-resume limited
+threads** in **Settings → General** on web and desktop, or **Settings → Thread
+behavior** on mobile, to schedule limit stops by default.
+The environment must be running when the reset arrives; it resumes overdue
+continuations after a restart. Sending a new message, archiving, or settling the
+thread prevents a pending continuation from starting.
+
+Choose **Snooze until reset** to hide the thread until its allowance returns.
+Snooze and auto-resume are independent: snooze alone wakes the thread without
+sending a message; enabling both wakes and continues it. **Wake now** cancels
+the snooze. Enable **Snooze limited threads** in thread behavior settings to
+snooze limit stops by default. Providers without a reset time offer manual
+retry and the normal snooze choices.
+
 On web and desktop, use **Agents** to follow work delegated to subagents.
 
-Expand a tool group in the conversation to see its calls, and expand a call to see its full command
-and output. Summaries show the program inside a shell wrapper, such as "Running vp", and the live
-summary can still describe the latest call after it finishes; the call's own row shows its status.
-Failed calls open to their full error.
+Subagent threads started by the agent can't take messages; message the parent
+thread instead. When such a subagent needs an approval or an answer, the parent
+thread asks for it.
+
+Expand a tool call in the conversation to see its full command and output.
+Summaries shorten shell wrappers and can still describe the latest call after it
+finishes; the call's own result shows its status.
 
 A subagent card groups the agents launched in a turn; expand it to see each agent's latest reported
 status. On web and desktop, tool calls that finish after the final reply stay below that reply, and

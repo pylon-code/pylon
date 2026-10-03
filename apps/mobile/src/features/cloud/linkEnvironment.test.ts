@@ -7,8 +7,9 @@ import { RelayMobileClientId } from "@t3tools/contracts/relay";
 import { DPOP_UNKNOWN_HINT, ManagedRelay } from "@t3tools/client-runtime/relay";
 import { remoteHttpClientLayer } from "@t3tools/client-runtime/rpc";
 import { HttpClient } from "effect/unstable/http";
+
 import { MobilePreferencesStore } from "../../persistence/mobile-preferences";
-import { MobileStorage } from "../../persistence/mobile-storage";
+import * as MobileStorage from "../../persistence/mobile-storage";
 
 import {
   linkEnvironmentToCloud,
@@ -87,8 +88,8 @@ function cloudClientLayer() {
       }),
     ),
     Layer.succeed(
-      MobileStorage,
-      MobileStorage.of({
+      MobileStorage.MobileStorage,
+      MobileStorage.MobileStorage.of({
         loadSavedConnections: Effect.succeed([]),
         saveConnection: () => Effect.void,
         clearSavedConnection: () => Effect.void,
@@ -116,7 +117,7 @@ const withCloudServices = <A, E>(
     | ManagedRelay.ManagedRelayClient
     | ManagedRelay.ManagedRelayDpopSigner
     | MobilePreferencesStore
-    | MobileStorage
+    | MobileStorage.MobileStorage
   >,
 ) => effect.pipe(Effect.provide(cloudClientLayer()));
 

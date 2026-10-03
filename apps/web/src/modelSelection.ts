@@ -8,6 +8,7 @@ import {
   ProviderInstanceId,
   type ServerProvider,
   supportsServerProviderBackgroundTextGeneration,
+  isProviderTextGenerationCapable,
   type ServerSettingsPatch,
 } from "@t3tools/contracts";
 import {
@@ -27,7 +28,11 @@ import {
   resolveSelectableProvider,
 } from "./providerModels";
 import { ModelEsque } from "./components/chat/providerIconUtils";
-import { type ProviderInstanceEntry, deriveProviderInstanceEntries } from "./providerInstances";
+import {
+  NO_PROVIDER_MODEL_SELECTION,
+  type ProviderInstanceEntry,
+  deriveProviderInstanceEntries,
+} from "./providerInstances";
 import { sortModelsForProviderInstance } from "./modelOrdering";
 
 const MAX_CUSTOM_MODEL_COUNT = 32;
@@ -359,7 +364,11 @@ export function getCustomModelOptionsByInstance(
 export function getBackgroundTextGenerationProviders(
   providers: ReadonlyArray<ServerProvider>,
 ): ReadonlyArray<ServerProvider> {
-  return providers.filter(supportsServerProviderBackgroundTextGeneration);
+  return providers.filter(
+    (provider) =>
+      isProviderTextGenerationCapable(provider) &&
+      supportsServerProviderBackgroundTextGeneration(provider),
+  );
 }
 
 /**
@@ -416,6 +425,7 @@ export function resolveAppModelSelectionState(
     model: DEFAULT_TEXT_GENERATION_MODEL,
   };
   const selectableProviders = getBackgroundTextGenerationProviders(providers);
+  if (providers.length > 0 && selectableProviders.length === 0) return NO_PROVIDER_MODEL_SELECTION;
   const entries = deriveProviderInstanceEntries(selectableProviders);
   const selectedEntry = entries.find(
     (entry) => entry.instanceId === selection.instanceId && entry.enabled && entry.isAvailable,

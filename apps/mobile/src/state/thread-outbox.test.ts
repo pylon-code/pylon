@@ -236,6 +236,15 @@ describe("thread outbox", () => {
       decodeQueuedThreadMessage(JSON.parse(JSON.stringify(encodeQueuedThreadMessage(message)))),
     ).toEqual(message);
   });
+  it("retains queue mode when a queued provider switch reloads from storage", () => {
+    const message: QueuedThreadMessage = {
+      ...queuedMessage({ messageId: "queued-switch", createdAt: "2026-09-17T09:00:00.000Z" }),
+      dispatchMode: "queue",
+    };
+    expect(
+      decodeQueuedThreadMessage(JSON.parse(JSON.stringify(encodeQueuedThreadMessage(message)))),
+    ).toEqual(message);
+  });
   it.each(["read", "json", "schema"] as const)(
     "does not load a partial outbox after a record %s failure",
     async (failure) => {
@@ -653,7 +662,7 @@ describe("thread outbox", () => {
           threadExists: !isCreation,
           shellStatus: "live",
           environmentConnected: true,
-          threadStatus: "ready",
+          threadStatus: "completed",
           hasDeliveryHold: true,
         }),
       ).toBe("wait");
@@ -1644,7 +1653,7 @@ describe("thread outbox", () => {
       },
       runtimeMode: "full-access" as const,
       interactionMode: "default" as const,
-      session: { status: "ready" as const },
+      session: { status: "completed" as const },
     };
     const destination = {
       projectId: ProjectId.make("project-post-confirm"),
@@ -1725,7 +1734,7 @@ describe("thread outbox", () => {
       runtimeMode: "full-access" as const,
       interactionMode: "default" as const,
       sourceEpoch: 5,
-      session: { status: "ready" as const },
+      session: { status: "completed" as const },
     };
     const plan = (candidate: QueuedThreadMessage) =>
       resolveConfirmedThreadOutboxPlan({

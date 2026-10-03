@@ -234,7 +234,7 @@ describe("ThreadComposer provider authority", () => {
   it("keeps Stop available for an active turn when provider admission is unavailable", () => {
     expect(threadComposerShowsStopAction("running")).toBe(true);
     expect(threadComposerShowsStopAction("starting")).toBe(true);
-    expect(threadComposerShowsStopAction("ready")).toBe(false);
+    expect(threadComposerShowsStopAction("completed")).toBe(false);
   });
 
   it("keeps collapsed actions mutually exclusive with toolbar visibility (#244)", () => {

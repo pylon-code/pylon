@@ -1,9 +1,15 @@
 import * as NodeURL from "node:url";
 
-import type { ChatAttachment, ProviderApprovalDecision, RuntimeMode } from "@t3tools/contracts";
+import {
+  PREVIEW_RECORDING_STOP_TIMEOUT_MS,
+  type ChatAttachment,
+  type ProviderApprovalDecision,
+  type RuntimeMode,
+} from "@t3tools/contracts";
 import {
   createOpencodeClient,
   type Agent,
+  type Command,
   type FilePartInput,
   type Model,
   type OpencodeClient,
@@ -29,7 +35,9 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
+import { signalProcessGroup } from "../process/processGroup.ts";
 import { isWindowsCommandNotFound } from "../processRunner.ts";
+import * as OpenCodeServerLedger from "./OpenCodeServerLedger.ts";
 import { collectStreamAsString } from "./providerSnapshot.ts";
 import * as NetService from "@t3tools/shared/Net";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
@@ -40,6 +48,8 @@ const OPENCODE_EMPTY_CONFIG_CONTENT = "{}";
 
 export const MINIMUM_OPENCODE_VERSION = "1.14.19";
 const OPENCODE_HEALTH_TIMEOUT = "5 seconds";
+const PYLON_MCP_TOOL_TIMEOUT_MS = PREVIEW_RECORDING_STOP_TIMEOUT_MS + 60_000;
+const OPENCODE_CONFIG_QUERY_TIMEOUT_MS = 5_000;
 
 const OpenCodeHealthSchema = Schema.Struct({
   healthy: Schema.Literal(true),
@@ -219,7 +229,23 @@ export interface OpenCodeInventory {
   readonly providerList: ProviderListResponse;
   readonly agents: ReadonlyArray<Agent>;
   readonly skills: ReadonlyArray<OpenCodeSkill>;
+  readonly commands?: ReadonlyArray<OpenCodeSlashCommand>;
 }
+
+export type OpenCodeSlashCommand = Pick<Command, "name" | "description" | "source" | "hints">;
+
+/** Command templates stay in OpenCode, which expands arguments and runs MCP prompts. */
+export const loadOpenCodeCommands = (client: OpencodeClient) =>
+  runOpenCodeSdk("command.list", (signal) => client.command.list(undefined, { signal })).pipe(
+    Effect.map((result): ReadonlyArray<OpenCodeSlashCommand> =>
+      (result.data ?? []).map(({ name, description, source, hints }) => ({
+        name,
+        ...(description === undefined ? {} : { description }),
+        ...(source === undefined ? {} : { source }),
+        hints,
+      })),
+    ),
+  );
 
 export interface ParsedOpenCodeModelSlug {
   readonly providerID: string;
@@ -256,6 +282,8 @@ export interface OpenCodeRuntimeShape {
     readonly port?: number;
     readonly hostname?: string;
     readonly timeoutMs?: number;
+    /** Checks the listening server and returns its version. Defaults to the 1.x health check. */
+    readonly verify?: (url: string) => Effect.Effect<string, OpenCodeRuntimeError>;
   }) => Effect.Effect<OpenCodeServerProcess, OpenCodeRuntimeError, Scope.Scope>;
   /**
    * Returns a handle to either an externally-managed OpenCode server (when
@@ -604,6 +632,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const netService = yield* NetService.NetService;
   const hostPlatform = yield* HostProcessPlatform;
+  const serverLedger = yield* OpenCodeServerLedger.OpenCodeServerLedger;
   const resolveCommand = (command: string, args: ReadonlyArray<string>, env?: NodeJS.ProcessEnv) =>
     resolveSpawnCommand(command, args, env ? { env } : {});
 
@@ -623,7 +652,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
           ? child.kill({ killSignal: "SIGKILL" }).pipe(Effect.asVoid)
           : Effect.sync(() => {
               try {
-                process.kill(-Number(child.pid), "SIGKILL");
+                signalProcessGroup(Number(child.pid), "SIGKILL");
               } catch {
                 // The command and its process group may already have exited.
               }
@@ -662,8 +691,8 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       ),
     );
 
-  const createOpenCodeSdkClient: OpenCodeRuntimeShape["createOpenCodeSdkClient"] = (input) =>
-    createOpencodeClient({
+  const createOpenCodeSdkClient: OpenCodeRuntimeShape["createOpenCodeSdkClient"] = (input) => {
+    const client = createOpencodeClient({
       baseUrl: input.baseUrl,
       directory: input.directory,
       ...(input.serverPassword
@@ -675,6 +704,62 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
         : {}),
       throwOnError: true,
     });
+    const addMcpServer = client.mcp.add.bind(client.mcp);
+    // Keep the SDK's throwOnError-dependent return contract on the decorator.
+    function addWithPylonTimeout<ThrowOnError extends boolean = false>(
+      parameters?: Parameters<typeof addMcpServer>[0],
+      options?: Parameters<typeof addMcpServer<ThrowOnError>>[1],
+    ): ReturnType<typeof addMcpServer<ThrowOnError>>;
+    async function addWithPylonTimeout(
+      parameters?: Parameters<typeof addMcpServer>[0],
+      options?: Parameters<typeof addMcpServer>[1],
+    ) {
+      if (
+        parameters?.name !== "t3-code" ||
+        parameters.config?.type !== "remote" ||
+        parameters.config.timeout !== undefined
+      ) {
+        return addMcpServer(parameters, options);
+      }
+      const config = parameters.config;
+      // Protect recording transfers without overriding the provider's resolved
+      // per-server or global budget. The resolved config includes its files and
+      // OPENCODE_CONFIG_CONTENT; checking only Pylon's environment misses both.
+      const signal = AbortSignal.timeout(OPENCODE_CONFIG_QUERY_TIMEOUT_MS);
+      const resolved = await client.config
+        .get(
+          {
+            ...(parameters.directory === undefined ? {} : { directory: parameters.directory }),
+            ...(parameters.workspace === undefined ? {} : { workspace: parameters.workspace }),
+          },
+          {
+            ...options,
+            throwOnError: true,
+            signal: options?.signal ? AbortSignal.any([options.signal, signal]) : signal,
+          },
+        )
+        .catch(() => undefined);
+      // A failed optional read cannot establish whether a custom budget
+      // exists. Preserve the original registration rather than replace it.
+      if (resolved?.data === undefined) return addMcpServer(parameters, options);
+      const configuredServer = resolved.data.mcp?.["t3-code"];
+      const serverTimeout =
+        configuredServer && "timeout" in configuredServer ? configuredServer.timeout : undefined;
+      return addMcpServer(
+        {
+          ...parameters,
+          config: {
+            ...config,
+            timeout:
+              serverTimeout ?? resolved.data.experimental?.mcp_timeout ?? PYLON_MCP_TOOL_TIMEOUT_MS,
+          },
+        },
+        options,
+      );
+    }
+    client.mcp.add = addWithPylonTimeout;
+    return client;
+  };
 
   const startOpenCodeServerProcess: OpenCodeRuntimeShape["startOpenCodeServerProcess"] = (input) =>
     Effect.gen(function* () {
@@ -705,6 +790,9 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
         ...(input.environment !== undefined ? { environment: input.environment } : {}),
       });
 
+      // Scopes close in reverse order. Forking this before the group kill is
+      // registered forgets the ledger entry only once the group is stopped.
+      const ledgerScope = yield* Scope.fork(runtimeScope);
       const child = yield* spawner
         .spawn(
           ChildProcess.make(spawnCommand.command, spawnCommand.args, {
@@ -742,7 +830,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
           ? child.kill({ killSignal: signal, forceKillAfter: "1 second" }).pipe(Effect.asVoid)
           : Effect.sync(() => {
               try {
-                process.kill(-Number(child.pid), signal);
+                signalProcessGroup(Number(child.pid), signal);
               } catch {
                 // The direct child may already have exited after starting the
                 // server; the process group kill is best-effort cleanup for
@@ -754,7 +842,11 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
         Effect.andThen(killOpenCodeProcessGroup("SIGKILL")),
         Effect.ignore,
       );
+      // Registered before recording, so an interrupt while the ledger writes
+      // still stops the group.
       yield* Scope.addFinalizer(runtimeScope, terminateChild);
+      const forgetServer = yield* serverLedger.track({ pid: Number(child.pid), port, args });
+      yield* Scope.addFinalizer(ledgerScope, forgetServer);
 
       const stdoutRef = yield* Ref.make<string | null>("");
       const stderrRef = yield* Ref.make<string | null>("");
@@ -853,12 +945,15 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       yield* Ref.set(stderrRef, null);
 
       const url = readyOption.value;
-      const version = yield* verifyOpenCodeServerVersion(
-        createOpenCodeSdkClient({
-          baseUrl: url,
-          directory: input.directory,
-          ...(serverPassword !== undefined ? { serverPassword } : {}),
-        }),
+      const version = yield* (
+        input.verify?.(url) ??
+          verifyOpenCodeServerVersion(
+            createOpenCodeSdkClient({
+              baseUrl: url,
+              directory: input.directory,
+              ...(serverPassword !== undefined ? { serverPassword } : {}),
+            }),
+          )
       );
 
       return {
@@ -952,9 +1047,24 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
     loadOpenCodeSkills(client).pipe(Effect.orElseSucceed((): ReadonlyArray<OpenCodeSkill> => []));
 
   const loadOpenCodeInventory: OpenCodeRuntimeShape["loadOpenCodeInventory"] = (client) =>
-    Effect.all([loadProviders(client), loadAgents(client), loadSkills(client)], {
-      concurrency: "unbounded",
-    }).pipe(Effect.map(([providerList, agents, skills]) => ({ providerList, agents, skills })));
+    Effect.all(
+      [
+        loadProviders(client),
+        loadAgents(client),
+        loadSkills(client),
+        loadOpenCodeCommands(client).pipe(Effect.orElseSucceed(() => [])),
+      ],
+      {
+        concurrency: "unbounded",
+      },
+    ).pipe(
+      Effect.map(([providerList, agents, skills, commands]) => ({
+        providerList,
+        agents,
+        skills,
+        commands,
+      })),
+    );
 
   const loadInventoryFromCli: OpenCodeRuntimeShape["loadInventoryFromCli"] = (input) =>
     Effect.gen(function* () {

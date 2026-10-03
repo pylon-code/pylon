@@ -60,6 +60,8 @@ const ADAPTIVE_COLORS: Readonly<Record<string, readonly [light: string, dark: st
   "--color-adaptive-amber-200-900-a60": [color("amber", 200), color("amber", 900, 0.6)],
   "--color-adaptive-amber-500-a12-a16": [color("amber", 500, 0.12), color("amber", 500, 0.16)],
   "--color-adaptive-amber-600-400": [color("amber", 600), color("amber", 400)],
+  "--color-adaptive-amber-500-a10-400-a10": [color("amber", 500, 0.1), color("amber", 400, 0.1)],
+  "--color-adaptive-amber-500-a25-400-a25": [color("amber", 500, 0.25), color("amber", 400, 0.25)],
   "--color-adaptive-amber-700-300": [color("amber", 700), color("amber", 300)],
   "--color-adaptive-amber-700-400": [color("amber", 700), color("amber", 400)],
   "--color-adaptive-amber-800-200": [color("amber", 800), color("amber", 200)],
@@ -76,6 +78,10 @@ const ADAPTIVE_COLORS: Readonly<Record<string, readonly [light: string, dark: st
   "--color-adaptive-black-a15-a35": [
     color("black", undefined, 0.15),
     color("black", undefined, 0.35),
+  ],
+  "--color-adaptive-black-a2p5-white-a2p5": [
+    color("black", undefined, 0.025),
+    color("white", undefined, 0.025),
   ],
   "--color-adaptive-emerald-500-a12-a16": [
     color("emerald", 500, 0.12),
@@ -124,6 +130,14 @@ const ADAPTIVE_COLORS: Readonly<Record<string, readonly [light: string, dark: st
   "--color-adaptive-neutral-800-200": [color("neutral", 800), color("neutral", 200)],
   "--color-adaptive-neutral-700-200": [color("neutral", 700), color("neutral", 200)],
   "--color-adaptive-neutral-950-50": [color("neutral", 950), color("neutral", 50)],
+  "--color-adaptive-neutral-950-a5-white-a5": [
+    color("neutral", 950, 0.05),
+    color("white", undefined, 0.05),
+  ],
+  "--color-adaptive-neutral-950-a10-white-a10": [
+    color("neutral", 950, 0.1),
+    color("white", undefined, 0.1),
+  ],
   "--color-adaptive-red-50-950-a80": [color("red", 50), color("red", 950, 0.8)],
   "--color-adaptive-red-200-800": [color("red", 200), color("red", 800)],
   "--color-adaptive-red-600-a80-400-a80": [color("red", 600, 0.8), color("red", 400, 0.8)],
@@ -138,6 +152,8 @@ const ADAPTIVE_COLORS: Readonly<Record<string, readonly [light: string, dark: st
   "--color-adaptive-rose-800-200": [color("rose", 800), color("rose", 200)],
   "--color-adaptive-sky-100-500-a18": [color("sky", 100), color("sky", 500, 0.18)],
   "--color-adaptive-sky-500-a12-a16": [color("sky", 500, 0.12), color("sky", 500, 0.16)],
+  "--color-adaptive-sky-500-a10-400-a10": [color("sky", 500, 0.1), color("sky", 400, 0.1)],
+  "--color-adaptive-sky-500-a25-400-a25": [color("sky", 500, 0.25), color("sky", 400, 0.25)],
   "--color-adaptive-sky-600-400": [color("sky", 600), color("sky", 400)],
   "--color-adaptive-sky-700-300": [color("sky", 700), color("sky", 300)],
   "--color-adaptive-sky-800-200": [color("sky", 800), color("sky", 200)],
