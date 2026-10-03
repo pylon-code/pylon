@@ -26,6 +26,7 @@ import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 
 import * as ServerConfig from "../config.ts";
+import { makeKeyedSerialExecutor } from "../orchestration-v2/KeyedSerialExecutor.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ProjectService from "./ProjectService.ts";
@@ -89,7 +90,21 @@ export class NamedProjectCreateError extends Schema.TaggedError<NamedProjectCrea
   }
 }
 
-export type NamedProjectError = NamedProjectFolderError | NamedProjectCreateError;
+export class NamedProjectIdInUseError extends Schema.TaggedError<NamedProjectIdInUseError>()(
+  "NamedProjectIdInUseError",
+  {
+    projectId: ProjectId,
+  },
+) {
+  override get message(): string {
+    return "This project id already belongs to another project. Start the new project again.";
+  }
+}
+
+export type NamedProjectError =
+  | NamedProjectFolderError
+  | NamedProjectCreateError
+  | NamedProjectIdInUseError;
 
 export class ManagedProjectFolders extends Context.Service<
   ManagedProjectFolders,
@@ -115,9 +130,17 @@ export class ManagedProjectFolders extends Context.Service<
      * README, an icon, and a first commit, then creates the project. A failed
      * commit (no Git identity, a signing prompt) keeps the project and returns
      * why in `commitError`. The folder is removed when the create fails or is
-     * cancelled before the project exists, never once another project owns it.
+     * cancelled and the committed state shows no project owns it, never once a
+     * project (this one or another) does.
+     *
+     * With a client-chosen `projectId` the create is idempotent: a retry after
+     * a lost response, or a duplicate sent while the first is running, returns
+     * the project the first attempt made instead of claiming a `-2` folder.
      */
-    readonly createNamedProject: (input: { readonly name: string }) => Effect.Effect<
+    readonly createNamedProject: (input: {
+      readonly name: string;
+      readonly projectId?: ProjectId;
+    }) => Effect.Effect<
       {
         readonly projectId: ProjectId;
         readonly workspaceRoot: string;
@@ -160,6 +183,9 @@ const ICON_BACKGROUNDS = [
 ] as const;
 
 const MAX_NAMED_FOLDER_ATTEMPTS = 100;
+
+const REPLAYED_MISSING_COMMIT =
+  "The repository has no commits yet. Set user.name and user.email if needed, then commit.";
 
 function escapeXml(value: string): string {
   return value
@@ -228,6 +254,9 @@ const make = Effect.gen(function* () {
   const git = yield* GitVcsDriver.GitVcsDriver;
   const projects = yield* ProjectService.ProjectService;
   const crypto = yield* Crypto.Crypto;
+  // Serializes creates that share a client-chosen project id, so a duplicate
+  // sent while the first is still running waits and then replays it.
+  const namedProjectLocks = yield* makeKeyedSerialExecutor<ProjectId>();
 
   /**
    * Claims the first free folder among `folderFor(1)`, `folderFor(2)`, ...,
@@ -452,50 +481,119 @@ const make = Effect.gen(function* () {
       );
   });
 
+  // A folder claimed for a create is removed only when the committed state
+  // proves no project uses it: neither the project this create named nor any
+  // other project at the folder. A rejected create, a store failure, and an
+  // interrupt that landed before the commit all leave it unused; an interrupt
+  // after the commit, or a conflict with an existing owner, keeps it. If the
+  // state cannot be read, the folder stays, since deleting a project's files
+  // is never acceptable.
+  const removeUnownedFolder = (projectId: ProjectId, workspaceRoot: string) =>
+    Effect.gen(function* () {
+      const byId = yield* projects.getById(projectId, { includeDeleted: true });
+      if (Option.isSome(byId)) return;
+      const byRoot = yield* projects.getByWorkspaceRoot(workspaceRoot, { includeDeleted: true });
+      if (Option.isSome(byRoot)) return;
+      yield* fileSystem.remove(workspaceRoot, { recursive: true });
+    }).pipe(Effect.ignore);
+
+  const createFreshNamedProject = Effect.fn("ManagedProjectFolders.createFreshNamedProject")(
+    function* (name: string, requestedProjectId: ProjectId | undefined) {
+      const workspaceRoot = yield* claimNamedFolder(name);
+      const removeFolder = fileSystem
+        .remove(workspaceRoot, { recursive: true })
+        .pipe(Effect.ignore);
+      // Until the create is dispatched nothing else can use the folder, so any
+      // exit but success removes it, an interrupt included.
+      const prepared = yield* Effect.all([
+        scaffoldRepository(workspaceRoot, name).pipe(
+          Effect.mapError((cause) => new NamedProjectFolderError({ folder: workspaceRoot, cause })),
+        ),
+        // A fresh command id per attempt: a retry after a rejection must be
+        // planned again, not resolved to the earlier rejected receipt.
+        crypto.randomUUIDv4.pipe(
+          Effect.mapError((cause) => new NamedProjectCreateError({ workspaceRoot, cause })),
+        ),
+      ]).pipe(Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : removeFolder)));
+      const [commitError, id] = prepared;
+      const projectId = requestedProjectId ?? ProjectId.make(id);
+      const project = yield* projects
+        .create({
+          commandId: CommandId.make(`named-project:${id}`),
+          projectId,
+          title: name,
+          workspaceRoot,
+        })
+        .pipe(
+          Effect.onExit((exit) =>
+            Exit.isSuccess(exit) ? Effect.void : removeUnownedFolder(projectId, workspaceRoot),
+          ),
+          Effect.mapError((cause) => new NamedProjectCreateError({ workspaceRoot, cause })),
+        );
+      return {
+        projectId: project.id,
+        workspaceRoot,
+        ...(commitError === undefined ? {} : { commitError }),
+      };
+    },
+  );
+
+  // The project an earlier create with this id made. Only a live project in
+  // the named-projects folder counts; any other owner of the id is a conflict.
+  // The first commit's warning is not stored, so a replay reports a missing
+  // first commit from the repository itself.
+  const replayNamedProject = Effect.fn("ManagedProjectFolders.replayNamedProject")(
+    function* (project: {
+      readonly id: ProjectId;
+      readonly workspaceRoot: string;
+      readonly deletedAt: string | null;
+    }) {
+      const isNamedFolder =
+        path.dirname(path.resolve(project.workspaceRoot)) === path.resolve(namedProjectsRoot);
+      if (project.deletedAt !== null || !isNamedFolder) {
+        return yield* new NamedProjectIdInUseError({ projectId: project.id });
+      }
+      const head = yield* git
+        .execute({
+          operation: "ManagedProjectFolders.replayHead",
+          cwd: project.workspaceRoot,
+          args: ["rev-parse", "--verify", "--quiet", "HEAD"],
+          allowNonZeroExit: true,
+          timeoutMs: 10_000,
+        })
+        .pipe(
+          Effect.map((result) => result.exitCode === 0),
+          Effect.orElseSucceed(() => true),
+        );
+      return {
+        projectId: project.id,
+        workspaceRoot: project.workspaceRoot,
+        ...(head ? {} : { commitError: REPLAYED_MISSING_COMMIT }),
+      };
+    },
+  );
+
   const createNamedProject: ManagedProjectFolders["Service"]["createNamedProject"] = Effect.fn(
     "ManagedProjectFolders.createNamedProject",
   )(function* (input) {
-    const workspaceRoot = yield* claimNamedFolder(input.name);
-    const removeFolder = fileSystem.remove(workspaceRoot, { recursive: true }).pipe(Effect.ignore);
-    // Until the create is dispatched nothing else can use the folder, so any
-    // exit but success removes it, an interrupt included.
-    const prepared = yield* Effect.all([
-      scaffoldRepository(workspaceRoot, input.name).pipe(
-        Effect.mapError((cause) => new NamedProjectFolderError({ folder: workspaceRoot, cause })),
-      ),
-      crypto.randomUUIDv4.pipe(
-        Effect.mapError((cause) => new NamedProjectCreateError({ workspaceRoot, cause })),
-      ),
-    ]).pipe(Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : removeFolder)));
-    const [commitError, id] = prepared;
-    const project = yield* projects
-      .create({
-        commandId: CommandId.make(`named-project:${id}`),
-        projectId: ProjectId.make(id),
-        title: input.name,
-        workspaceRoot,
-      })
-      .pipe(
-        // A rejected create leaves the folder unused, so remove it. An
-        // interrupt can land after the create is committed, and a conflict
-        // means another project owns the folder, so it stays then; the owner
-        // is checked again first, since deleting another project's files is
-        // never acceptable.
-        Effect.tapError((error) =>
-          error._tag === "ProjectConflictError"
-            ? Effect.void
-            : projects.getByWorkspaceRoot(workspaceRoot).pipe(
-                Effect.flatMap((owner) => (Option.isNone(owner) ? removeFolder : Effect.void)),
-                Effect.ignore,
-              ),
-        ),
-        Effect.mapError((cause) => new NamedProjectCreateError({ workspaceRoot, cause })),
-      );
-    return {
-      projectId: project.id,
-      workspaceRoot,
-      ...(commitError === undefined ? {} : { commitError }),
-    };
+    const requestedProjectId = input.projectId;
+    if (requestedProjectId === undefined) {
+      return yield* createFreshNamedProject(input.name, undefined);
+    }
+    return yield* namedProjectLocks.withLock(
+      requestedProjectId,
+      Effect.gen(function* () {
+        const existing = yield* projects
+          .getById(requestedProjectId, { includeDeleted: true })
+          .pipe(
+            Effect.mapError(
+              (cause) => new NamedProjectCreateError({ workspaceRoot: namedProjectsRoot, cause }),
+            ),
+          );
+        if (Option.isSome(existing)) return yield* replayNamedProject(existing.value);
+        return yield* createFreshNamedProject(input.name, requestedProjectId);
+      }),
+    );
   });
 
   return ManagedProjectFolders.of({

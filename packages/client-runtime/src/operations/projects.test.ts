@@ -17,8 +17,12 @@ import {
   getCloneDestinationPath,
   getCloneDirectoryName,
   getDefaultCloneUrl,
+  getNewProjectGitHubRepository,
+  getNewProjectGitHubTarget,
+  getNewProjectPathPreview,
   normalizePastedCloneUrl,
   resolveAddProjectPath,
+  resolveNewProjectAttempt,
   sortAddProjectProviderSources,
 } from "./projects.ts";
 import type { EnvironmentProject } from "../state/models.ts";
@@ -273,5 +277,76 @@ describe("add project shared logic", () => {
       createWorkspaceRootIfMissing: true,
       defaultModelSelection: null,
     });
+  });
+
+  it("previews the new project folder under the environment's projects root", () => {
+    expect(getNewProjectPathPreview("/home/me/.pylon-code/projects", "Pinball Stats")).toBe(
+      "/home/me/.pylon-code/projects/pinball-stats",
+    );
+    expect(getNewProjectPathPreview("C:\\Users\\me\\.pylon-code\\projects", "CON")).toBe(
+      "C:\\Users\\me\\.pylon-code\\projects\\con-project",
+    );
+  });
+
+  it("publishes a new project under the actual, possibly suffixed folder", () => {
+    expect(
+      getNewProjectGitHubRepository({ account: "octo" }, "/root/projects/pinball-stats-2"),
+    ).toBe("octo/pinball-stats-2");
+    expect(getNewProjectGitHubRepository({ account: null }, "C:\\projects\\pinball-stats")).toBe(
+      "pinball-stats",
+    );
+  });
+
+  it("offers GitHub publishing only when GitHub is ready on that environment", () => {
+    const github = (
+      auth: "authenticated" | "unauthenticated",
+    ): SourceControlDiscoveryResult["sourceControlProviders"][number] => ({
+      kind: "github",
+      label: "GitHub",
+      status: "available",
+      installHint: "Install gh",
+      version: Option.some("1.0.0"),
+      detail: Option.none(),
+      auth: {
+        status: auth,
+        account: auth === "authenticated" ? Option.some("octo") : Option.none(),
+        host: Option.some("github.com"),
+        detail: Option.none(),
+      },
+    });
+    expect(getNewProjectGitHubTarget(null)).toBeNull();
+    expect(
+      getNewProjectGitHubTarget({
+        versionControlSystems: [],
+        sourceControlProviders: [github("unauthenticated")],
+      }),
+    ).toBeNull();
+    expect(
+      getNewProjectGitHubTarget({
+        versionControlSystems: [],
+        sourceControlProviders: [github("authenticated")],
+      }),
+    ).toEqual({ account: "octo" });
+  });
+
+  it("reuses the unfinished New project attempt so a retry cannot duplicate it", () => {
+    const local = EnvironmentId.make("environment-local");
+    const remote = EnvironmentId.make("environment-remote");
+    let minted = 0;
+    const mint = () => ProjectId.make(`project-${++minted}`);
+
+    const first = resolveNewProjectAttempt(null, { environmentId: local, name: "Pinball" }, mint);
+    expect(first.projectId).toBe(ProjectId.make("project-1"));
+    // Same name on the same machine: the retry carries the same id.
+    expect(resolveNewProjectAttempt(first, { environmentId: local, name: "Pinball" }, mint)).toBe(
+      first,
+    );
+    // A new name or another machine is another project.
+    expect(
+      resolveNewProjectAttempt(first, { environmentId: local, name: "Arcade" }, mint).projectId,
+    ).toBe(ProjectId.make("project-2"));
+    expect(
+      resolveNewProjectAttempt(first, { environmentId: remote, name: "Pinball" }, mint).projectId,
+    ).toBe(ProjectId.make("project-3"));
   });
 });

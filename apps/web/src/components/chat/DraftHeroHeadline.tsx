@@ -220,7 +220,7 @@ export function DraftHeroHeadline({
         <MenuSeparator />
         <MenuItem onClick={openAddProject}>
           <FolderPlusIcon />
-          New project
+          Add project
         </MenuItem>
       </MenuPopup>
     </Menu>

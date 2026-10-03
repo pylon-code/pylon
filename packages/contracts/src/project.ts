@@ -503,6 +503,12 @@ export type ProjectEnsureScratchResult = typeof ProjectEnsureScratchResult.Type;
 /** A project started from just a name, in a new folder the server makes. */
 export const ProjectCreateNewInput = Schema.Struct({
   name: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
+  /**
+   * Client-chosen id for the new project. A retry with the same id (after a
+   * lost response, say) returns the project the first attempt made rather
+   * than creating a suffixed duplicate. Servers without it ignore the field.
+   */
+  projectId: Schema.optionalKey(ProjectId),
 });
 export type ProjectCreateNewInput = typeof ProjectCreateNewInput.Type;
 
