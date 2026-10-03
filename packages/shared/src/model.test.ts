@@ -9,6 +9,7 @@ import {
   createModelSelection,
   formatCodexModelName,
   formatModelSlugName,
+  getProviderOptionCurrentLabel,
   getModelSelectionBooleanOptionValue,
   isPrimeAgentDefaultModelUnavailable,
   formatModelChangeDisabledReason,
@@ -347,5 +348,79 @@ describe("model change disabled copy", () => {
     expect(formatModelChangeDisabledReason(STARTED_THREAD_MODEL_CHANGE_DESCRIPTION)).toBe(
       "This provider does not allow switching models after a conversation has started. Start a new thread to use this model.",
     );
+  });
+});
+
+describe("provider-reported option display", () => {
+  const selection = createModelSelection(ProviderInstanceId.make("opencode"), "ling");
+  const reported = { ...selection, options: [{ id: "variant", value: "default" }] };
+  const descriptor = {
+    id: "variant",
+    label: "Reasoning",
+    type: "select" as const,
+    options: [
+      { id: "none", label: "None" },
+      { id: "thinking", label: "Thinking" },
+    ],
+  };
+
+  it("shows explicit reports without adding a choice or a dispatch option", () => {
+    expect(getProviderOptionCurrentLabel(descriptor, selection, reported)).toBe("Default");
+    expect(
+      getProviderOptionCurrentLabel(descriptor, selection, {
+        ...reported,
+        options: [{ id: "variant", value: "thinking" }],
+      }),
+    ).toBe("Thinking");
+    expect(
+      getProviderOptionCurrentLabel(
+        { ...descriptor, currentValue: "none" },
+        { ...selection, options: [{ id: "variant", value: "none" }] },
+        reported,
+      ),
+    ).toBe("None");
+    expect(descriptor.options.map((option) => option.id)).toEqual(["none", "thinking"]);
+    expect(buildProviderOptionSelectionsFromDescriptors([descriptor])).toBeUndefined();
+    expect(getProviderOptionCurrentLabel(descriptor, selection)).toBe("Default");
+    const effortDescriptor = { ...descriptor, id: "effort", currentValue: "default" };
+    expect(getProviderOptionCurrentLabel(effortDescriptor, selection)).toBeUndefined();
+    expect(
+      getProviderOptionCurrentLabel(effortDescriptor, selection, {
+        ...reported,
+        model: "other",
+        options: [{ id: "effort", value: "default" }],
+      }),
+    ).toBeUndefined();
+    expect(
+      getProviderOptionCurrentLabel(effortDescriptor, selection, {
+        ...reported,
+        options: [{ id: "effort", value: "default" }],
+      }),
+    ).toBe("Default");
+    expect(
+      getProviderOptionCurrentLabel({ ...descriptor, currentValue: "thinking" }, selection),
+    ).toBe("Default");
+  });
+
+  it.each([
+    { ...selection, model: "other" },
+    { ...selection, instanceId: ProviderInstanceId.make("other") },
+  ])("labels an unchosen variant Default when the report is for another model: %j", (selected) => {
+    expect(
+      getProviderOptionCurrentLabel(descriptor, selected, {
+        ...reported,
+        options: [{ id: "variant", value: "thinking" }],
+      }),
+    ).toBe("Default");
+  });
+
+  it("ignores reports after the user chooses an option", () => {
+    expect(
+      getProviderOptionCurrentLabel(
+        descriptor,
+        { ...selection, options: [{ id: "variant", value: "none" }] },
+        reported,
+      ),
+    ).toBe("Unknown");
   });
 });

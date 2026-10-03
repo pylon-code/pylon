@@ -93,6 +93,7 @@ import { effectiveSnoozed, threadWokeAt } from "@t3tools/client-runtime/state/th
 import { useAcknowledgeThreadWoke, useThreadActions } from "../hooks/useThreadActions";
 import {
   deriveProviderSubagentStatus,
+  deriveReportedModelSelection,
   formatModelSelectionEffort,
   deriveRunlessWorkStartedAt,
   deriveThreadActivityRun,
@@ -121,6 +122,7 @@ import {
   createModelSelection,
   formatModelSlugName,
   resolvePromptInjectedEffort,
+  resolveSelectableModel,
 } from "@t3tools/shared/model";
 import {
   projectScriptCwd,
@@ -1659,6 +1661,9 @@ export default function ChatView(props: ChatViewProps) {
   const serverThreadProjection = useThreadProjection(routeThreadDetailRef);
   const serverProjection = serverThreadProjection?.projection ?? null;
   const liveHandoffProjection = useLiveThreadProjection(routeThreadDetailRef);
+  const reportedModelSelection = serverProjection
+    ? deriveReportedModelSelection(serverProjection)
+    : null;
   const threadStatus = useThreadStatus(routeThreadDetailRef);
   const threadSyncPhase = resolveThreadSyncPhase({
     detailExists: serverProjection !== null,
@@ -4174,8 +4179,16 @@ export default function ChatView(props: ChatViewProps) {
   const showProviderSubagentBar = isProviderSubagent;
   const composerMounted = !showProviderSubagentBar;
   const providerSubagentModels = selectedProviderEntry?.models ?? EMPTY_PROVIDER_MODELS;
+  // Providers can report a dated id or alias (claude-haiku-4-5-20251001).
+  const providerSubagentModelSlug = selectedProviderEntry
+    ? resolveSelectableModel(
+        selectedProviderEntry.driverKind,
+        activeThread?.modelSelection.model,
+        providerSubagentModels,
+      )
+    : null;
   const providerSubagentCatalogModel = providerSubagentModels.find(
-    (model) => model.slug === activeThread?.modelSelection.model,
+    (model) => model.slug === providerSubagentModelSlug,
   );
   const providerSubagentModelLabel = providerSubagentCatalogModel
     ? getTriggerDisplayModelName(providerSubagentCatalogModel)
@@ -4183,7 +4196,11 @@ export default function ChatView(props: ChatViewProps) {
   const providerSubagentEffortLabel =
     activeThread === undefined
       ? null
-      : formatModelSelectionEffort(activeThread.modelSelection, providerSubagentModels);
+      : formatModelSelectionEffort(
+          activeThread.modelSelection,
+          providerSubagentModels,
+          reportedModelSelection,
+        );
   const mountComposerContextStrip = shouldShowComposerContextStrip({
     isDraftHeroState,
     persistInActiveThreads: settings.persistComposerContextStrip,
@@ -11225,6 +11242,7 @@ export default function ChatView(props: ChatViewProps) {
                               supportsProviderSwitchingViaHandoff={
                                 supportsProviderSwitchingViaHandoff
                               }
+                              reportedModelSelection={reportedModelSelection}
                               multipleModelSelections={multipleModelSelections}
                               supportsMultipleModels={
                                 serverConfig?.environment.capabilities.requiredWorktreeBootstrap ===

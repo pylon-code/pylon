@@ -33,6 +33,7 @@ import type { ProviderAdapterV2RuntimePolicy } from "../../orchestration-v2/Prov
 import * as ProviderAdapterRegistry from "../../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ProviderEventIngestor from "../../orchestration-v2/ProviderEventIngestor.ts";
 import * as ProviderSessionManager from "../../orchestration-v2/ProviderSessionManager.ts";
+import * as ThreadCommandExecutor from "../../orchestration-v2/ThreadCommandExecutor.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import { makeLegacyAdapterV2 } from "./LegacyAdapterV2Bridge.ts";
 import * as Maintenance from "./LegacyAdapterV2Maintenance.ts";
@@ -165,7 +166,14 @@ function makeTestLayer(input: {
     }),
   );
   const ingestorLayer = ProviderEventIngestor.layer.pipe(
-    Layer.provide(Layer.mergeAll(eventSinkLayer, IdAllocator.layer, TestStoresLayer)),
+    Layer.provide(
+      Layer.mergeAll(
+        eventSinkLayer,
+        IdAllocator.layer,
+        TestStoresLayer,
+        ThreadCommandExecutor.layer,
+      ),
+    ),
   );
   return Layer.mergeAll(
     TestStoresLayer,

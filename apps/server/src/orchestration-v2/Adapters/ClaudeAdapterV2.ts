@@ -1,7 +1,11 @@
 import * as NodeCrypto from "node:crypto";
 
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
-import { formatReadToolLabel, formatSearchToolLabel } from "@t3tools/shared/toolActivity";
+import {
+  dynamicToolTitle,
+  formatReadToolLabel,
+  formatSearchToolLabel,
+} from "@t3tools/shared/toolActivity";
 import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
 import { normalizeClaudeTurnTokenUsage } from "../../provider/ClaudeTurnTokenUsage.ts";
 import {
@@ -3645,7 +3649,10 @@ export function makeClaudeAdapterV2(
             parentItemId: null,
             ordinal: input.ordinal,
             status: input.status,
-            title: readPath !== undefined ? formatReadToolLabel(readPath) : (searchTitle ?? null),
+            title:
+              readPath !== undefined
+                ? formatReadToolLabel(readPath)
+                : (searchTitle ?? dynamicToolTitle(input.toolName, nativeToolInput) ?? null),
             startedAt: input.startedAt,
             completedAt,
             updatedAt: input.updatedAt,
