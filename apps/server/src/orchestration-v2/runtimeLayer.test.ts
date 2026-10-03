@@ -2442,6 +2442,180 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
         { headSha: watch?.headSha, failedChecks: watch?.failedChecks, wakes: watch?.wakes },
         { headSha: "abc1234def", failedChecks: ["lint"], wakes: 0 },
       );
+
+      // A restarted server builds a fresh reactor; what was reported is persisted on the watch,
+      // so the same host state does not wake the agent again.
+      const restarted = yield* PullRequestWatchReactor.make.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            NodeServices.layer,
+            Layer.mock(PullRequestService.PullRequestService)({
+              detail: () => Effect.succeed(detail),
+              activity: () =>
+                Effect.succeed({
+                  comments: [],
+                  commentCount: 0,
+                  commentsTruncated: false,
+                  reviewThreads: [],
+                  commits: [],
+                }),
+            }),
+          ),
+        ),
+      );
+      yield* restarted.sweep;
+      assert.lengthOf((yield* orchestrator.getThreadRecords(threadId, ["messages"])).messages, 1);
+      assert.isDefined((yield* orchestrator.getThreadShell(threadId))?.pullRequests?.[0]?.watch);
+
+      // A pull request closed on the host ends the watch without another wake.
+      const closed = yield* PullRequestWatchReactor.make.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            NodeServices.layer,
+            Layer.mock(PullRequestService.PullRequestService)({
+              detail: () => Effect.succeed({ ...detail, state: "closed", closedAt: at }),
+              activity: () =>
+                Effect.succeed({
+                  comments: [],
+                  commentCount: 0,
+                  commentsTruncated: false,
+                  reviewThreads: [],
+                  commits: [],
+                }),
+            }),
+          ),
+        ),
+      );
+      yield* closed.sweep;
+      assert.isUndefined((yield* orchestrator.getThreadShell(threadId))?.pullRequests?.[0]?.watch);
+      assert.lengthOf((yield* orchestrator.getThreadRecords(threadId, ["messages"])).messages, 1);
+    }),
+  );
+
+  it.effect("leaves settled threads asleep and ends watches on merged pull requests", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projectId = ProjectId.make("pr-watch-settled-project");
+      yield* seedProject({
+        projectId,
+        title: "Watch settled",
+        workspaceRoot: "/workspace/watch-settled",
+        defaultModelSelection: null,
+        createdAt: "2026-10-01T00:00:00.000Z",
+      });
+      const key = { host: "github.com", repository: "pingdotgg/t3code", number: 11 };
+      const url = "https://github.com/pingdotgg/t3code/pull/11";
+      const watchedThread = Effect.fn("watchedThread")(function* (threadId: ThreadId) {
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make(`${threadId}-create`),
+          threadId,
+          projectId,
+          title: "Watch settled",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+        });
+        yield* orchestrator.dispatch({
+          type: "thread.pull-request.watch",
+          commandId: CommandId.make(`${threadId}-watch`),
+          threadId,
+          ...key,
+          watching: true,
+          link: { url, source: "agent" },
+        });
+      });
+      const settledThreadId = ThreadId.make("runtime-pull-request-watch-settled");
+      const mergedThreadId = ThreadId.make("runtime-pull-request-watch-merged");
+      yield* watchedThread(settledThreadId);
+      yield* watchedThread(mergedThreadId);
+      yield* orchestrator.dispatch({
+        type: "thread.settle",
+        commandId: CommandId.make("pr-watch-settle"),
+        threadId: settledThreadId,
+      });
+      // The agent merged the pull request; pull request sync recorded it.
+      yield* orchestrator.dispatch({
+        type: "thread.pull-request-link.sync",
+        commandId: CommandId.make("pr-watch-merged-sync"),
+        threadId: mergedThreadId,
+        ...key,
+        snapshot: {
+          state: "merged",
+          title: "Merged pull request",
+          headBranch: "feature",
+          baseBranch: "main",
+          isDraft: false,
+          updatedAt: "2026-10-02T12:00:00.000Z",
+          syncedAt: "2026-10-02T12:00:00.000Z",
+        },
+        stack: null,
+      });
+
+      // Neither thread may read the host: a settled thread waits, and a merged pull request
+      // cannot reopen.
+      let hostReads = 0;
+      const unexpectedRead = () =>
+        Effect.suspend(() => {
+          hostReads += 1;
+          return Effect.die("unexpected host read");
+        });
+      const reactor = yield* PullRequestWatchReactor.make.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            NodeServices.layer,
+            Layer.mock(PullRequestService.PullRequestService)({
+              detail: unexpectedRead,
+              activity: unexpectedRead,
+            }),
+          ),
+        ),
+      );
+      yield* reactor.sweep;
+      assert.equal(hostReads, 0);
+
+      assert.isDefined(
+        (yield* orchestrator.getThreadShell(settledThreadId))?.pullRequests?.[0]?.watch,
+      );
+      assert.isUndefined(
+        (yield* orchestrator.getThreadShell(mergedThreadId))?.pullRequests?.[0]?.watch,
+      );
+      for (const threadId of [settledThreadId, mergedThreadId]) {
+        assert.deepEqual(
+          (yield* orchestrator.getThreadRecords(threadId, ["messages"])).messages,
+          [],
+        );
+      }
+
+      // A wake that raced the settle is refused, so the settled thread stays asleep.
+      const started = (yield* orchestrator.getThreadShell(settledThreadId))?.pullRequests?.[0]
+        ?.watch;
+      assert.isDefined(started);
+      if (started === undefined) return;
+      const refused = yield* orchestrator
+        .dispatch({
+          type: "thread.pull-request-watch.sync",
+          commandId: CommandId.make("pr-watch-settled-wake"),
+          threadId: settledThreadId,
+          ...key,
+          startedAt: started.startedAt,
+          watch: { ...started, conflicting: true },
+          wake: {
+            messageId: MessageId.make("pr-watch-settled-wake"),
+            text: "Update",
+            notification: { source: { kind: "monitor" }, outcome: "failed", summary: "#11" },
+          },
+        })
+        .pipe(Effect.flip);
+      assert.equal(refused._tag, "OrchestratorDispatchError");
+      assert.deepEqual(
+        (yield* orchestrator.getThreadRecords(settledThreadId, ["messages"])).messages,
+        [],
+      );
     }),
   );
 

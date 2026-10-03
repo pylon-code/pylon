@@ -150,6 +150,32 @@ describe("evaluatePullRequestWatch", () => {
     assert.deepEqual(evaluatePullRequestWatch(report.next, detail(), comments).changes, []);
   });
 
+  it("reports a body-less requested-changes review by its verdict", () => {
+    const review: PullRequestComment = {
+      ...remark("reviewer", "2026-10-02T12:05:00.000Z", ""),
+      kind: "review",
+      path: null,
+      reviewState: "CHANGES_REQUESTED",
+    };
+    const report = evaluatePullRequestWatch(watch(), detail(), [review]);
+    assert.deepEqual(
+      report.changes.map((change) => change.kind),
+      ["remarks"],
+    );
+    const message = pullRequestWatchMessage({
+      number: 1,
+      url: "https://github.com/o/r/pull/1",
+      baseBranch: "main",
+      headSha: report.next.headSha,
+      report,
+    });
+    assert.include(message.text, "reviewer: CHANGES_REQUESTED");
+    assert.notInclude(message.text, "T3 Code");
+    assert.include(message.text, "Pylon keeps watching");
+    // Reported once: the next pass with the same review stays quiet.
+    assert.deepEqual(evaluatePullRequestWatch(report.next, detail(), [review]).changes, []);
+  });
+
   it("reports a conflict once, until the branch is clean again", () => {
     const conflicting = detail({ mergeability: "conflicting" });
     const first = evaluatePullRequestWatch(watch(), conflicting, noRemarks);

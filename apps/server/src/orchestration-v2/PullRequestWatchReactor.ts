@@ -117,7 +117,7 @@ export const make = Effect.gen(function* () {
   // "Watching" while it learns nothing.
   const giveUp = (target: WatchTarget) =>
     record(target, null, {
-      text: `T3 Code stopped watching pull request #${target.link.number} (${target.link.url}) because it could not read it from the host for ${READ_FAILURE_LIMIT} minutes. Check it yourself, and call watch_pull_request to watch it again.`,
+      text: `Pylon stopped watching pull request #${target.link.number} (${target.link.url}) because it could not read it from the host for ${READ_FAILURE_LIMIT} minutes. Check it yourself, and call watch_pull_request to watch it again.`,
       notification: {
         source: { kind: "monitor" },
         outcome: "failed",
@@ -134,14 +134,12 @@ export const make = Effect.gen(function* () {
     if (thread.settledOverride === "settled" || thread.settledAt !== null) return;
 
     const reference = { projectId: thread.projectId, ...pullRequest };
+    // Pylon's detail cache holds an answer for seconds, well inside one pass a minute, so an
+    // ordinary read is fresh enough; a read that lags only moves the news to the next pass.
     const read = yield* Effect.exit(
-      Effect.all(
-        [
-          pullRequests.detail({ ...reference, allowStale: false }),
-          pullRequests.activity(reference),
-        ],
-        { concurrency: 2 },
-      ),
+      Effect.all([pullRequests.detail(reference), pullRequests.activity(reference)], {
+        concurrency: 2,
+      }),
     );
     // Only host reads count towards giving up; a refused wake is not the host's fault.
     const key = failureKey(target);
