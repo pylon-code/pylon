@@ -148,6 +148,62 @@ describe("buildReviewSectionItems", () => {
   });
 });
 
+describe("default review section across server versions", () => {
+  const gitSections: ReviewDiffPreviewSource[] = [
+    {
+      id: "working-tree",
+      kind: "working-tree",
+      title: "Uncommitted",
+      baseRef: "HEAD",
+      headRef: null,
+      diff: "diff --git a/a.ts b/a.ts",
+      diffHash: "hash-dirty",
+      truncated: false,
+    },
+    {
+      id: "branch-range",
+      kind: "branch-range",
+      title: "Against main",
+      baseRef: "main",
+      headRef: "feature",
+      diff: "diff --git a/b.ts b/b.ts",
+      diffHash: "hash-base",
+      truncated: false,
+    },
+  ];
+  const build = (changesIncludeWorkingTree: boolean | undefined, loadingGitSections = false) =>
+    buildReviewSectionItems({
+      checkpoints: [],
+      gitSections: loadingGitSections ? [] : gitSections,
+      turnDiffById: {},
+      loadingTurnIds: {},
+      loadingGitSections,
+      changesIncludeWorkingTree,
+    });
+
+  it("prefers Uncommitted on an older server whose Changes stop at HEAD", () => {
+    expect(getDefaultReviewSectionId(build(false), false)).toBe("git:working-tree");
+    expect(build(true, true)[0]).toMatchObject({ id: "git:branch-range", isLoading: true });
+    expect(build(false, true)[0]).toMatchObject({
+      id: "git:working-tree",
+      title: "Uncommitted",
+      isLoading: true,
+    });
+  });
+
+  it("prefers Changes when the server reports Changes totals or status is unknown", () => {
+    expect(getDefaultReviewSectionId(build(true), true)).toBe("git:branch-range");
+    expect(getDefaultReviewSectionId(build(undefined), undefined)).toBe("git:branch-range");
+  });
+
+  it("describes Changes as reaching the working tree only when it does", () => {
+    const changes = (items: ReturnType<typeof build>) =>
+      items.find((item) => item.id === "git:branch-range")?.subtitle;
+    expect(changes(build(true))).toBe("Since main, including uncommitted files");
+    expect(changes(build(false))).toBe("main ... feature");
+  });
+});
+
 describe("buildReviewParsedDiff", () => {
   it.each([
     ["a/example.ts", "a/example.ts"],

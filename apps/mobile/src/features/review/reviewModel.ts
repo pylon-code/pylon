@@ -11,6 +11,8 @@ export type ReviewSectionKind = "turn" | "working-tree" | "branch-range";
 
 const CHANGES_SECTION_ID = "git:branch-range";
 const CHANGES_TITLE = "Changes";
+const UNCOMMITTED_SECTION_ID = "git:working-tree";
+const UNCOMMITTED_TITLE = "Uncommitted";
 const UNCOMMITTED_SUBTITLE = "Staged, unstaged, and untracked files";
 
 export interface ReviewSectionItem {
@@ -122,12 +124,25 @@ const readyCheckpointOrder = Order.make<ThreadCheckpointSummary>(
   compareCheckpointTurnCountDescending,
 );
 
-function gitSubtitle(section: ReviewDiffPreviewSource): string | null {
+/**
+ * Whether the server's Changes source runs from the merge-base to the working tree.
+ * Servers that report `branchChanges` in git status do; older servers diff the branch
+ * range up to HEAD (committed changes only). Undefined while status is unknown.
+ */
+export type ChangesIncludeWorkingTree = boolean | undefined;
+
+function gitSubtitle(
+  section: ReviewDiffPreviewSource,
+  changesIncludeWorkingTree: ChangesIncludeWorkingTree,
+): string | null {
   if (section.kind === "working-tree") {
     return UNCOMMITTED_SUBTITLE;
   }
   if (section.baseRef) {
-    return `${section.baseRef} ... ${section.headRef ?? "HEAD"}`;
+    // The new side is the working tree, so a branch name there would undersell it.
+    return changesIncludeWorkingTree === true
+      ? `Since ${section.baseRef}, including uncommitted files`
+      : `${section.baseRef} ... ${section.headRef ?? "HEAD"}`;
   }
   return "Base branch unavailable";
 }
@@ -417,6 +432,7 @@ export function buildReviewSectionItems(input: {
   readonly turnDiffById: Readonly<Record<string, string | undefined>>;
   readonly loadingTurnIds: Readonly<Record<string, boolean | undefined>>;
   readonly loadingGitSections: boolean;
+  readonly changesIncludeWorkingTree?: ChangesIncludeWorkingTree;
 }): ReadonlyArray<ReviewSectionItem> {
   const turnItems = getReadyReviewCheckpoints(input.checkpoints).map<ReviewSectionItem>(
     (checkpoint) => {
@@ -436,38 +452,56 @@ export function buildReviewSectionItems(input: {
     id: `git:${section.kind}`,
     kind: section.kind,
     title: section.title,
-    subtitle: gitSubtitle(section),
+    subtitle: gitSubtitle(section, input.changesIncludeWorkingTree),
     diff: section.diff,
     source: section,
     ...(section.files ? { files: section.files } : {}),
     truncated: section.truncated,
     isLoading: false,
   }));
-  // Changes is the default section, so it holds the place while git sources load.
-  const hasChangesItem = gitItems.some((item) => item.id === CHANGES_SECTION_ID);
+  // The default git section holds its place while git sources load.
+  const placeholder: ReviewSectionItem =
+    input.changesIncludeWorkingTree === false
+      ? {
+          id: UNCOMMITTED_SECTION_ID,
+          kind: "working-tree",
+          title: UNCOMMITTED_TITLE,
+          subtitle: UNCOMMITTED_SUBTITLE,
+          diff: null,
+          isLoading: true,
+        }
+      : {
+          id: CHANGES_SECTION_ID,
+          kind: "branch-range",
+          title: CHANGES_TITLE,
+          subtitle: null,
+          diff: null,
+          isLoading: true,
+        };
+  const hasPlaceholderItem = gitItems.some((item) => item.id === placeholder.id);
   const visibleGitItems =
-    input.loadingGitSections && !hasChangesItem
-      ? [
-          {
-            id: CHANGES_SECTION_ID,
-            kind: "branch-range",
-            title: CHANGES_TITLE,
-            subtitle: null,
-            diff: null,
-            isLoading: true,
-          } satisfies ReviewSectionItem,
-          ...gitItems,
-        ]
-      : gitItems;
+    input.loadingGitSections && !hasPlaceholderItem ? [placeholder, ...gitItems] : gitItems;
 
   return [...turnItems, ...visibleGitItems];
 }
 
-/** Prefers Changes, then the first section (a turn when the project is not a git repo). */
+/**
+ * Prefers Changes, then the first section (a turn when the project is not a git repo).
+ * An older server's Changes source holds committed changes only while the thread's
+ * counts are uncommitted ones, so there Uncommitted is preferred to keep them in step.
+ */
 export function getDefaultReviewSectionId(
   sections: ReadonlyArray<ReviewSectionItem>,
+  changesIncludeWorkingTree?: ChangesIncludeWorkingTree,
 ): string | null {
-  return (sections.find((section) => section.id === CHANGES_SECTION_ID) ?? sections[0])?.id ?? null;
+  const preferredIds =
+    changesIncludeWorkingTree === false
+      ? [UNCOMMITTED_SECTION_ID, CHANGES_SECTION_ID]
+      : [CHANGES_SECTION_ID];
+  for (const id of preferredIds) {
+    if (sections.some((section) => section.id === id)) return id;
+  }
+  return sections[0]?.id ?? null;
 }
 
 export function buildReviewParsedDiff(
