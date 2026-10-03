@@ -7,6 +7,7 @@ import type {
   OrchestrationV2ThreadShellSnapshot,
   OrchestrationV2ShellStreamItem,
   OrchestrationV2StoredEvent,
+  RepositoryIdentity,
 } from "@t3tools/contracts";
 import { OrchestrationProjectShell as ProjectShellSchema } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
@@ -122,6 +123,30 @@ export function dedupeShellEnrichment<E, R>(
       }),
     );
   });
+}
+
+/**
+ * Projects whose repository identity just resolved, carrying the identity from
+ * the resolution itself. Re-enriching the projects here would re-request every
+ * expired root, whose resolution publishes again, so one expiry would keep
+ * every shell subscriber reloading every project's metadata once a minute.
+ * The latest change for a root wins.
+ */
+export function projectsWithResolvedRepositoryIdentities(
+  projects: ReadonlyArray<OrchestrationProjectShell>,
+  changes: ReadonlyArray<{
+    readonly workspaceRoot: string;
+    readonly enrichment: { readonly repositoryIdentity: RepositoryIdentity | null };
+  }>,
+): ReadonlyArray<OrchestrationProjectShell> {
+  const identities = new Map(
+    changes.map((change) => [change.workspaceRoot, change.enrichment.repositoryIdentity]),
+  );
+  return projects.flatMap((project) =>
+    identities.has(project.workspaceRoot)
+      ? [{ ...project, repositoryIdentity: identities.get(project.workspaceRoot) ?? null }]
+      : [],
+  );
 }
 
 /** Build a shell snapshot stream item for a batched enrichment completion. */

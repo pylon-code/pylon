@@ -10,22 +10,42 @@ several views need the same environment.
 
 The [supervisor](../../packages/client-runtime/src/connection/supervisor.ts) owns
 retry policy; resolving an endpoint and opening an RPC session are single
-attempts. Transient failures retry with capped backoff. Offline states and
-authentication failures wait for a wakeup instead of spending attempts on
-unchanged conditions.
+attempts. Transient failures retry with jittered exponential backoff, capped at
+five minutes, that resets only after a connection stays up. Without jitter, every
+client of a restarted server reconnects in the same second; with a short cap, a
+client that can never connect retries all day. Offline states and authentication
+failures wait for a wakeup instead of spending attempts on unchanged conditions.
 
-Foregrounding needs different treatment depending on the connection's state.
-It wakes a retry immediately, leaves an ordinary in-flight attempt alone, and
-probes an established session before replacing it. A long mobile background
-suspension forces replacement because the OS can kill a socket without reporting
-closure. Treating every foreground event as a reconnect delays healthy attempts;
-treating every resume as harmless leaves suspended sockets stuck.
+Foregrounding, an explicit retry, and an offline report probe the established
+session, and only a failed probe reconnects. Offline reports are often wrong, for
+example for a loopback server. A long mobile background suspension is the one
+exception: it replaces the session at once, because the OS can kill a socket
+without reporting closure, and a probe would hold a dead socket in "Resuming"
+until it times out. That fresh attempt runs even while the network reports
+offline. Foregrounding also wakes a pending retry immediately and
+leaves an ordinary in-flight attempt alone.
 
 The [registry](../../packages/client-runtime/src/connection/registry.ts) scopes
 connections by environment. An involuntary disconnect retains the registration
 and cached data. Explicit removal closes the scope and clears credentials,
 projections, and platform-owned state such as drafts. Cloud-account changes apply
 to relay registrations; they must not discard directly paired environments.
+
+## Updating a host too old to connect
+
+A host on an older orchestration protocol is blocked before a session opens, so
+the normal update path, which runs over the session, cannot reach it. The
+[outdated-host update](../../packages/client-runtime/src/connection/outdatedHostUpdate.ts)
+authorizes a bare socket without the protocol gate and calls only the self-update
+RPCs, whose wire shape has not changed across protocol versions. It confirms with
+the user first, with the method read from the host's descriptor: nobody at the
+host is asked, and this client cannot see the threads a restart stops.
+
+It then polls the descriptor for up to four minutes until the host reports a
+compatible protocol. Unlike the session path, it does not re-commit a desktop
+update when the app relaunches on the old version; that case fails after the
+timeout and the user retries. Mobile has no update action, so the block message
+names desktop and web as the place to start one.
 
 ## HTTP authorization
 

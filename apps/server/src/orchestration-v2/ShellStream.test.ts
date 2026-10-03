@@ -4,6 +4,8 @@ import type {
   OrchestrationV2ShellSnapshot,
   OrchestrationV2StoredEvent,
   OrchestrationV2ThreadShell,
+  OrchestrationProjectShell,
+  RepositoryIdentity,
 } from "@t3tools/contracts";
 import { ProjectId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -16,6 +18,7 @@ import {
   coalesceStoredThreadEvents,
   composeShellStreamWithEnrichment,
   dedupeShellEnrichment,
+  projectsWithResolvedRepositoryIdentities,
   shellStreamItemFromEnrichmentRefresh,
   shellStreamItemFromThreadShell,
   shellStreamItemsFromInitialSnapshot,
@@ -208,6 +211,38 @@ describe("archivedShellStreamItemFromThreadShell", () => {
         shell: null,
       }),
     ).toEqual({ kind: "thread.removed", sequence: 4, threadId: "thread-a" });
+  });
+});
+
+describe("projectsWithResolvedRepositoryIdentities", () => {
+  const identity = (canonicalKey: string) =>
+    ({ canonicalKey, locator: { source: "git-remote" } }) as unknown as RepositoryIdentity;
+  const projects = [
+    { id: "project-a", workspaceRoot: "/workspace/a", repositoryIdentity: null },
+    { id: "project-b", workspaceRoot: "/workspace/b", repositoryIdentity: identity("stale-b") },
+    { id: "project-c", workspaceRoot: "/workspace/c", repositoryIdentity: identity("kept-c") },
+  ] as unknown as ReadonlyArray<OrchestrationProjectShell>;
+
+  it("refreshes only changed roots with the identity each resolution carried", () => {
+    const refreshed = projectsWithResolvedRepositoryIdentities(projects, [
+      { workspaceRoot: "/workspace/a", enrichment: { repositoryIdentity: identity("first-a") } },
+      { workspaceRoot: "/workspace/b", enrichment: { repositoryIdentity: null } },
+      { workspaceRoot: "/workspace/a", enrichment: { repositoryIdentity: identity("latest-a") } },
+      { workspaceRoot: "/workspace/unknown", enrichment: { repositoryIdentity: null } },
+    ]);
+
+    expect(refreshed.map((project) => [project.id, project.repositoryIdentity])).toEqual([
+      ["project-a", identity("latest-a")],
+      ["project-b", null],
+    ]);
+  });
+
+  it("emits no projects when no stored project matches a change", () => {
+    expect(
+      projectsWithResolvedRepositoryIdentities(projects, [
+        { workspaceRoot: "/workspace/other", enrichment: { repositoryIdentity: null } },
+      ]),
+    ).toEqual([]);
   });
 });
 

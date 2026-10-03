@@ -39,6 +39,17 @@ import * as ConnectionWakeups from "./wakeups.ts";
 
 const isSshConnectionProfile = Schema.is(SshConnectionProfile);
 
+function unsupportedState(
+  entry: ConnectionCatalogEntry,
+): Pick<ConnectionCatalogEntry, "unsupportedReason" | "serverUpdateRequired"> {
+  return {
+    ...(entry.unsupportedReason === undefined
+      ? {}
+      : { unsupportedReason: entry.unsupportedReason }),
+    ...(entry.serverUpdateRequired === true ? { serverUpdateRequired: true } : {}),
+  };
+}
+
 export class EnvironmentNotRegisteredError extends Schema.TaggedError<EnvironmentNotRegisteredError>()(
   "EnvironmentNotRegisteredError",
   {
@@ -454,7 +465,7 @@ export const make = Effect.gen(function* () {
                 ...(previous.unsupportedReason !== undefined &&
                 Equal.equals(previous.target, registered.target) &&
                 Equal.equals(previous.profile, registered.profile)
-                  ? { unsupportedReason: previous.unsupportedReason }
+                  ? unsupportedState(previous)
                   : {}),
               };
         yield* registrations.register(registration);
@@ -480,7 +491,7 @@ export const make = Effect.gen(function* () {
             previous?.unsupportedReason !== undefined &&
             Equal.equals(previous.target, registered.target) &&
             Equal.equals(previous.profile, registered.profile)
-              ? { ...registered, enabled: false, unsupportedReason: previous.unsupportedReason }
+              ? { ...registered, enabled: false, ...unsupportedState(previous) }
               : registered;
           yield* Ref.update(platformEnvironmentIds, (current) => {
             const next = new Set(current);
@@ -814,11 +825,26 @@ export const make = Effect.gen(function* () {
         // Discovery can race with a replacement registration for this ID.
         // Match the observed relay target under the lock that protects the write.
         if (options?.expectedRelayTarget && entry?.target !== options.expectedRelayTarget) return;
-        if (entry === undefined || entry.unsupportedReason === (error?.message ?? undefined))
+        if (
+          entry === undefined ||
+          (entry.unsupportedReason === (error?.message ?? undefined) &&
+            entry.serverUpdateRequired === (error?.serverUpdateRequired ?? undefined))
+        )
           return;
-        const { unsupportedReason: _previousReason, ...rest } = entry;
+        const {
+          unsupportedReason: _previousReason,
+          serverUpdateRequired: _previousUpdateRequired,
+          ...rest
+        } = entry;
         const next: ConnectionCatalogEntry =
-          error === null ? rest : { ...rest, enabled: false, unsupportedReason: error.message };
+          error === null
+            ? rest
+            : {
+                ...rest,
+                enabled: false,
+                unsupportedReason: error.message,
+                ...(error.serverUpdateRequired === true ? { serverUpdateRequired: true } : {}),
+              };
         if (
           error !== null &&
           entry.enabled &&
