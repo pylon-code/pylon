@@ -223,7 +223,6 @@ object AgentNotifications {
     }
   }
 
-
   private fun updateActivity(
     context: Context,
     prefs: SharedPreferences,

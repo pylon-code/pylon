@@ -10,8 +10,10 @@ import expo.modules.kotlin.modules.ModuleDefinition
 
 class T3AgentNotificationsModule : Module() {
   private val mainHandler = Handler(Looper.getMainLooper())
+
   // Resolve at Expo lifecycle delivery, after React updates the host Activity.
   internal var activityProvider: () -> Activity? = { appContext.currentActivity }
+
   @Volatile private var destroyed = false
 
   override fun definition() = ModuleDefinition {
