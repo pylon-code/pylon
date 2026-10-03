@@ -891,9 +891,8 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     props.selectedThread.session?.runtimeMode === "full-access" &&
     supportsSessionAgentCancel(activeSessionProviderStatus);
   const canCancelAgent = useCallback(
-    (agent: RuntimeSubagent) =>
-      canCancelSessionAgent(agent, canCancelSessionAgents, props.connectionState === "connected"),
-    [canCancelSessionAgents, props.connectionState],
+    (agent: RuntimeSubagent) => canCancelSessionAgent(agent, canCancelSessionAgents),
+    [canCancelSessionAgents],
   );
   const canMessageSessionAgents =
     sessionAgentReady &&
@@ -939,7 +938,6 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     agents: props.sessionAgents,
     provider: activeSessionProviderStatus,
     canCancel: canCancelSessionAgents,
-    detachedControlsAvailable: props.connectionState === "connected",
     canMessage: canMessageSessionAgents,
     cancellingAgentIds,
     onCancel: props.onCancelSessionAgent,
@@ -950,7 +948,6 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     agents: props.sessionAgents,
     provider: activeSessionProviderStatus,
     canCancel: canCancelSessionAgents,
-    detachedControlsAvailable: props.connectionState === "connected",
     canMessage: canMessageSessionAgents,
     cancellingAgentIds,
     onCancel: props.onCancelSessionAgent,
@@ -984,7 +981,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     if (
       control.scopeKey !== expectedScopeKey ||
       current === undefined ||
-      !canCancelSessionAgent(current, control.canCancel, control.detachedControlsAvailable) ||
+      !canCancelSessionAgent(current, control.canCancel) ||
       control.cancellingAgentIds.has(agentId)
     ) {
       return;
@@ -1076,12 +1073,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       const agent = control.agents.find((candidate) => candidate.id === action.agentId);
       if (!agent || !isActiveSubagentStatus(agent.status)) return;
       if (action.kind === "live-activity") {
-        if (
-          !canWatchSessionAgentActivity ||
-          agent.watchable === false ||
-          agent.source === "relay" ||
-          agent.kind === "workflow"
-        )
+        if (!canWatchSessionAgentActivity || agent.watchable === false || agent.kind === "workflow")
           return;
         setLiveActivitySelection({ agentId: agent.id, scopeKey: control.scopeKey });
         return;
@@ -1095,7 +1087,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         return;
       }
       if (
-        !canCancelSessionAgent(agent, control.canCancel, control.detachedControlsAvailable) ||
+        !canCancelSessionAgent(agent, control.canCancel) ||
         control.cancellingAgentIds.has(agent.id)
       )
         return;

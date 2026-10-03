@@ -213,18 +213,11 @@ function AgentRow({
   ].filter((value): value is string => value !== null);
   const active = isActiveSubagentStatus(agent.status);
   const messageable =
-    messageControls.enabled &&
-    agent.source !== "relay" &&
-    agent.kind !== "workflow" &&
-    agent.messageable &&
-    active;
+    messageControls.enabled && agent.kind !== "workflow" && agent.messageable && active;
   const cancellable = cancelControls.canRequest(agent) && agent.kind !== "workflow" && active;
   const stopping = cancellable && cancelControls.pendingIds.has(agent.id);
   const liveActivityEligible =
-    liveActivityControls.enabled &&
-    agent.watchable !== false &&
-    agent.source !== "relay" &&
-    agent.kind !== "workflow";
+    liveActivityControls.enabled && agent.watchable !== false && agent.kind !== "workflow";
   const liveActivityAvailable = liveActivityEligible && active;
 
   return (
@@ -574,9 +567,6 @@ function ExpandedWorkflowSection({
         ) : null}
         <span className="ml-auto font-mono normal-case text-muted-foreground/80">
           {settled}/{members.length} settled
-          {group.workflow.source === "relay" && group.workflow.progress
-            ? ` · ${group.workflow.progress}`
-            : null}
         </span>
         <Button
           size="icon-micro"
@@ -686,9 +676,6 @@ function CollapsedWorkflowSection({
         <span className="ml-auto flex items-center gap-1.5 font-mono text-2xs text-muted-foreground/80">
           {failed > 0 ? <span className="text-destructive-foreground">{failed} failed</span> : null}
           <span>{members.length} agents</span>
-          {group.workflow.source === "relay" && group.workflow.progress ? (
-            <span>· {group.workflow.progress}</span>
-          ) : null}
           <span className="tabular-nums">· {formatSubagentTokenCount(totalTokens)} tok</span>
           {elapsed ? <span className="tabular-nums">· {elapsed}</span> : null}
           <ChevronRight aria-hidden className="size-3" />
@@ -834,8 +821,7 @@ export function AgentsPanel({
       if (
         !isActiveSubagentStatus(agent.status) ||
         agent.kind === "workflow" ||
-        agent.watchable === false ||
-        agent.source === "relay"
+        agent.watchable === false
       )
         return;
       setLiveActivitySelection({ agentId: agent.id, scopeKey: liveActivityScopeKey });

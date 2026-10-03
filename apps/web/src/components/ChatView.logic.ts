@@ -524,43 +524,6 @@ export function buildThreadTurnInterruptInput(thread: Pick<Thread, "id" | "sessi
   };
 }
 
-/** The background Stop action must address detached workers as well as the parent session. */
-export function planBackgroundAgentStop(
-  agents: ReadonlyArray<RuntimeSubagent>,
-  canCancelAgent: (agent: RuntimeSubagent) => boolean,
-  canInterruptParent: boolean,
-  nativeBackgroundWork: boolean | undefined,
-): {
-  readonly relayAgentIds: ReadonlyArray<string>;
-  readonly interruptParent: boolean;
-  readonly canStopAll: boolean;
-} {
-  const relayWorkers = agents.filter(
-    (agent) =>
-      agent.source === "relay" && agent.kind !== "workflow" && isActiveSubagentStatus(agent.status),
-  );
-  const hasActiveRelay = agents.some(
-    (agent) => agent.source === "relay" && isActiveSubagentStatus(agent.status),
-  );
-  const hasNativeAgent = agents.some(
-    (agent) => agent.source !== "relay" && isActiveSubagentStatus(agent.status),
-  );
-  // The server liveness registry is authoritative. Historical client rows can
-  // outlive a provider session, while older servers omit this field entirely.
-  const hasNativeWork = nativeBackgroundWork ?? hasNativeAgent;
-  // A provider interrupt can close the parent session, so Relay-only work
-  // must never send one merely because that session is still connected.
-  const interruptParent = canInterruptParent && (hasNativeWork || !hasActiveRelay);
-  return {
-    relayAgentIds: relayWorkers.filter(canCancelAgent).map((agent) => agent.id),
-    interruptParent,
-    canStopAll:
-      relayWorkers.every(canCancelAgent) &&
-      (!hasNativeWork || interruptParent) &&
-      (interruptParent || relayWorkers.length > 0),
-  };
-}
-
 const NO_LOCAL_TIMELINE_MESSAGE_IDS: ReadonlySet<MessageId> = new Set();
 
 /**

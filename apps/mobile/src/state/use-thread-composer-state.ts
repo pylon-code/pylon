@@ -1189,7 +1189,6 @@ export function useThreadComposerState() {
           session?.runtimeMode === "full-access" &&
             (session.status === "ready" || session.status === "running") &&
             supportsSessionAgentCancel(provider),
-          selectedEnvironmentRuntime?.connectionState === "connected",
         )
       ) {
         return false;

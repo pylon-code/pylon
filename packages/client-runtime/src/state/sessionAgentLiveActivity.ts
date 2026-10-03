@@ -52,7 +52,6 @@ export function sessionAgentLiveActivitySelectionIsOpen(input: {
     input.capabilityEnabled &&
     input.agent !== null &&
     input.agent !== undefined &&
-    input.agent.source !== "relay" &&
     input.agent.watchable !== false &&
     input.agent.kind !== "workflow" &&
     (input.agent.status === "pending" ||

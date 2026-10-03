@@ -113,7 +113,6 @@ import {
   normalizeDispatchCommand,
 } from "./orchestration/Normalizer.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
-import { RelayWorkerBridge } from "./orchestration/RelayWorkerBridge.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadDeletionReactor } from "./orchestration/Services/ThreadDeletionReactor.ts";
 import { RollbackSagaRepository } from "./persistence/Services/RollbackSagas.ts";
@@ -586,9 +585,6 @@ const makeWsRpcLayer = (
       const modelManifest = yield* ModelManifest.ModelManifest;
       const providerVersionCache = yield* ProviderMaintenance.ProviderVersionCache;
       const providerService = yield* ProviderService.ProviderService;
-      const relayWorkerBridge = Option.getOrUndefined(
-        yield* Effect.serviceOption(RelayWorkerBridge),
-      );
       const providerSessionDirectory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
       const rollbackSagaRunner = yield* RollbackSagaRunner;
       const rollbackSagaRepository = yield* RollbackSagaRepository;
@@ -2570,27 +2566,23 @@ const makeWsRpcLayer = (
         [WS_METHODS.providerCancelSessionAgent]: (input) =>
           observeRpcEffect(
             WS_METHODS.providerCancelSessionAgent,
-            input.agentId.startsWith("relay:") || input.agentId.startsWith("relay-panel:")
-              ? relayWorkerBridge
-                ? relayWorkerBridge.cancel(input.threadId, input.agentId)
-                : Effect.fail(new ProviderCancelSessionAgentError({ reason: "unsupported" }))
-              : providerService.cancelSessionAgent(input).pipe(
-                  Effect.mapError((error) => {
-                    const reason =
-                      error._tag === "ProviderUnsupportedError" ||
-                      error._tag === "ProviderAdapterUnsupportedOperationError"
-                        ? "unsupported"
-                        : error._tag === "ProviderAdapterValidationError"
-                          ? "agent-not-active"
-                          : error._tag === "ProviderAdapterSessionNotFoundError" ||
-                              error._tag === "ProviderAdapterSessionClosedError" ||
-                              error._tag === "ProviderSessionNotFoundError" ||
-                              error._tag === "ProviderValidationError"
-                            ? "session-not-ready"
-                            : "request-failed";
-                    return new ProviderCancelSessionAgentError({ reason });
-                  }),
-                ),
+            providerService.cancelSessionAgent(input).pipe(
+              Effect.mapError((error) => {
+                const reason =
+                  error._tag === "ProviderUnsupportedError" ||
+                  error._tag === "ProviderAdapterUnsupportedOperationError"
+                    ? "unsupported"
+                    : error._tag === "ProviderAdapterValidationError"
+                      ? "agent-not-active"
+                      : error._tag === "ProviderAdapterSessionNotFoundError" ||
+                          error._tag === "ProviderAdapterSessionClosedError" ||
+                          error._tag === "ProviderSessionNotFoundError" ||
+                          error._tag === "ProviderValidationError"
+                        ? "session-not-ready"
+                        : "request-failed";
+                return new ProviderCancelSessionAgentError({ reason });
+              }),
+            ),
             { "rpc.aggregate": "provider" },
           ),
         [WS_METHODS.providerMessageSessionAgent]: (input) =>

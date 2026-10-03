@@ -1127,288 +1127,6 @@ describe("supportsSessionAgentCancel", () => {
   });
 });
 
-describe("Relay workers in the native agent fold", () => {
-  const messagingProvider = {
-    featureCapabilities: {
-      version: 1,
-      agents: { support: "read-write", operations: ["message"] },
-    } as NonNullable<import("@t3tools/contracts").ServerProvider["featureCapabilities"]>,
-  };
-  const relay = (taskId: string, attempt: number, relaySequence: number, other = {}) => ({
-    taskId,
-    taskType: "local_agent",
-    source: "relay",
-    cancellable: true,
-    watchable: false,
-    attempt,
-    relaySequence,
-    ...other,
-  });
-
-  it("survives parent disconnect and routes control by worker capability", () => {
-    const [worker, native] = foldSubagentActivities(
-      [
-        activity(
-          "task.progress",
-          relay("relay:job-1", 1, 1, {
-            status: "running",
-            model: "claude-sonnet-5",
-            effort: "high",
-            summary: "Reading files",
-          }),
-        ),
-        activity("task.started", { taskId: "native", taskType: "local_agent" }),
-      ],
-      { sessionLive: false },
-    );
-    expect(worker).toMatchObject({
-      id: "relay:job-1",
-      source: "relay",
-      status: "running",
-      model: "claude-sonnet-5",
-      effort: "high",
-      progress: "Reading files",
-      cancellable: true,
-      watchable: false,
-    });
-    expect(native?.status).toBe("interrupted");
-    expect(canCancelSessionAgent(worker!, false, true)).toBe(true);
-    expect(canCancelSessionAgent(worker!, false, false)).toBe(false);
-    expect(canCancelSessionAgent(native!, true, true)).toBe(false);
-    expect(canMessageSessionAgent(messagingProvider, worker!)).toBe(false);
-  });
-
-  it("fences stale attempts and sequences while summing cumulative usage once per attempt", () => {
-    const [worker] = fold([
-      activity("task.started", relay("relay:job-2", 1, 0, { title: "Review" })),
-      activity(
-        "task.progress",
-        relay("relay:job-2", 1, 1, {
-          status: "running",
-          typedUsage: { totalTokens: 100, inputTokens: 80 },
-        }),
-      ),
-      activity(
-        "task.completed",
-        relay("relay:job-2", 1, 2, {
-          status: "failed",
-          summary: "First attempt failed",
-          typedUsage: { totalTokens: 150, inputTokens: 100 },
-        }),
-      ),
-      activity("task.started", relay("relay:job-2", 2, 0)),
-      activity(
-        "task.progress",
-        relay("relay:job-2", 2, 2, {
-          status: "running",
-          summary: "Retrying",
-          relayPriorUsage: { totalTokens: 150, inputTokens: 100 },
-          typedUsage: { totalTokens: 40, inputTokens: 25 },
-        }),
-      ),
-      activity(
-        "task.completed",
-        relay("relay:job-2", 1, 3, {
-          status: "failed",
-          summary: "Stale failure",
-          typedUsage: { totalTokens: 500 },
-        }),
-      ),
-      activity(
-        "task.progress",
-        relay("relay:job-2", 2, 1, {
-          status: "running",
-          summary: "Duplicate frame",
-          typedUsage: { totalTokens: 80 },
-        }),
-      ),
-      activity(
-        "task.completed",
-        relay("relay:job-2", 2, 2, {
-          status: "completed",
-          summary: "Done",
-          typedUsage: { totalTokens: 60, inputTokens: 40 },
-        }),
-      ),
-    ]);
-    expect(worker).toMatchObject({
-      id: "relay:job-2",
-      activationCount: 2,
-      attempt: 2,
-      status: "completed",
-      result: "Done",
-      error: null,
-      usage: { totalTokens: 210, inputTokens: 140 },
-    });
-    expect(worker?.recentActivity.some((entry) => entry.summary === "Duplicate frame")).toBe(false);
-  });
-
-  it("retains cumulative usage when an earlier Relay completion aged out of the activity window", () => {
-    const [worker] = fold([
-      activity(
-        "task.progress",
-        relay("relay:job-aged", 2, 1, {
-          status: "running",
-          relayPriorUsage: { totalTokens: 150, inputTokens: 100, outputTokens: 50 },
-          typedUsage: { totalTokens: 40, inputTokens: 25, outputTokens: 15 },
-        }),
-      ),
-    ]);
-    expect(worker).toMatchObject({
-      id: "relay:job-aged",
-      attempt: 2,
-      status: "running",
-      usage: { totalTokens: 190, inputTokens: 125, outputTokens: 65 },
-    });
-  });
-
-  it("shows a resumed worker as idle while its observer is unavailable before the first start", () => {
-    const [worker] = fold([
-      activity(
-        "task.completed",
-        relay("relay:job-resume-outage", 1, 2, {
-          status: "completed",
-          typedUsage: { totalTokens: 150 },
-        }),
-      ),
-      activity(
-        "task.progress",
-        relay("relay:job-resume-outage", 2, 0, {
-          status: "idle",
-          cancellable: false,
-          relayPriorUsage: { totalTokens: 150 },
-          summary: "Relay observer unavailable",
-        }),
-      ),
-    ]);
-    expect(worker).toMatchObject({
-      attempt: 2,
-      status: "idle",
-      cancellable: false,
-      usage: { totalTokens: 150 },
-    });
-  });
-
-  it("keeps one Relay run when observation recovers within the same attempt", () => {
-    const [worker] = fold([
-      activity("task.started", relay("relay:job-observer", 1, 0)),
-      activity("task.progress", relay("relay:job-observer", 1, 1, { status: "running" })),
-      activity(
-        "task.progress",
-        relay("relay:job-observer", 1, 1, {
-          status: "idle",
-          cancellable: false,
-          summary: "Relay observer unavailable",
-        }),
-      ),
-      activity(
-        "task.progress",
-        relay("relay:job-observer", 1, 2, {
-          status: "running",
-          cancellable: true,
-          summary: "Running command",
-        }),
-      ),
-    ]);
-    expect(worker).toMatchObject({
-      status: "running",
-      attempt: 1,
-      activationCount: 1,
-      cancellable: true,
-      progress: "Running command",
-    });
-  });
-
-  it("keeps partially dispatched panel workers independent of a failed coordinator", () => {
-    const agents = fold([
-      activity("task.started", {
-        taskId: "relay-panel:panel-1",
-        taskType: "local_workflow",
-        source: "relay",
-        attempt: 1,
-        relaySequence: 0,
-        title: "Panel review",
-      }),
-      activity(
-        "task.progress",
-        relay("relay:job-3", 1, 0, {
-          parentAgentId: "relay-panel:panel-1",
-          agentIndex: 0,
-          status: "running",
-        }),
-      ),
-      activity("task.completed", {
-        taskId: "relay-panel:panel-1",
-        taskType: "local_workflow",
-        source: "relay",
-        attempt: 1,
-        relaySequence: 1,
-        status: "failed",
-        summary: "One dispatch failed",
-      }),
-    ]);
-    const model = deriveAgentPanelModel({ agents });
-    expect(model.workflows).toHaveLength(1);
-    expect(model.workflows[0]?.unphasedMembers[0]?.status).toBe("running");
-    expect(model.runningCount).toBe(1);
-  });
-
-  it("keeps one panel member row when a failed job is replaced in the same slot", () => {
-    const coordinator = "relay-panel:panel-2";
-    const memberId = `${coordinator}:member:0`;
-    const agents = fold([
-      activity("task.started", {
-        taskId: coordinator,
-        taskType: "local_workflow",
-        source: "relay",
-        attempt: 1,
-        relaySequence: 0,
-      }),
-      activity(
-        "task.progress",
-        relay(memberId, 1_000_001, 1, {
-          parentAgentId: coordinator,
-          agentIndex: 0,
-          status: "failed",
-          error: "First job failed",
-          typedUsage: { totalTokens: 100 },
-        }),
-      ),
-      activity(
-        "task.progress",
-        relay(memberId, 2_000_001, 0, {
-          parentAgentId: coordinator,
-          agentIndex: 0,
-          status: "running",
-          summary: "Replacement job running",
-          typedUsage: { totalTokens: 20 },
-        }),
-      ),
-      activity(
-        "task.completed",
-        relay(memberId, 1_000_001, 2, {
-          parentAgentId: coordinator,
-          agentIndex: 0,
-          status: "failed",
-          summary: "Late first result",
-          typedUsage: { totalTokens: 500 },
-        }),
-      ),
-    ]);
-    const model = deriveAgentPanelModel({ agents });
-    expect(model.workflows[0]?.unphasedMembers).toHaveLength(1);
-    expect(model.workflows[0]?.unphasedMembers[0]).toMatchObject({
-      id: memberId,
-      attempt: 2_000_001,
-      status: "running",
-      error: null,
-      usage: { totalTokens: 120 },
-    });
-    expect(model.runningCount).toBe(1);
-    expect(canCancelSessionAgent(model.workflows[0]!.unphasedMembers[0]!, false, true)).toBe(true);
-  });
-});
-
 describe("session agent messaging", () => {
   const provider = (support: "read-only" | "read-write", operations: ReadonlyArray<string>) => ({
     featureCapabilities: {
@@ -1504,18 +1222,55 @@ describe("task classification is resolved per task, not per row", () => {
   });
 
   it("still admits a worker that never carries a task type", () => {
-    // Relay workers and native subagents legitimately have no taskType; the
-    // stamp is the only evidence, so it must keep deciding for them.
-    const relay = [
+    // Native subagents legitimately have no taskType; the stamp is the only
+    // evidence, so it must keep deciding for them.
+    const typeless = [
       activity("task.started", {
-        taskId: "relay:job-1",
-        title: "Relay worker",
+        taskId: "job-1",
+        title: "Nested worker",
         agentKind: "agent",
       }),
-      activity("task.completed", { taskId: "relay:job-1", status: "completed" }),
+      activity("task.completed", { taskId: "job-1", status: "completed" }),
     ];
-    expect(collectBackgroundTaskIds(relay)).toEqual(new Set());
-    expect(foldSubagentActivities(relay).map((agent) => agent.id)).toEqual(["relay:job-1"]);
+    expect(collectBackgroundTaskIds(typeless)).toEqual(new Set());
+    expect(foldSubagentActivities(typeless).map((agent) => agent.id)).toEqual(["job-1"]);
+  });
+
+  it("folds legacy detached-worker payloads as ordinary agents", () => {
+    // Removing the detached-worker fields did not rewrite saved history, so
+    // rows persisted before that removal still carry them. Extra keys must be
+    // ignored, not cause the row to be dropped or mis-folded.
+    const legacy = [
+      activity("task.started", {
+        taskId: "job-legacy",
+        taskType: "local_agent",
+        title: "Legacy worker",
+        agentKind: "agent",
+        source: "relay",
+        attempt: 2,
+        relaySequence: 7,
+        cancellable: true,
+        watchable: false,
+      }),
+      activity("task.completed", {
+        taskId: "job-legacy",
+        status: "completed",
+        summary: "Done",
+        agentKind: "agent",
+        source: "relay",
+        relaySequence: 8,
+        relayPriorUsage: { totalTokens: 100 },
+        typedUsage: { totalTokens: 40 },
+      }),
+    ];
+    const [agent] = foldSubagentActivities(legacy);
+    expect(agent).toMatchObject({
+      id: "job-legacy",
+      status: "completed",
+      result: "Done",
+      // Only the row's own usage counts; cumulative prior attempts are gone.
+      usage: { totalTokens: 40 },
+    });
   });
 
   it("does not let an unstamped row demote a real subagent", () => {

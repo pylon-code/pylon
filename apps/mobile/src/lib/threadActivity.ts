@@ -436,23 +436,11 @@ function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): DerivedWorkLogEntry[] {
   const ordered = Arr.sort(activities, activityOrder);
-  const toolOrigins = new Map<string, string>();
-  for (const activity of ordered) {
-    if (activity.kind !== "tool.started" && activity.kind !== "tool.completed") continue;
-    const payload = asRecord(activity.payload);
-    const toolCallId =
-      asTrimmedString(payload?.toolCallId) ?? asTrimmedString(asRecord(payload?.data)?.toolCallId);
-    if (!toolCallId) continue;
-    const key = `${activity.turnId ?? ""}:${toolCallId}`;
-    if (!toolOrigins.has(key)) toolOrigins.set(key, activity.createdAt);
-  }
   // Resolved across the thread: a task that names a background type stays
   // background even when a later bare terminal row carries the agent stamp.
   const backgroundTaskIds = collectBackgroundTaskIds(ordered);
   const entries: DerivedWorkLogEntry[] = [];
   for (const activity of foldUserInputActivities(ordered)) {
-    // Ownership receipts feed Relay recovery and control routing, not the transcript.
-    if (activity.kind === "relay.binding" || activity.kind === "relay.activation") continue;
     // The setup card owns its snapshot, including failed and cancelled outcomes.
     if (
       isWorktreeSetupActivity(activity.kind) &&
@@ -488,15 +476,7 @@ function deriveWorkLogEntries(
     if (isNoContentRuntimeWarning(activity)) continue;
     if (isPlanBoundaryToolActivity(activity)) continue;
     if (isAgentInternalActivity(activity, backgroundTaskIds)) continue;
-    const entry = toDerivedWorkLogEntry(activity, backgroundTaskIds);
-    const payload = asRecord(activity.payload);
-    const origin =
-      payload?.source === "relay" && typeof payload.toolUseId === "string"
-        ? toolOrigins.get(`${activity.turnId ?? ""}:${payload.toolUseId}`)
-        : undefined;
-    // Match web: saved Relay rows backfilled at restart belong beside their
-    // original dispatch, even when that receipt arrives in a later history page.
-    entries.push(origin && origin < entry.createdAt ? { ...entry, createdAt: origin } : entry);
+    entries.push(toDerivedWorkLogEntry(activity, backgroundTaskIds));
   }
   return collapseDerivedWorkLogEntries(entries);
 }
@@ -699,8 +679,6 @@ function toDerivedWorkLogEntry(
  */
 function agentSpawnGroupKey(entry: DerivedWorkLogEntry): string {
   const taskId = entry.taskId ?? "";
-  const relayMemberSlot = taskId.startsWith("relay-panel:") ? taskId.indexOf(":member:") : -1;
-  if (relayMemberSlot !== -1) return `wf:${taskId.slice(0, relayMemberSlot)}`;
   const workflowSlot = taskId.indexOf(":wf:");
   if (workflowSlot !== -1) return `wf:${taskId.slice(0, workflowSlot)}`;
   if (entry.isWorkflowCoordinator) return `wf:${taskId}`;

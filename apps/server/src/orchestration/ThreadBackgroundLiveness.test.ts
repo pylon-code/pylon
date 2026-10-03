@@ -116,20 +116,16 @@ describe("ThreadBackgroundLiveness", () => {
     expect(liveness.getThreadBackgroundLiveness(threadId)).toBeNull();
   });
 
-  it("identifies parent-owned monitors alongside a detached Relay worker", () => {
+  it("session death clears every live entry, agents and monitors alike", () => {
     const liveness = ThreadBackgroundLiveness.make();
     const threadId = "mixed-thread";
     liveness.recordTaskLiveness({
       threadId,
-      taskId: "relay:job-1",
+      taskId: "agent-1",
       taskType: "subagent",
       status: "running",
       kind: "started",
-      source: "relay",
     });
-    expect(liveness.getThreadBackgroundLiveness(threadId)).toBe("working");
-    expect(liveness.hasNativeBackgroundWork(threadId)).toBe(false);
-
     liveness.recordTaskLiveness({
       threadId,
       taskId: "native-monitor",
@@ -140,12 +136,13 @@ describe("ThreadBackgroundLiveness", () => {
     expect(liveness.getThreadBackgroundLiveness(threadId)).toBe("working");
     expect(liveness.hasNativeBackgroundWork(threadId)).toBe(true);
 
+    // No work outlives its session now that detached workers are gone.
     liveness.clearThreadLiveness(threadId);
-    expect(liveness.getThreadBackgroundLiveness(threadId)).toBe("working");
+    expect(liveness.getThreadBackgroundLiveness(threadId)).toBeNull();
     expect(liveness.hasNativeBackgroundWork(threadId)).toBe(false);
   });
 
-  it("uses trusted source metadata instead of task ID spelling", () => {
+  it("never classifies liveness from task ID spelling", () => {
     const liveness = ThreadBackgroundLiveness.make();
     liveness.recordTaskLiveness({
       threadId: "native-thread",
