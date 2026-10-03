@@ -10,7 +10,10 @@ import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-searc
 import type { ContextMenuItem, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import type { AsyncResult } from "effect/unstable/reactivity";
-import { planPinnedReorder } from "@t3tools/client-runtime/state/thread-sort";
+import {
+  planPinnedReorder,
+  sortActiveThreadsByOrderKey,
+} from "@t3tools/client-runtime/state/thread-sort";
 import {
   effectiveSnoozed,
   type ThreadSnoozeShell,
@@ -126,20 +129,26 @@ export const animateSidebarLayoutChanges: AnimateLayoutChanges = (args) =>
 // the lifecycle action; Sidebar.drag previews the resulting layout. Pinned
 // and active threads keep the dragged position; settled threads use time
 // order. Snoozed rows can leave the shelf, but dropping into it is not
-// supported because snoozing requires a wake time.
+// supported because snoozing requires a wake time. The Working shelf (beta)
+// follows live status, so it is neither a drag source nor a destination.
 
-export type SidebarSection = "pinned" | "active" | "snoozed" | "settled";
+export type SidebarSection = "pinned" | "active" | "working" | "snoozed" | "settled";
 
 /** Resolve the shelf a visible thread belongs to. Snooze is temporary and
- * wins until its wake boundary; settlement then wins over a stale pin. */
+ * wins until its wake boundary; settlement then wins over a stale pin. The
+ * Working shelf (beta) only takes inbox threads: pins, snoozes, and
+ * settlement keep their shelves while work runs. */
 export function resolveSidebarThreadSection(input: {
   readonly snoozed: boolean;
   readonly settled: boolean;
   readonly pinned: boolean;
+  /** Working beta enabled and the thread is busy without needing the user. */
+  readonly working?: boolean;
 }): SidebarSection {
   if (input.snoozed) return "snoozed";
   if (input.settled) return "settled";
   if (input.pinned) return "pinned";
+  if (input.working) return "working";
   return "active";
 }
 
@@ -155,6 +164,7 @@ export type SidebarListMarker =
   | "settled-placeholder"
   /** The boundary between pinned and active rows. */
   | "pinned-divider"
+  | "working-header"
   | "snoozed-header"
   | "settled-header";
 
@@ -172,7 +182,7 @@ export function sidebarListItemId(item: SidebarListItem): string {
 
 /** The section a slot belongs to, read off the markers around it: from
     the top down, everything before the pinned divider is pinned, then the
-    inbox until the snoozed header, the shelf until the settled header,
+    inbox until the first shelf header, each shelf until the next header,
     then settled. */
 function sectionAtSidebarSlot(items: readonly SidebarListItem[], index: number): SidebarSection {
   let section: SidebarSection = "pinned";
@@ -180,6 +190,7 @@ function sectionAtSidebarSlot(items: readonly SidebarListItem[], index: number):
     const item = items[i]!;
     if (item.kind !== "marker") continue;
     if (item.marker === "pinned-divider") section = "active";
+    else if (item.marker === "working-header") section = "working";
     else if (item.marker === "snoozed-header") section = "snoozed";
     else if (item.marker === "settled-header") section = "settled";
   }
@@ -187,7 +198,7 @@ function sectionAtSidebarSlot(items: readonly SidebarListItem[], index: number):
 }
 
 /** Resolve the destination section and manual order from an arrayMove across
- * the separators. The snoozed shelf is never a destination. */
+ * the separators. The working and snoozed shelves are never destinations. */
 export type SidebarDropTarget = {
   readonly section: "pinned" | "active" | "settled";
   readonly pinnedOrder: readonly string[];
@@ -205,14 +216,19 @@ export function resolveSidebarDropTarget(
   const moved = items.filter((_, index) => index !== activeIndex);
   moved.splice(overIndex, 0, items[activeIndex]!);
   const section = sectionAtSidebarSlot(moved, overIndex);
-  if (section === "snoozed") return null;
+  if (section === "working" || section === "snoozed") return null;
   const pinnedOrder: string[] = [];
   const activeOrder: string[] = [];
   let currentSection: SidebarSection = "pinned";
   for (const item of moved) {
     if (item.kind === "marker") {
       if (item.marker === "pinned-divider") currentSection = "active";
-      else if (item.marker === "snoozed-header" || item.marker === "settled-header") break;
+      else if (
+        item.marker === "working-header" ||
+        item.marker === "snoozed-header" ||
+        item.marker === "settled-header"
+      )
+        break;
     } else if (currentSection === "pinned") pinnedOrder.push(item.key);
     else activeOrder.push(item.key);
   }
@@ -238,7 +254,8 @@ export type SidebarThreadDropPlan =
     }
   | {
       readonly kind: "move-active";
-      readonly order: readonly string[];
+      /** Null when the inbox is time-ordered: the drop has no placement. */
+      readonly order: readonly string[] | null;
       readonly assignments: ReadonlyArray<{ readonly id: string; readonly orderKey: string }>;
       readonly unpin: boolean;
       readonly unsettle: boolean;
@@ -248,14 +265,14 @@ export type SidebarThreadDropPlan =
 
 /** What dropping in `to` does to a thread lifted from `from`, for the badge
     on the lifted row. Null while reordering inside one section and for the
-    snoozed shelf, which cannot be a drop target. */
+    working and snoozed shelves, which cannot be drop targets. */
 export type SidebarDropVerb = "pin" | "unpin" | "settle" | "unsettle" | "wake";
 
 export function resolveSidebarDropVerb(
   from: SidebarSection,
   to: SidebarSection | null,
 ): SidebarDropVerb | null {
-  if (to === null || to === from || to === "snoozed") return null;
+  if (to === null || to === from || to === "working" || to === "snoozed") return null;
   if (to === "pinned") return "pin";
   if (to === "settled") return "settle";
   if (from === "pinned") return "unpin";
@@ -278,6 +295,8 @@ export function planSidebarThreadDrop(input: {
   readonly activeOrder: readonly string[];
   readonly activeKeysById: ReadonlyMap<string, string | null | undefined>;
   readonly activeReorderableKeys?: ReadonlySet<string>;
+  /** Working beta: the inbox sorts by time, so drops only change lifecycle. */
+  readonly activeTimeOrdered?: boolean;
 }): SidebarThreadDropPlan {
   const {
     activeKey,
@@ -297,6 +316,20 @@ export function planSidebarThreadDrop(input: {
   }
   switch (target.section) {
     case "active": {
+      // Like the settled tail: threads can enter a time-ordered inbox, but
+      // not be arranged inside it.
+      if (input.activeTimeOrdered) {
+        return activeSection === "active"
+          ? { kind: "none" }
+          : {
+              kind: "move-active",
+              order: null,
+              assignments: [],
+              unpin: activePinned,
+              unsettle: activeSettled,
+              unsnooze: activeSection === "snoozed",
+            };
+      }
       const order = target.activeOrder;
       if (
         activeSection === "active" &&
@@ -1023,11 +1056,22 @@ export function shouldShowSidebarV2Duration(status: SidebarThreadStatus): boolea
 
 /** Working beta: threads busy with work that does not need the user fold into
     the Working shelf: a running run, or one stopped with background tasks
-    still open. Approvals, questions, plan prompts, and failures stay in the
-    inbox. */
+    still open. In v2, delegated fleets (subagent tasks) and monitors arrive
+    as open background tasks, which resolve to "waiting"; the delegating and
+    monitoring statuses are folded too so the shelf keeps Pylon's meaning if
+    those statuses are produced again. Approvals, questions, plan prompts,
+    failures, and usage limits stay in the inbox. Presentation only: this
+    never feeds settlement or notifications. */
 export function isSidebarThreadWorking(thread: ThreadStatusInput): boolean {
   const status = resolveSidebarThreadStatus(thread);
-  if (status !== "working" && status !== "waiting") return false;
+  if (
+    status !== "working" &&
+    status !== "waiting" &&
+    status !== "delegating" &&
+    status !== "monitoring"
+  ) {
+    return false;
+  }
   // A plan prompt outranks lingering background work: the user has to act on it.
   return !(
     thread.interactionMode === "plan" &&
@@ -1160,6 +1204,84 @@ export function sortInboxThreadsByReturn<
       left.id.localeCompare(right.id) ||
       left.environmentId.localeCompare(right.environmentId),
   );
+}
+
+/** The inbox order. With the Working beta on, threads come back newest
+    first by return time; turning it off restores the saved manual order,
+    because time-ordered drops never write active order keys. */
+export function sortSidebarInboxThreads<
+  T extends Pick<
+    SidebarThreadSummary,
+    "id" | "environmentId" | "createdAt" | "unsettledAt" | "latestRun" | "activeOrderKey"
+  >,
+>(
+  threads: readonly T[],
+  input: {
+    readonly timeOrdered: boolean;
+    readonly observedReturnAt?: ((thread: T) => number | undefined) | undefined;
+  },
+): T[] {
+  return input.timeOrdered
+    ? sortInboxThreadsByReturn(threads, input.observedReturnAt)
+    : sortActiveThreadsByOrderKey(threads);
+}
+
+/** Rows a collapsible shelf renders: all when expanded, otherwise only the
+    open thread, so following a route never hides its row. `empty` keeps a
+    stable identity for collapsed shelves. */
+export function resolveVisibleShelfThreads<T>(input: {
+  readonly threads: readonly T[];
+  readonly expanded: boolean;
+  readonly routeThreadKey: string | null;
+  readonly keyOf: (thread: T) => string;
+  readonly empty: readonly T[];
+}): readonly T[] {
+  if (input.expanded) return input.threads;
+  if (input.routeThreadKey === null) return input.empty;
+  const routeThread = input.threads.find((thread) => input.keyOf(thread) === input.routeThreadKey);
+  return routeThread === undefined ? input.empty : [routeThread];
+}
+
+/** Device-local return clock for the Working beta. Server timestamps cover
+    finished runs; this covers returns the server does not stamp, such as an
+    approval request mid-run or background work ending. Keys are scoped by
+    environment, so equal thread ids on different environments never share
+    a stamp. */
+export interface SidebarInboxReturnState {
+  /** Working keys at the previous observation; null before the baseline. */
+  readonly workingKeys: ReadonlySet<string> | null;
+  readonly returnedAt: ReadonlyMap<string, number>;
+}
+
+export const EMPTY_SIDEBAR_INBOX_RETURN_STATE: SidebarInboxReturnState = {
+  workingKeys: null,
+  returnedAt: new Map(),
+};
+
+/** Stamp threads that left the Working shelf since the last observation.
+    The first observation only takes a baseline, so mounting or enabling the
+    beta never reshuffles the inbox. Threads absent from the roster (deleted,
+    or their environment disconnected) drop out of both the baseline and the
+    stamps, so a reconnect snapshot is judged by server timestamps alone. */
+export function observeSidebarInboxReturns(
+  state: SidebarInboxReturnState,
+  threads: ReadonlyArray<{ readonly key: string; readonly working: boolean }>,
+  now: number,
+): SidebarInboxReturnState {
+  const working = new Set<string>();
+  const present = new Set<string>();
+  for (const thread of threads) {
+    present.add(thread.key);
+    if (thread.working) working.add(thread.key);
+  }
+  const returnedAt = new Map<string, number>();
+  for (const [key, at] of state.returnedAt) {
+    if (present.has(key) && !working.has(key)) returnedAt.set(key, at);
+  }
+  for (const key of state.workingKeys ?? []) {
+    if (present.has(key) && !working.has(key)) returnedAt.set(key, now);
+  }
+  return { workingKeys: working, returnedAt };
 }
 
 /** The timestamp a working thread's elapsed label counts from: the running

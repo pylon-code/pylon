@@ -40,6 +40,10 @@ import {
   resolveSidebarThreadActivityVisual,
   resolveSidebarStageBadgeLabel,
   resolveSidebarThreadSection,
+  resolveVisibleShelfThreads,
+  observeSidebarInboxReturns,
+  sortSidebarInboxThreads,
+  EMPTY_SIDEBAR_INBOX_RETURN_STATE,
   resolveSidebarRowAccessibility,
   resolveSidebarThreadStatus,
   resolveSidebarV2TopStatus,
@@ -3110,6 +3114,265 @@ describe("Working shelf (beta)", () => {
           entry === waiting ? Date.parse("2026-03-09T11:05:00.000Z") : undefined,
         ).map((entry) => entry.id),
       ).toEqual(["asks-approval", "finished"]);
+    });
+  });
+
+  it("returns a working thread to the inbox when it needs the user or stops", () => {
+    const working = { ...idle, runtime };
+    expect(isSidebarThreadWorking(working)).toBe(true);
+    // Approval, input, plan, failure, and completion each leave the shelf.
+    expect(isSidebarThreadWorking({ ...working, hasPendingApprovals: true })).toBe(false);
+    expect(isSidebarThreadWorking({ ...working, hasPendingUserInput: true })).toBe(false);
+    expect(
+      isSidebarThreadWorking({
+        ...waiting,
+        interactionMode: "plan",
+        hasActionableProposedPlan: true,
+      }),
+    ).toBe(false);
+    expect(
+      isSidebarThreadWorking({
+        ...working,
+        runtime: { ...runtime, status: "failed" as const, lastError: "boom" },
+      }),
+    ).toBe(false);
+    expect(
+      isSidebarThreadWorking({
+        ...working,
+        runtime: {
+          ...runtime,
+          status: "failed" as const,
+          lastError: "limit",
+          lastErrorClass: "usage_limit",
+        },
+      }),
+    ).toBe(false);
+    expect(isSidebarThreadWorking({ ...working, runtime: null })).toBe(false);
+  });
+
+  it("folds delegated fleets and monitors until their background work ends", () => {
+    const subagent = { taskId: "agent-1", kind: "subagent" as const };
+    const monitor = { taskId: "monitor-1", kind: "monitor" as const };
+    expect(isSidebarThreadWorking({ ...waiting, pendingBackgroundTasks: [subagent] })).toBe(true);
+    expect(isSidebarThreadWorking({ ...waiting, pendingBackgroundTasks: [monitor] })).toBe(true);
+    // The fleet terminates: the shell drops the roster and the runtime parks.
+    expect(
+      isSidebarThreadWorking({
+        ...idle,
+        runtime: { ...runtime, status: "completed" as const },
+        pendingBackgroundTasks: [],
+      }),
+    ).toBe(false);
+    // A delegated child asking for approval brings its parent back as well.
+    expect(
+      isSidebarThreadWorking({
+        ...waiting,
+        pendingBackgroundTasks: [subagent],
+        hasPendingApprovals: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("keeps pinned, snoozed, and settled precedence over the Working shelf", () => {
+    const base = { snoozed: false, settled: false, pinned: false };
+    expect(resolveSidebarThreadSection({ ...base, working: true })).toBe("working");
+    expect(resolveSidebarThreadSection({ ...base, working: false })).toBe("active");
+    expect(resolveSidebarThreadSection({ ...base, pinned: true, working: true })).toBe("pinned");
+    expect(resolveSidebarThreadSection({ ...base, snoozed: true, working: true })).toBe("snoozed");
+    expect(resolveSidebarThreadSection({ ...base, settled: true, working: true })).toBe("settled");
+  });
+
+  it("keeps the open thread visible in a collapsed Working shelf", () => {
+    const empty: readonly string[] = [];
+    const visible = (expanded: boolean, routeThreadKey: string | null) =>
+      resolveVisibleShelfThreads({
+        threads: ["env-a:t1", "env-a:t2"],
+        expanded,
+        routeThreadKey,
+        keyOf: (key) => key,
+        empty,
+      });
+    expect(visible(true, null)).toEqual(["env-a:t1", "env-a:t2"]);
+    expect(visible(false, null)).toBe(empty);
+    expect(visible(false, "env-a:t2")).toEqual(["env-a:t2"]);
+    expect(visible(false, "env-b:t2")).toBe(empty);
+  });
+
+  describe("return clock", () => {
+    const observe = (
+      state: typeof EMPTY_SIDEBAR_INBOX_RETURN_STATE,
+      working: Record<string, boolean>,
+      now: number,
+    ) =>
+      observeSidebarInboxReturns(
+        state,
+        Object.entries(working).map(([key, isWorking]) => ({ key, working: isWorking })),
+        now,
+      );
+
+    it("takes a baseline first, then stamps threads that leave the shelf", () => {
+      const baseline = observe(EMPTY_SIDEBAR_INBOX_RETURN_STATE, { "e:a": false, "e:b": true }, 1);
+      // Enabling or mounting never reshuffles the inbox.
+      expect([...baseline.returnedAt]).toEqual([]);
+      const returned = observe(baseline, { "e:a": false, "e:b": false }, 5);
+      expect([...returned.returnedAt]).toEqual([["e:b", 5]]);
+      // The stamp holds while the thread stays in the inbox ...
+      expect([...observe(returned, { "e:a": false, "e:b": false }, 9).returnedAt]).toEqual([
+        ["e:b", 5],
+      ]);
+      // ... and clears when it folds away again.
+      expect([...observe(returned, { "e:a": false, "e:b": true }, 9).returnedAt]).toEqual([]);
+    });
+
+    it("keys stamps by environment, so duplicate thread ids never collide", () => {
+      const baseline = observe(
+        EMPTY_SIDEBAR_INBOX_RETURN_STATE,
+        { "local:thread-1": true, "remote:thread-1": true },
+        1,
+      );
+      const next = observe(baseline, { "local:thread-1": false, "remote:thread-1": true }, 7);
+      expect(next.returnedAt.get("local:thread-1")).toBe(7);
+      expect(next.returnedAt.has("remote:thread-1")).toBe(false);
+      expect([...next.workingKeys!]).toEqual(["remote:thread-1"]);
+    });
+
+    it("judges a reconnect snapshot by server timestamps, not a fresh stamp", () => {
+      const working = observe(
+        EMPTY_SIDEBAR_INBOX_RETURN_STATE,
+        { "local:a": true, "remote:b": true },
+        1,
+      );
+      const stamped = observe(working, { "local:a": false, "remote:b": true }, 2);
+      // The remote environment disconnects: its rows leave the roster.
+      const disconnected = observe(stamped, { "local:a": false }, 3);
+      expect(disconnected.workingKeys?.has("remote:b")).toBe(false);
+      // It reconnects with b finished while away; only the server knows when.
+      const reconnected = observe(disconnected, { "local:a": false, "remote:b": false }, 4);
+      expect(reconnected.returnedAt.has("remote:b")).toBe(false);
+      expect(reconnected.returnedAt.get("local:a")).toBe(2);
+    });
+  });
+
+  it("restores the saved manual order when the beta is turned off", () => {
+    const thread = (id: string, activeOrderKey: string | null, completedAt: string) => ({
+      id: ThreadId.make(id),
+      environmentId: localEnvironmentId,
+      createdAt: "2026-03-09T09:00:00.000Z",
+      unsettledAt: null,
+      activeOrderKey,
+      latestRun: { ...makeLatestRun({ completedAt }), requestedAt: "2026-03-09T09:00:00.000Z" },
+    });
+    const threads = [
+      thread("first", "a", "2026-03-09T10:00:00.000Z"),
+      thread("second", "b", "2026-03-09T12:00:00.000Z"),
+      thread("third", "c", "2026-03-09T11:00:00.000Z"),
+    ];
+    const ids = (sorted: readonly { readonly id: string }[]) => sorted.map((entry) => entry.id);
+    expect(ids(sortSidebarInboxThreads(threads, { timeOrdered: true }))).toEqual([
+      "second",
+      "third",
+      "first",
+    ]);
+    expect(ids(sortSidebarInboxThreads(threads, { timeOrdered: false }))).toEqual([
+      "first",
+      "second",
+      "third",
+    ]);
+    // Sorting by time never rewrites the saved keys.
+    expect(threads.map((entry) => entry.activeOrderKey)).toEqual(["a", "b", "c"]);
+  });
+
+  it("breaks return-time ties across environments without merging duplicate ids", () => {
+    const remoteEnvironmentId = EnvironmentId.make("environment-remote");
+    const shared = {
+      id: ThreadId.make("thread-1"),
+      createdAt: "2026-03-09T09:00:00.000Z",
+      unsettledAt: null,
+      latestRun: null,
+    };
+    const threads = [
+      { ...shared, environmentId: remoteEnvironmentId },
+      { ...shared, environmentId: localEnvironmentId },
+    ];
+    // Equal ids and times: a stable environment tie-break keeps both rows.
+    expect(sortInboxThreadsByReturn(threads).map((entry) => entry.environmentId)).toEqual([
+      localEnvironmentId,
+      remoteEnvironmentId,
+    ]);
+    // A return observed on one environment moves only that row.
+    expect(
+      sortInboxThreadsByReturn(threads, (entry) =>
+        entry.environmentId === remoteEnvironmentId
+          ? Date.parse("2026-03-09T12:00:00.000Z")
+          : undefined,
+      ).map((entry) => entry.environmentId),
+    ).toEqual([remoteEnvironmentId, localEnvironmentId]);
+  });
+
+  describe("dragging", () => {
+    const marker = (name: SidebarListMarker): SidebarListItem => ({ kind: "marker", marker: name });
+    const row = (key: string, section: SidebarSection): SidebarListItem => ({
+      kind: "thread",
+      key,
+      section,
+    });
+    // Pinned p1 | Active a1 a2 | Working w1 | Settled s1
+    const items: readonly SidebarListItem[] = [
+      marker("pinned-header"),
+      row("p1", "pinned"),
+      marker("pinned-divider"),
+      row("a1", "active"),
+      row("a2", "active"),
+      marker("working-header"),
+      row("w1", "working"),
+      marker("settled-header"),
+      row("s1", "settled"),
+    ];
+
+    it("never drops into the Working shelf, and keeps it out of the inbox order", () => {
+      expect(resolveSidebarDropTarget(items, "a1", "w1")).toBeNull();
+      expect(resolveSidebarDropTarget(items, "p1", "a2")).toEqual({
+        section: "active",
+        pinnedOrder: [],
+        activeOrder: ["a1", "a2", "p1"],
+      });
+      expect(resolveSidebarDropVerb("active", "working")).toBeNull();
+    });
+
+    it("only changes lifecycle when the inbox is time-ordered", () => {
+      const base = {
+        pinnedOrder: ["p1"],
+        pinnedKeysById: new Map([["p1", "m"]]),
+        activeOrder: ["a1", "a2"],
+        activeKeysById: new Map([
+          ["a1", "f"],
+          ["a2", "t"],
+        ]),
+        activeTimeOrdered: true,
+      };
+      expect(
+        planSidebarThreadDrop({
+          ...base,
+          activeKey: "a1",
+          activeSection: "active",
+          target: { section: "active", pinnedOrder: ["p1"], activeOrder: ["a2", "a1"] },
+        }),
+      ).toEqual({ kind: "none" });
+      expect(
+        planSidebarThreadDrop({
+          ...base,
+          activeKey: "p1",
+          activeSection: "pinned",
+          target: { section: "active", pinnedOrder: [], activeOrder: ["a1", "p1", "a2"] },
+        }),
+      ).toEqual({
+        kind: "move-active",
+        order: null,
+        assignments: [],
+        unpin: true,
+        unsettle: false,
+        unsnooze: false,
+      });
     });
   });
 });

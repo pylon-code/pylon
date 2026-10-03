@@ -643,6 +643,17 @@ describe("ClientSettings sidebar", () => {
     expect(decoded).not.toHaveProperty("sidebarV2ConfiguredByUser");
   });
 
+  it("keeps the Working section beta opt-in and patchable", () => {
+    expect(decodeClientSettings({}).sidebarWorkingShelfEnabled).toBe(false);
+    expect(
+      decodeClientSettings({ sidebarWorkingShelfEnabled: true }).sidebarWorkingShelfEnabled,
+    ).toBe(true);
+    expect(
+      decodeClientSettingsPatch({ sidebarWorkingShelfEnabled: true }).sidebarWorkingShelfEnabled,
+    ).toBe(true);
+    expect(() => decodeClientSettingsPatch({ sidebarWorkingShelfEnabled: "yes" })).toThrow();
+  });
+
   it("preserves an explicit legacy sidebar opt-in", () => {
     expect(decodeClientSettings({ legacySidebarEnabled: true }).legacySidebarEnabled).toBe(true);
     expect(decodeClientSettingsPatch({ legacySidebarEnabled: true }).legacySidebarEnabled).toBe(

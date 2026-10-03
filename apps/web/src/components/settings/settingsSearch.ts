@@ -275,7 +275,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "working-shelf",
     title: "Working section (beta)",
     to: "/settings/general",
-    searchTerms: ["hide fold running monitoring threads inbox sidebar shelf"],
+    searchTerms: ["hide fold running delegating monitoring background threads inbox sidebar shelf"],
   },
   {
     id: "auto-settle-inactive-threads",

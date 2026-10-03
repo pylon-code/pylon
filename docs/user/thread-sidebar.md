@@ -117,12 +117,18 @@ open.
 ### Fold working threads (beta)
 
 On web and desktop, turn on **Settings → General → Working section (beta)** to move threads that
-are working or monitoring into a collapsed **Working** section at the bottom of the sidebar. A
-thread returns to the top of the active list when it finishes, fails, or needs an approval or
-answer. Pinned threads stay in the pinned section.
+are working, delegating to background agents, or monitoring into a collapsed **Working** section
+at the bottom of the sidebar. A thread returns to the top of the active list when it finishes,
+fails, hits a usage limit, has a plan ready, or needs an approval or answer. Pinned, snoozed, and
+settled threads keep their sections. The open thread stays visible even while **Working** is
+collapsed, and search still finds threads inside it.
 
 While this is on, the active list is ordered by when each thread last came back to you, so you
-cannot drag to reorder it. Your saved order returns when you turn it off.
+cannot drag to reorder it, and **Working** rows cannot be dragged. Your saved order returns when
+you turn it off. Return times for approvals and background work that ends are tracked by each
+device and reset when the app reloads. Folding a thread does not change its notifications or when
+it settles. The section is not available on mobile or with the legacy sidebar.
+
 On web and desktop, you can also drag files from your computer onto any thread row, including search
 results. The thread opens with the files attached in its composer; nothing is sent automatically.
 See [attach files](./composer.md#attach-files) for limits.
