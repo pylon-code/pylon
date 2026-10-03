@@ -1,4 +1,10 @@
+import { canCreateProjectInEnvironment } from "@t3tools/client-runtime/operations/projects";
+import {
+  isScratchProject,
+  resolveScratchEnvironmentId,
+} from "@t3tools/client-runtime/state/projects";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
+import type { EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
 import type { EnvironmentId } from "@t3tools/contracts";
 
 import { scopedProjectKey } from "../../lib/scopedEntities";
@@ -42,6 +48,63 @@ export function filterProjectScopes(
           project.title.toLowerCase().includes(query) ||
           project.workspaceRoot.toLowerCase().includes(query),
       ),
+  );
+}
+
+type ScratchRootLookup = ReadonlyMap<
+  EnvironmentId,
+  { readonly scratchWorkspaceRoot?: string | undefined }
+>;
+
+/**
+ * Scratch projects are reached through the one "No project" row, never as
+ * rows of their own; a scope keeps its row while it holds any real project.
+ */
+export function withoutScratchProjectScopes(
+  scopes: ReadonlyArray<HomeProjectScope>,
+  serverConfigs: ScratchRootLookup,
+): ReadonlyArray<HomeProjectScope> {
+  return scopes.filter(
+    (scope) =>
+      !scope.projects.every((project) =>
+        isScratchProject(project, serverConfigs.get(project.environmentId)?.scratchWorkspaceRoot),
+      ),
+  );
+}
+
+/** Connected machines whose server offers threads without a project. */
+export function scratchOfferingEnvironmentIds(
+  environments: ReadonlyArray<{
+    readonly environmentId: EnvironmentId;
+    readonly connectionState: EnvironmentConnectionPhase;
+  }>,
+  serverConfigs: ScratchRootLookup,
+): ReadonlyArray<EnvironmentId> {
+  return environments
+    .filter(
+      (environment) =>
+        canCreateProjectInEnvironment(environment.connectionState) &&
+        serverConfigs.get(environment.environmentId)?.scratchWorkspaceRoot !== undefined,
+    )
+    .map((environment) => environment.environmentId);
+}
+
+/**
+ * Where the "No project" row starts a thread: the flow's current machine when
+ * it offers Scratch, never another one; with no current machine, only a sole
+ * offering machine. Matches web (useScratchProject).
+ */
+export function resolveScratchStartEnvironmentId(input: {
+  readonly currentEnvironmentId: EnvironmentId | null;
+  readonly environments: ReadonlyArray<{
+    readonly environmentId: EnvironmentId;
+    readonly connectionState: EnvironmentConnectionPhase;
+  }>;
+  readonly serverConfigs: ScratchRootLookup;
+}): EnvironmentId | null {
+  return resolveScratchEnvironmentId(
+    input.currentEnvironmentId,
+    scratchOfferingEnvironmentIds(input.environments, input.serverConfigs),
   );
 }
 

@@ -1,3 +1,5 @@
+import { isScratchProject } from "@t3tools/client-runtime/state/projects";
+
 import type { ThreadShell } from "./types";
 
 function normalizeWorktreePath(path: string | null): string | null {
@@ -42,4 +44,21 @@ export function formatWorktreePathForDisplay(worktreePath: string): string {
   const parts = normalized.split("/");
   const lastPart = parts[parts.length - 1]?.trim() ?? "";
   return lastPart.length > 0 ? lastPart : trimmed;
+}
+
+/**
+ * Whether deleting a thread may offer to remove its folder as a Git worktree.
+ * Scratch ("No project") threads run in plain folders under the Scratch
+ * project; they are never worktrees, and deleting one keeps its files.
+ */
+export function canOfferWorktreeDeletion(input: {
+  readonly worktreePath: string | null;
+  readonly project: { readonly workspaceRoot: string } | null;
+  readonly scratchWorkspaceRoot: string | null | undefined;
+}): boolean {
+  return (
+    input.worktreePath !== null &&
+    input.project !== null &&
+    !isScratchProject(input.project, input.scratchWorkspaceRoot)
+  );
 }

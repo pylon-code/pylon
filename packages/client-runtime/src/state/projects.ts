@@ -135,6 +135,30 @@ export function findProjectByPath<T extends { workspaceRoot?: string; cwd?: stri
   });
 }
 
+/** Whether a project is its environment's Scratch project (`ServerConfig.scratchWorkspaceRoot`). */
+export function isScratchProject(
+  project: { readonly workspaceRoot: string },
+  scratchWorkspaceRoot: string | null | undefined,
+): boolean {
+  return (
+    scratchWorkspaceRoot != null && findProjectByPath([project], scratchWorkspaceRoot) !== undefined
+  );
+}
+
+/**
+ * The machine a thread without a project starts on, given the connected
+ * machines that offer Scratch. The current machine wins and is never swapped
+ * for another: when it offers none, there is no target. With no current
+ * machine, only an unambiguous sole offering machine is picked.
+ */
+export function resolveScratchEnvironmentId<Id>(
+  current: Id | null,
+  offering: ReadonlyArray<Id>,
+): Id | null {
+  if (current !== null) return offering.includes(current) ? current : null;
+  return offering.length === 1 ? (offering[0] ?? null) : null;
+}
+
 export function inferProjectTitleFromPath(value: string): string {
   const normalized = normalizeProjectPathForDispatch(value);
   const absolutePath = splitAbsolutePath(normalized);

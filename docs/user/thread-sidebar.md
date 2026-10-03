@@ -17,6 +17,25 @@ On mobile, touch and hold a thread that has a branch and choose **New thread on 
 checks out the branch, or reuses the thread's worktree, before the composer opens, and shows the Git
 error if the checkout fails.
 
+### Start without a project
+
+A thread does not need a project. To start one, click **or start without a project** under a new
+thread's heading, pick **No project** from the project menu in that heading or from
+**New thread in...** in the command palette, or press `mod+alt+n`. On mobile, pick **No project** at
+the top of the project list. To move a draft into a project, pick the project in the heading.
+
+Each thread without a project works in its own folder inside the `scratch` folder of the Pylon data
+directory on the machine that runs it (`~/.pylon-code/scratch` by default, or `scratch` inside the
+directory set with `--base-dir`). The folder is named after the date, the first words of the first
+message, and a short tag, like `2026-10-03-convert-these-pngs-to-webp-3f9c2a1b7d4e`. Deleting the
+thread keeps the folder, so the files the agent wrote stay until you remove them yourself. These
+folders are not Git repositories, so branches, worktrees, and Git diffs do not apply to them.
+
+**No project** starts on the machine you are working on. When nothing is open, it starts on the only
+connected machine that offers it; with several such machines, open a thread or project on the one
+you want first. Threads without a project are unavailable on a machine whose Pylon data directory
+sits inside a Git checkout.
+
 ### Start in the background
 
 In a desktop browser or the desktop app, press `Cmd+Enter` on macOS or `Ctrl+Enter` on Windows and

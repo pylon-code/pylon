@@ -3,7 +3,11 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE, type Thread } from "./types";
 import { makeThreadFixture } from "./test-fixtures";
-import { formatWorktreePathForDisplay, getOrphanedWorktreePathForThread } from "./worktreeCleanup";
+import {
+  canOfferWorktreeDeletion,
+  formatWorktreePathForDisplay,
+  getOrphanedWorktreePathForThread,
+} from "./worktreeCleanup";
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
 
@@ -107,5 +111,42 @@ describe("formatWorktreePathForDisplay", () => {
   it("ignores trailing slashes", () => {
     const result = formatWorktreePathForDisplay("/tmp/custom-worktrees/my-worktree/");
     expect(result).toBe("my-worktree");
+  });
+});
+
+describe("canOfferWorktreeDeletion", () => {
+  const scratchWorkspaceRoot = "/Users/alice/.pylon/userdata/scratch";
+
+  it("never offers to delete a Scratch thread's folder, so its files are kept", () => {
+    expect(
+      canOfferWorktreeDeletion({
+        worktreePath: `${scratchWorkspaceRoot}/2026-10-03-sort-receipts-0a1b2c3d4e5f`,
+        project: { workspaceRoot: `${scratchWorkspaceRoot}/` },
+        scratchWorkspaceRoot,
+      }),
+    ).toBe(false);
+  });
+
+  it("still offers an orphaned worktree of an ordinary project", () => {
+    expect(
+      canOfferWorktreeDeletion({
+        worktreePath: "/Users/alice/.pylon/worktrees/pylon/feature",
+        project: { workspaceRoot: "/Users/alice/code/pylon" },
+        scratchWorkspaceRoot,
+      }),
+    ).toBe(true);
+    expect(
+      canOfferWorktreeDeletion({
+        worktreePath: "/Users/alice/.pylon/worktrees/pylon/feature",
+        project: { workspaceRoot: "/Users/alice/code/pylon" },
+        scratchWorkspaceRoot: undefined,
+      }),
+    ).toBe(true);
+  });
+
+  it("offers nothing without a folder or a project", () => {
+    expect(
+      canOfferWorktreeDeletion({ worktreePath: null, project: null, scratchWorkspaceRoot }),
+    ).toBe(false);
   });
 });

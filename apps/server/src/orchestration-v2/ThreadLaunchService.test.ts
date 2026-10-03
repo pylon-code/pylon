@@ -1026,14 +1026,14 @@ it.effect("falls back when the source control writer is unavailable", () =>
 it.effect("runs a Scratch thread launched at the root in its own folder", () =>
   Effect.gen(function* () {
     // Only `projectId` stands in for the Scratch project here.
-    const claimed: Array<{ readonly threadId: ThreadId; readonly text: string }> = [];
+    const claimed: Array<{ readonly claimKey: string; readonly text: string }> = [];
     const harness = makeHarness({
       managedFolders: Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
         namedProjectsRoot: "/projects",
         folderForThread: (input) =>
           Effect.sync(() => {
             if (input.projectId !== projectId) return Option.none();
-            claimed.push({ threadId: input.threadId, text: input.text });
+            claimed.push({ claimKey: input.claimKey, text: input.text });
             return Option.some(`/scratch/folder-${claimed.length}`);
           }),
       }),
@@ -1047,7 +1047,8 @@ it.effect("runs a Scratch thread launched at the root in its own folder", () =>
         message: "Convert these PNGs",
       });
       const launched = yield* launches.launch(input);
-      assert.deepEqual(claimed, [{ threadId: launched.threadId, text: "Convert these PNGs" }]);
+      // The client's thread id keys the folder, so any attempt finds it again.
+      assert.deepEqual(claimed, [{ claimKey: launched.threadId, text: "Convert these PNGs" }]);
       assert.equal(launched.projection.thread.worktreePath, "/scratch/folder-1");
       yield* waitUntil(() => Effect.sync(() => harness.runSetup.mock.calls.length === 1));
       assert.equal(harness.runSetup.mock.calls[0]?.[0]?.worktreePath, "/scratch/folder-1");
@@ -1072,6 +1073,35 @@ it.effect("runs a Scratch thread launched at the root in its own folder", () =>
       });
       assert.lengthOf(claimed, 1);
       assert.isNull(other.projection.thread.worktreePath);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
+it.effect("keys a Scratch folder by the command id when the server picks the thread id", () =>
+  Effect.gen(function* () {
+    const claimKeys: Array<string> = [];
+    const harness = makeHarness({
+      managedFolders: Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+        namedProjectsRoot: "/projects",
+        folderForThread: (input) =>
+          Effect.sync(() => {
+            claimKeys.push(input.claimKey);
+            return Option.some("/scratch/folder-by-command");
+          }),
+      }),
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const { threadId: _clientThreadId, ...input } = launchInput({
+        command: "command:launch:scratch-server-id",
+        thread: "unused",
+        message: "Sort these receipts",
+      });
+      const launched = yield* launches.launch(input);
+      // A retried launch without a thread id would mint a new one, so the
+      // stable command id is what lets it find the same folder.
+      assert.deepEqual(claimKeys, ["command:launch:scratch-server-id"]);
+      assert.equal(launched.projection.thread.worktreePath, "/scratch/folder-by-command");
     }).pipe(Effect.provide(harness.layer));
   }),
 );
