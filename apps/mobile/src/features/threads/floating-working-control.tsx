@@ -27,7 +27,7 @@ import { withUniwind } from "uniwind";
 
 import { AppText as Text } from "../../components/AppText";
 import { SymbolView } from "../../components/AppSymbol";
-import type { FloatingWorkingStatus } from "./floating-working-status";
+import { backgroundStatusSymbol, type FloatingWorkingStatus } from "./floating-working-status";
 import { ControlPill } from "../../components/ControlPill";
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
 import { DevicePreviewButton } from "../devices/device-preview-button";
@@ -424,16 +424,16 @@ function FloatingStatusLabel(props: {
       </StatusLabelRow>
     );
   }
-  if (props.status.kind === "waiting") {
+  if (props.status.kind === "background") {
     return (
       <StatusLabelRow
-        key="waiting"
+        key="background"
         accessibilityLabel={props.status.accessibilityLabel}
         className="gap-2"
         onLayout={props.onLayout}
       >
         <SymbolView
-          name={{ ios: "bolt", android: "bolt" }}
+          name={backgroundStatusSymbol(props.status.waiting)}
           size={13}
           tintColorClassName="foreground"
           type="monochrome"

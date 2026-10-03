@@ -10,8 +10,14 @@ export type FloatingWorkingStatus =
   | { readonly kind: "working"; readonly startedAt: string; readonly step?: string }
   | { readonly kind: "syncing"; readonly label: string }
   | { readonly kind: "compacting" }
-  // The turn settled while background work it started still runs.
-  | { readonly kind: "waiting"; readonly label: string; readonly accessibilityLabel: string }
+  // The turn settled while background work it started still runs. `waiting`
+  // is false when only commands remain, such as a dev server: the agent is done.
+  | {
+      readonly kind: "background";
+      readonly label: string;
+      readonly accessibilityLabel: string;
+      readonly waiting: boolean;
+    }
   // A task whose thread the server has not created yet: the worktree may
   // still be checking out, so there is no turn to time.
   | { readonly kind: "preparing"; readonly label: string }
@@ -21,6 +27,14 @@ export type FloatingWorkingStatus =
       readonly label: string;
       readonly onPress: () => void;
     };
+
+/**
+ * The symbol for settled background work. A dev server can run for hours after
+ * the agent is done, so only work that will wake the agent gets the bolt.
+ */
+export function backgroundStatusSymbol(waiting: boolean) {
+  return waiting ? ({ ios: "bolt", android: "bolt" } as const) : ("terminal" as const);
+}
 
 /**
  * The pill's connection variant, or null once the environment is connected and

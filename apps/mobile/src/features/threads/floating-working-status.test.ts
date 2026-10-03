@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { connectionFloatingStatus } from "./floating-working-status";
+import { backgroundStatusSymbol, connectionFloatingStatus } from "./floating-working-status";
 
 const status = (
   connectionState: Parameters<typeof connectionFloatingStatus>[0]["connectionState"],
@@ -62,5 +62,12 @@ describe("connectionFloatingStatus", () => {
     if (pill?.kind !== "connection") throw new Error("expected a connection pill");
     pill.onPress();
     expect(onReconnect).toHaveBeenCalledOnce();
+  });
+});
+
+describe("backgroundStatusSymbol", () => {
+  it("shows the bolt only for work that will wake the agent", () => {
+    expect(backgroundStatusSymbol(true)).toEqual({ ios: "bolt", android: "bolt" });
+    expect(backgroundStatusSymbol(false)).toBe("terminal");
   });
 });
