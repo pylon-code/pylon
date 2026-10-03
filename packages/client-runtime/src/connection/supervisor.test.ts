@@ -1353,6 +1353,74 @@ describe("EnvironmentSupervisor", () => {
     }),
   );
 
+  it.effect("keeps a relay session that answers a probe on an offline report or retry", () =>
+    Effect.gen(function* () {
+      const probeCount = yield* Ref.make(0);
+      const harness = yield* makeHarness({
+        probe: () => Ref.update(probeCount, (count) => count + 1),
+      });
+      const supervisor = yield* EnvironmentSupervisor.make(RELAY_ENTRY, {
+        initiallyDesired: true,
+      }).pipe(Effect.provide(harness.dependencies));
+
+      yield* awaitState(
+        supervisor.state,
+        (state) => state.phase === "connected" && state.generation === 1,
+      );
+      yield* harness.setNetworkStatus("offline");
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if ((yield* Ref.get(probeCount)) > 0) break;
+        yield* Effect.yieldNow;
+      }
+      yield* harness.setNetworkStatus("online");
+      yield* supervisor.retryNow;
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        if ((yield* Ref.get(probeCount)) > 1) break;
+        yield* Effect.yieldNow;
+      }
+
+      expect(yield* Ref.get(probeCount)).toBe(2);
+      expect(yield* Ref.get(harness.sessionCount)).toBe(1);
+      expect(yield* Ref.get(harness.releaseCount)).toBe(0);
+      expect(yield* SubscriptionRef.get(supervisor.state)).toMatchObject({
+        phase: "connected",
+        generation: 1,
+      });
+    }),
+  );
+
+  it.effect("ends a probing relay session when relay credentials change", () =>
+    Effect.gen(function* () {
+      const probeStarted = yield* Deferred.make<void>();
+      const harness = yield* makeHarness({
+        probe: (attempt) =>
+          attempt === 1
+            ? Deferred.succeed(probeStarted, undefined).pipe(Effect.andThen(Effect.never))
+            : Effect.void,
+      });
+      const supervisor = yield* EnvironmentSupervisor.make(RELAY_ENTRY, {
+        initiallyDesired: true,
+      }).pipe(Effect.provide(harness.dependencies));
+
+      yield* awaitState(
+        supervisor.state,
+        (state) => state.phase === "connected" && state.generation === 1,
+      );
+      yield* supervisor.retryNow;
+      yield* Deferred.await(probeStarted);
+      // The account behind the relay changed: the stalled probe must not hold
+      // the old session until its timeout.
+      yield* harness.wake("credentials-changed");
+      yield* awaitState(
+        supervisor.state,
+        (state) => state.phase === "connected" && state.generation === 2,
+      );
+
+      expect(yield* Ref.get(harness.sessionCount)).toBe(2);
+      expect(yield* Ref.get(harness.releaseCount)).toBe(1);
+    }),
+  );
+
   it.effect("keeps a healthy relay session when its HTTP access token expires", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({

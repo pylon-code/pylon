@@ -111,7 +111,7 @@ it.effect("sends no late snapshot when the scan matches the snapshot", () =>
       Stream.empty,
       {
         resolveAvailableEditors: () => Effect.succeed(["vscode"]),
-        resolveFileManagerRevealKind: () => Effect.succeed(undefined),
+        resolveFileManagerRevealKind: () => Effect.undefined,
       },
     ).pipe(Stream.runCollect);
 
