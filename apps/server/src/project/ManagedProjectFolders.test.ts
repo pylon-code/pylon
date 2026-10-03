@@ -58,6 +58,8 @@ const realGitLayer = GitVcsDriver.layer.pipe(Layer.provide(VcsProcess.layer));
 interface HarnessOptions {
   /** A git driver for failures real git cannot produce on demand. */
   readonly git?: Layer.Layer<GitVcsDriver.GitVcsDriver>;
+  /** Repository detection, for probe failures real git cannot produce on demand. */
+  readonly gitWorkflow?: Layer.Layer<GitWorkflow.GitWorkflowService>;
   /** Wraps the real ProjectService, for failures it cannot produce on demand. */
   readonly projects?: (
     real: ProjectService.ProjectService["Service"],
@@ -81,7 +83,7 @@ const makeLayer = (baseDir: string, options?: HarnessOptions) =>
     Layer.provideMerge(ProjectServiceLayerLive),
     Layer.provideMerge(enrichmentLayer),
     Layer.provideMerge(WorkspacePaths.layer),
-    Layer.provideMerge(gitWorkflowLayer),
+    Layer.provideMerge(options?.gitWorkflow ?? gitWorkflowLayer),
     Layer.provideMerge(options?.git ?? realGitLayer),
     Layer.provideMerge(SqlitePersistenceMemory),
     Layer.provideMerge(ServerConfig.layerTest(baseDir, baseDir)),
@@ -279,6 +281,66 @@ it.effect("reuses a Scratch thread's folder for every attempt of the same launch
       assert.equal(yield* claim("Something else entirely"), first);
       assert.deepEqual(yield* fileSystem.readDirectory(root), [path.basename(first)]);
       assert.equal(yield* fileSystem.readFileString(path.join(first, "notes.txt")), "kept");
+    }),
+  ),
+);
+
+it.effect("probes for a checkout again after a failed probe instead of caching it", () => {
+  let probes = 0;
+  const flakyGitWorkflow = Layer.mock(GitWorkflow.GitWorkflowService)({
+    isRepository: () =>
+      Effect.suspend(() =>
+        ++probes === 1
+          ? Effect.fail(
+              new GitCommandError({
+                operation: "isRepository",
+                command: "git rev-parse",
+                cwd: "/",
+                detail: "transient",
+              }),
+            )
+          : Effect.succeed(false),
+      ),
+  });
+  return withScratch(
+    ({ baseDir }) =>
+      Effect.gen(function* () {
+        const scratch = yield* ManagedProjectFolders.ManagedProjectFolders;
+        const path = yield* Path.Path;
+        // The failed probe hides Scratch for this caller only.
+        assert.isTrue(Option.isNone(yield* scratch.scratchRoot));
+        assert.equal(
+          Option.getOrThrow(yield* scratch.scratchRoot),
+          path.resolve(baseDir, "scratch"),
+        );
+        // A definite answer is cached.
+        yield* scratch.scratchRoot;
+        assert.equal(probes, 2);
+      }),
+    { gitWorkflow: flakyGitWorkflow },
+  );
+});
+
+it.effect("never reuses a symlink that carries a launch's tag", () =>
+  withScratch(({ baseDir }) =>
+    Effect.gen(function* () {
+      const scratch = yield* ManagedProjectFolders.ManagedProjectFolders;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { projectId } = yield* scratch.ensureScratchProject;
+      const root = yield* requireRoot;
+      const elsewhere = path.join(baseDir, "elsewhere");
+      yield* fileSystem.makeDirectory(elsewhere);
+      const tag = ManagedProjectFolders.scratchFolderTag("thread:linked");
+      yield* fileSystem.symlink(elsewhere, path.join(root, `planted-${tag}`));
+
+      const folder = Option.getOrThrow(
+        yield* scratch.folderForThread({ projectId, claimKey: "thread:linked", text: "Hi" }),
+      );
+      assert.notEqual(path.basename(folder), `planted-${tag}`);
+      assert.equal(path.dirname(folder), root);
+      assert.equal((yield* fileSystem.stat(folder)).type, "Directory");
+      assert.deepEqual(yield* fileSystem.readDirectory(elsewhere), []);
     }),
   ),
 );

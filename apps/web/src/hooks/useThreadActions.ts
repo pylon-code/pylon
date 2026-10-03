@@ -482,9 +482,8 @@ export function useThreadActions() {
       const canDeleteWorktree = canOfferWorktreeDeletion({
         worktreePath: orphanedWorktreePath,
         project: threadProject,
-        scratchWorkspaceRoot: appAtomRegistry
-          .get(environmentServerConfigsAtom)
-          .get(threadRef.environmentId)?.scratchWorkspaceRoot,
+        serverConfig:
+          appAtomRegistry.get(environmentServerConfigsAtom).get(threadRef.environmentId) ?? null,
       });
       const localApi = readLocalApi();
       let shouldDeleteWorktree = false;

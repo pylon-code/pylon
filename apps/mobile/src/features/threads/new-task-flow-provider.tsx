@@ -161,6 +161,12 @@ export function branchBadgeLabel(input: {
 type NewTaskFlowContextValue = {
   readonly projectScopes: ReadonlyArray<HomeProjectScope>;
   readonly selectedEnvironmentId: EnvironmentId | null;
+  /**
+   * The machine the user explicitly chose (by picking a project or machine),
+   * or null. Unlike `selectedEnvironmentId` it never falls back to the first
+   * project's machine, so it is what "the current machine" means for Scratch.
+   */
+  readonly chosenEnvironmentId: EnvironmentId | null;
   readonly selectedProjectKey: string | null;
   readonly selectedModelKey: string | null;
   readonly workspaceMode: WorkspaceMode;
@@ -274,11 +280,12 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
   const [selectedEnvironmentIdOverride, setSelectedEnvironmentId] = useState<EnvironmentId | null>(
     null,
   );
-  const selectedEnvironmentId =
+  const chosenEnvironmentId =
     selectedEnvironmentIdOverride !== null &&
     projects.some((project) => project.environmentId === selectedEnvironmentIdOverride)
       ? selectedEnvironmentIdOverride
-      : (projects[0]?.environmentId ?? null);
+      : null;
+  const selectedEnvironmentId = chosenEnvironmentId ?? projects[0]?.environmentId ?? null;
   const [selectedProjectKey, setSelectedProjectKey] = useState<string | null>(null);
   // The new-task draft the composer is bound to. Null until a project is
   // chosen; each New Task entry mints its own, so a project can hold several.
@@ -1266,6 +1273,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     () => ({
       projectScopes,
       selectedEnvironmentId,
+      chosenEnvironmentId,
       selectedProjectKey,
       selectedModelKey,
       workspaceMode,
@@ -1359,6 +1367,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       selectedBranchRemoteName,
       hasMoreBranches,
       selectedEnvironmentId,
+      chosenEnvironmentId,
       selectedModel,
       selectedModelKey,
       selectedModelOption,

@@ -4,7 +4,6 @@ import { useCallback } from "react";
 import { openCommandPalette } from "../commandPaletteBus";
 import { isElectron } from "../env";
 import { useScratchProject } from "../hooks/useScratchProject";
-import { usePrimaryEnvironmentId } from "../state/environments";
 import { Button } from "./ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "./ui/empty";
 import { SidebarInset } from "./ui/sidebar";
@@ -12,9 +11,10 @@ import { WorkspacePageHeader } from "./WorkspacePageHeader";
 
 export function NoProjectsHero() {
   const openAddProject = useCallback(() => openCommandPalette({ open: "add-project" }), []);
-  const primaryEnvironmentId = usePrimaryEnvironmentId();
   const { scratchEnvironmentId, startScratchThread } = useScratchProject();
-  const scratchTargetEnvironmentId = scratchEnvironmentId(primaryEnvironmentId);
+  // Nothing is open here, so no machine is current: only a sole machine that
+  // offers Scratch is picked, which may be a remote one.
+  const scratchTargetEnvironmentId = scratchEnvironmentId(null);
 
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">

@@ -261,6 +261,22 @@ describe("Scratch (No project) picker", () => {
     ).toBeNull();
   });
 
+  it("finds Scratch on the one machine that has it beside an older server", () => {
+    // The flow's fallback machine (the first project's) is not "current", so
+    // pairing with an older or Git-checkout server never hides the row.
+    const older = EnvironmentId.make("older");
+    expect(
+      resolveScratchStartEnvironmentId({
+        currentEnvironmentId: null,
+        environments: [connected(older), connected(server)],
+        serverConfigs: new Map<EnvironmentId, { readonly scratchWorkspaceRoot?: string }>([
+          [older, {}],
+          [server, { scratchWorkspaceRoot: "/home/bot/.pylon/scratch" }],
+        ]),
+      }),
+    ).toBe(server);
+  });
+
   it("picks a machine without a current one only when exactly one offers Scratch", () => {
     expect(
       resolveScratchStartEnvironmentId({

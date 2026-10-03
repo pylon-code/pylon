@@ -272,21 +272,23 @@ const make = Effect.gen(function* () {
 
   // Inside a checkout (a dev worktree's .t3, a dotfiles home) the folder would
   // inherit the repo's git status and checkpoints, so Scratch is offered only
-  // when the data dir is outside any work tree. Probed once; detection
-  // failures hide Scratch rather than failing callers. An interrupted probe
-  // invalidates the cache so the next caller probes again.
+  // when the data dir is outside any work tree. Only a definite answer is
+  // cached: a failed or interrupted probe hides Scratch for that caller and is
+  // dropped, so the next caller probes again instead of every later thread
+  // silently running in the shared root.
   const [probe, invalidate] = yield* Effect.cachedInvalidateWithTTL(
-    gitWorkflow.isRepository(config.baseDir).pipe(
-      Effect.map((isRepository) =>
-        isRepository ? Option.none<string>() : Option.some(path.resolve(config.baseDir, "scratch")),
-      ),
-      Effect.catchCause((cause) =>
-        Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.succeed(Option.none<string>()),
-      ),
-    ),
+    gitWorkflow.isRepository(config.baseDir),
     Duration.infinity,
   );
-  const scratchRoot = probe.pipe(Effect.onInterrupt(() => invalidate));
+  const scratchRoot = probe.pipe(
+    Effect.onError(() => invalidate),
+    Effect.map((isRepository) =>
+      isRepository ? Option.none<string>() : Option.some(path.resolve(config.baseDir, "scratch")),
+    ),
+    Effect.catchCause((cause) =>
+      Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.succeed(Option.none<string>()),
+    ),
+  );
 
   const makeScratchFolder = (folder: string) =>
     fileSystem
@@ -372,9 +374,16 @@ const make = Effect.gen(function* () {
         const entries = yield* fileSystem
           .readDirectory(root.value)
           .pipe(Effect.mapError((cause) => new ScratchFolderError({ folder: root.value, cause })));
+        const realRoot = yield* fileSystem
+          .realPath(root.value)
+          .pipe(Effect.orElseSucceed(() => root.value));
         for (const name of entries.toSorted()) {
           if (name !== tag && !name.endsWith(`-${tag}`)) continue;
           const folder = path.join(root.value, name);
+          // Only a real directory directly in the root counts. A symlink
+          // resolves elsewhere and could point anywhere, so it is never reused.
+          const real = yield* fileSystem.realPath(folder).pipe(Effect.option);
+          if (Option.isNone(real) || real.value !== path.join(realRoot, name)) continue;
           const info = yield* fileSystem.stat(folder).pipe(Effect.option);
           if (Option.isSome(info) && info.value.type === "Directory") return Option.some(folder);
         }
@@ -384,6 +393,15 @@ const make = Effect.gen(function* () {
           [date, folderWords(input.text), tag].filter(Boolean).join("-"),
         );
         yield* makeScratchFolder(folder);
+        // `recursive` accepts an existing entry, so make sure it is not a
+        // symlink planted under the name this launch was about to take.
+        const made = yield* fileSystem.realPath(folder).pipe(Effect.option);
+        if (Option.isNone(made) || made.value !== path.join(realRoot, path.basename(folder))) {
+          return yield* new ScratchFolderError({
+            folder,
+            cause: "The thread folder is a link to somewhere else.",
+          });
+        }
         return Option.some(folder);
       }),
     );

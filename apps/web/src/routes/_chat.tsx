@@ -112,8 +112,10 @@ function ChatRouteGlobalShortcuts() {
       }
 
       if (command === "chat.newWithoutProject") {
+        // With nothing open there is no current machine, so only a sole
+        // offering machine is picked (never the primary one by default).
         const environmentId = scratchEnvironmentId(
-          activeThread?.environmentId ?? activeDraftThread?.environmentId ?? primaryEnvironmentId,
+          activeThread?.environmentId ?? activeDraftThread?.environmentId ?? null,
         );
         if (environmentId === null) return;
         event.preventDefault();
@@ -198,7 +200,6 @@ function ChatRouteGlobalShortcuts() {
     navigate,
     defaultProjectRef,
     previewOpen,
-    primaryEnvironmentId,
     projectGroupCount,
     routeThreadRef,
     scratchEnvironmentId,
