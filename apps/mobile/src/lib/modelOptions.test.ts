@@ -441,9 +441,10 @@ describe("mobile model options", () => {
         settings: { providerInstances: { google_work: { driver: "antigravity" } } },
       } as unknown as ServerConfig;
       const options = buildModelOptions(config, selection, selection.instanceId);
-      expect(options).toEqual(buildModelOptions(config, selection));
+      expect(buildModelOptions(config, selection)).toEqual([]);
       expect(options).toHaveLength(1);
       expect(options[0]).toMatchObject({ selection, isUnavailable: true });
+      expect(canSendToModelSelection(config, selection)).toBe(false);
     },
   );
 

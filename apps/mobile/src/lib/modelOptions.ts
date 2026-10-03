@@ -358,12 +358,14 @@ export function buildModelOptions(
     } else {
       const provider = getModelSelectionProvider(config, fallbackModelSelection) ?? undefined;
       if (
-        provider !== undefined &&
-        getProviderAdmissionAvailability({
-          provider,
-          instanceId: String(fallbackModelSelection.instanceId),
-          providerSnapshotKnown: true,
-        }).status === "available"
+        // Existing threads keep their bound selection visible for remediation.
+        providerInstanceId !== undefined ||
+        (provider !== undefined &&
+          getProviderAdmissionAvailability({
+            provider,
+            instanceId: String(fallbackModelSelection.instanceId),
+            providerSnapshotKnown: true,
+          }).status === "available")
       ) {
         const providerLabel = provider
           ? providerDisplayLabel(provider)
@@ -371,7 +373,7 @@ export function buildModelOptions(
         const availability = getProviderModelAdmissionAvailability({
           provider,
           selection: fallbackModelSelection,
-          providerSnapshotKnown: true,
+          providerSnapshotKnown: config !== null && config !== undefined,
         });
         options.set(key, {
           key,
