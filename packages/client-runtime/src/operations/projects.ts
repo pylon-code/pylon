@@ -289,21 +289,66 @@ export interface NewProjectAttempt {
 }
 
 /**
- * The attempt to send for a New project submit. Resubmitting the same name on
- * the same machine reuses the unfinished attempt's project id, so a retry
- * after a lost response or a dropped connection returns the project the
- * server already made instead of a `-2` copy. A different name or machine is
- * a new project and gets a new id. Clear the attempt once a create succeeds.
+ * Unfinished New project creates, kept outside any screen or dialog so that
+ * closing and reopening it does not forget them.
  */
-export function resolveNewProjectAttempt(
-  pending: NewProjectAttempt | null,
-  input: { readonly environmentId: EnvironmentId; readonly name: string },
-  makeProjectId: () => ProjectId,
-): NewProjectAttempt {
-  if (pending?.environmentId === input.environmentId && pending.name === input.name) {
-    return pending;
-  }
-  return { environmentId: input.environmentId, name: input.name, projectId: makeProjectId() };
+export interface NewProjectAttemptStore {
+  /**
+   * The attempt to send for a create of `name` on `environmentId`: the
+   * unfinished one for the same machine and name, so a retry after a lost
+   * response returns the project the server already made instead of a `-2`
+   * copy, else a new one with a fresh id.
+   */
+  readonly attemptFor: (
+    input: { readonly environmentId: EnvironmentId; readonly name: string },
+    makeProjectId: () => ProjectId,
+  ) => NewProjectAttempt;
+  /**
+   * Forgets `attempt` once its outcome is known: the project was created and
+   * opened, or the server refused its id for good. A newer attempt for the
+   * same key is left alone.
+   */
+  readonly settle: (attempt: NewProjectAttempt) => void;
+}
+
+// Whitespace and Unicode composition differences are the same typed name.
+function newProjectAttemptKey(environmentId: EnvironmentId, name: string): string {
+  return JSON.stringify([environmentId, name.trim().normalize("NFC")]);
+}
+
+export function createNewProjectAttemptStore(): NewProjectAttemptStore {
+  const pending = new Map<string, NewProjectAttempt>();
+  return {
+    attemptFor: (input, makeProjectId) => {
+      const key = newProjectAttemptKey(input.environmentId, input.name);
+      const existing = pending.get(key);
+      if (existing !== undefined) return existing;
+      const attempt: NewProjectAttempt = {
+        environmentId: input.environmentId,
+        name: input.name.trim(),
+        projectId: makeProjectId(),
+      };
+      pending.set(key, attempt);
+      return attempt;
+    },
+    settle: (attempt) => {
+      const key = newProjectAttemptKey(attempt.environmentId, attempt.name);
+      if (pending.get(key) === attempt) pending.delete(key);
+    },
+  };
+}
+
+/**
+ * Whether a failed create means its project id can never succeed (it belongs
+ * to another project), so the attempt should be settled rather than retried.
+ */
+export function isNewProjectIdInUseFailure(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "_tag" in error &&
+    error._tag === "ProjectCreateNewIdInUseError"
+  );
 }
 
 /**

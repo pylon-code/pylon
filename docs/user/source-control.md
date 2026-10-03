@@ -96,8 +96,9 @@ and so on. Pylon adds a `README.md` and an `assets/icon.svg`, makes a first comm
 
 If Git cannot make the first commit (no `user.name`/`user.email` on that machine, or commit signing
 fails), the project and its files are still created and a warning says why; commit yourself once Git
-is set up. Pressing Create again after a dropped connection opens the project that was already made
-rather than creating a second copy.
+is set up. Creating the same name on the same environment again after a dropped connection or a
+failure, even after closing the palette or leaving the screen, opens the project that was already
+made rather than creating a second copy. This lasts until the app or page reloads.
 
 Turn on **Create private repository on GitHub** to also publish the project with the GitHub account
 signed in on that environment. Publishing uses the folder Pylon actually made, including any `-2`

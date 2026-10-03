@@ -15,11 +15,11 @@ import {
   getNewProjectGitHubTarget,
   getNewProjectPathPreview,
   normalizePastedCloneUrl,
+  createNewProjectAttemptStore,
+  isNewProjectIdInUseFailure,
   resolveAddProjectPath,
-  resolveNewProjectAttempt,
   sortAddProjectProviderSources,
   type AddProjectRemoteSource,
-  type NewProjectAttempt,
 } from "@t3tools/client-runtime/operations/projects";
 import {
   connectionStatusText,
@@ -72,7 +72,10 @@ import {
   useRemoteEnvironmentRuntime,
   useSavedRemoteConnections,
 } from "../../state/use-remote-environment-registry";
-import { resolveAddProjectEnvironment } from "./AddProjectScreen.logic";
+import {
+  resolveAddProjectEnvironment,
+  resolveExistingProjectSourcesNavigation,
+} from "./AddProjectScreen.logic";
 
 interface EnvironmentOption {
   readonly environmentId: EnvironmentId;
@@ -102,6 +105,10 @@ function platformFromOs(os: string | null | undefined): string {
   if (os === "linux") return "Linux";
   return "";
 }
+
+// Outlives the New project screen, so leaving it and creating the same name
+// again still retries the unfinished attempt instead of making a `-2` copy.
+const newProjectAttempts = createNewProjectAttemptStore();
 
 function errorMessage(error: unknown): string {
   return error instanceof Error && error.message.trim().length > 0
@@ -387,12 +394,14 @@ function useEnvironmentOptions(): ReadonlyArray<EnvironmentOption> {
   }, [connectedEnvironments, savedConnectionsById, serverConfigByEnvironmentId]);
 }
 
-function useSelectedEnvironment(): {
+function useSelectedEnvironment(initialEnvironmentId: EnvironmentId | null): {
   readonly environmentOptions: ReadonlyArray<EnvironmentOption>;
   readonly selectedEnvironment: EnvironmentOption | null;
   readonly setSelectedEnvironmentId: (environmentId: EnvironmentId) => void;
 } {
-  const [selectedEnvironmentId, setSelectedEnvironmentId] = useState<EnvironmentId | null>(null);
+  const [selectedEnvironmentId, setSelectedEnvironmentId] = useState<EnvironmentId | null>(
+    initialEnvironmentId,
+  );
   const environmentOptions = useEnvironmentOptions();
   const selectedEnvironment =
     environmentOptions.find(
@@ -476,10 +485,11 @@ function SourceControlRow(props: {
   );
 }
 
-export function AddProjectSourceScreen() {
+export function AddProjectSourceScreen(props: { readonly environmentId?: string | string[] }) {
   const navigation = useNavigation();
+  // Starts on the machine New project hands back, when it opens this screen.
   const { environmentOptions, selectedEnvironment, setSelectedEnvironmentId } =
-    useSelectedEnvironment();
+    useSelectedEnvironment(stringParam(props.environmentId) as EnvironmentId | null);
   const discoveryState = useEnvironmentQuery(
     selectedEnvironment === null
       ? null
@@ -962,32 +972,51 @@ export function AddProjectNewScreen(props: { readonly environmentId?: string | s
     </ListSection>
   ) : null;
 
+  // Folder and clone sources for the machine selected here, which may not be
+  // the one the Add project screen underneath shows.
+  const showExistingProjectSources = (environmentId: EnvironmentId) => {
+    const state = navigation.getState();
+    const previousRouteName =
+      state === undefined || state.index < 1 ? null : (state.routes[state.index - 1]?.name ?? null);
+    const next = resolveExistingProjectSourcesNavigation({
+      previousRouteName,
+      openedFromEnvironmentId: stringParam(props.environmentId) as EnvironmentId | null,
+      selectedEnvironmentId: environmentId,
+    });
+    if (next.kind === "back") {
+      navigation.goBack();
+      return;
+    }
+    if (next.popSourcesBelow) navigation.dispatch(StackActions.pop(1));
+    navigation.dispatch(StackActions.replace("AddProject", { environmentId }));
+  };
+
   // State lags a render behind, so a double tap could start a second create.
   const submittingRef = useRef(false);
-  // The unfinished create: tapping Create again for the same name and machine
-  // sends the same project id, so a lost response cannot make a `-2` copy.
-  const pendingAttemptRef = useRef<NewProjectAttempt | null>(null);
   const submit = async () => {
     if (!environment || trimmedName.length === 0 || submittingRef.current) return;
     submittingRef.current = true;
     setError(null);
     setIsSubmitting(true);
     try {
-      const attempt = resolveNewProjectAttempt(
-        pendingAttemptRef.current,
+      // Tapping Create again for the same name and machine sends the same
+      // project id, so a lost response cannot make a `-2` copy.
+      const attempt = newProjectAttempts.attemptFor(
         { environmentId: environment.environmentId, name: trimmedName },
         () => ProjectId.make(uuidv4()),
       );
-      pendingAttemptRef.current = attempt;
       const result = await createNew({
         environmentId: attempt.environmentId,
         input: { name: attempt.name, projectId: attempt.projectId },
       });
       if (AsyncResult.isFailure(result)) {
-        setError(errorMessage(Cause.squash(result.cause)));
+        const failure = Cause.squash(result.cause);
+        // The id can never succeed, so the next Create starts over. Any other
+        // failure keeps the attempt for the retry to return.
+        if (isNewProjectIdInUseFailure(failure)) newProjectAttempts.settle(attempt);
+        setError(errorMessage(failure));
         return;
       }
-      pendingAttemptRef.current = null;
       const { projectId, workspaceRoot, commitError } = result.value;
       const publishes = publishesToGitHub && githubTarget !== null;
       if (commitError !== undefined) {
@@ -1026,11 +1055,14 @@ export function AddProjectNewScreen(props: { readonly environmentId?: string | s
         15_000,
       );
       if (project === null) {
+        // The attempt stays pending: Create again returns this same project
+        // and waits for it once more rather than making another.
         setError(
           "The project was created but has not reached this device yet. It will appear in the project list once the connection catches up.",
         );
         return;
       }
+      newProjectAttempts.settle(attempt);
       openNewTaskDraft(navigation, {
         environmentId: attempt.environmentId,
         projectId,
@@ -1107,13 +1139,7 @@ export function AddProjectNewScreen(props: { readonly environmentId?: string | s
                 />
               }
               isFirst
-              // New project opens from Add project, so going back shows the
-              // other sources. A deep link has nothing behind it.
-              onPress={() =>
-                navigation.canGoBack()
-                  ? navigation.goBack()
-                  : navigation.dispatch(StackActions.replace("AddProject"))
-              }
+              onPress={() => showExistingProjectSources(environment.environmentId)}
             />
           </ListSection>
         </>

@@ -907,3 +907,52 @@ it.effect("keeps the folder when the create is interrupted after it commits", ()
     );
   }),
 );
+
+it.effect("removes the scaffold when its id turns out to belong to a project elsewhere", () =>
+  withScratch(
+    ({ baseDir }) =>
+      withGitEnv(
+        TEST_IDENTITY,
+        Effect.gen(function* () {
+          const folders = yield* ManagedProjectFolders.ManagedProjectFolders;
+          const projects = yield* ProjectService.ProjectService;
+          const path = yield* Path.Path;
+          const projectId = ProjectId.make("project:taken-meanwhile");
+
+          const failure = yield* Effect.flip(
+            folders.createNamedProject({ name: "Lost Race", projectId }),
+          );
+
+          assert.equal(failure._tag, "NamedProjectCreateError");
+          // The id's owner lives elsewhere, so the new folder had no owner.
+          const owner = Option.getOrThrow(yield* projects.getById(projectId));
+          assert.equal(owner.workspaceRoot, path.join(baseDir, "elsewhere"));
+          assert.deepEqual(yield* projectsFolder(baseDir), []);
+        }),
+      ),
+    {
+      // Another create takes the id at a different folder between the replay
+      // check and this create's commit, so this create is rejected.
+      projects: (real) =>
+        ProjectService.ProjectService.of({
+          ...real,
+          create: (input) =>
+            Effect.gen(function* () {
+              const path = yield* Path.Path;
+              const elsewhere = path.join(
+                path.dirname(path.dirname(input.workspaceRoot)),
+                "elsewhere",
+              );
+              yield* real.create({
+                commandId: CommandId.make("command:meanwhile"),
+                projectId: input.projectId,
+                title: "Meanwhile",
+                workspaceRoot: elsewhere,
+                createWorkspaceRootIfMissing: true,
+              });
+              return yield* real.create(input);
+            }).pipe(Effect.provide(NodeServices.layer)),
+        }),
+    },
+  ),
+);

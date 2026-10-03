@@ -1,15 +1,15 @@
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import {
+  createNewProjectAttemptStore,
   getNewProjectGitHubRepository,
-  resolveNewProjectAttempt,
-  type NewProjectAttempt,
+  isNewProjectIdInUseFailure,
 } from "@t3tools/client-runtime/operations/projects";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId } from "@t3tools/contracts";
-import { useCallback, useRef } from "react";
+import { useCallback } from "react";
 
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
 import { newProjectId } from "~/lib/utils";
@@ -27,6 +27,10 @@ function errorMessage(error: unknown): string {
 
 const PUBLISH_RETRY_HINT = "Use Publish repository in the Git menu to try again.";
 
+// Outlives the command palette, which unmounts when it closes, so closing it
+// and creating the same name again still retries the unfinished attempt.
+const newProjectAttempts = createNewProjectAttemptStore();
+
 /**
  * Starts a project from just a name on the chosen environment. The server
  * makes a folder under its `newProjectsRoot` with a README, an icon, and a
@@ -34,8 +38,9 @@ const PUBLISH_RETRY_HINT = "Use Publish repository in the Git menu to try again.
  * also publishes the repository as private, without holding up the draft.
  *
  * Submitting the same name on the same environment again, after a failure or
- * a lost response, reuses the earlier attempt's project id, so the server
- * returns the project it already made instead of a `-2` copy.
+ * a lost response and even after the palette was closed, reuses the earlier
+ * attempt's project id, so the server returns the project it already made
+ * instead of a `-2` copy.
  *
  * Resolves to whether the project was created.
  */
@@ -45,7 +50,6 @@ export function useNewProject() {
     reportFailure: false,
   });
   const handleNewThread = useNewThreadHandler();
-  const pendingAttemptRef = useRef<NewProjectAttempt | null>(null);
 
   const publishToGitHub = useCallback(
     async (input: {
@@ -92,29 +96,34 @@ export function useNewProject() {
       readonly name: string;
       readonly github: { readonly account: string | null } | null;
     }): Promise<boolean> => {
-      const attempt = resolveNewProjectAttempt(
-        pendingAttemptRef.current,
+      const attempt = newProjectAttempts.attemptFor(
         { environmentId: input.environmentId, name: input.name },
         newProjectId,
       );
-      pendingAttemptRef.current = attempt;
       const result = await createNew({
         environmentId: attempt.environmentId,
         input: { name: attempt.name, projectId: attempt.projectId },
       });
       if (result._tag === "Failure") {
+        const failure = squashAtomCommandFailure(result);
+        // The id can never succeed, so the next Create starts over. Any other
+        // failure keeps the attempt: the server may still have made the
+        // project, and a retry with the same id returns it.
+        if (isNewProjectIdInUseFailure(failure)) newProjectAttempts.settle(attempt);
         if (!isAtomCommandInterrupted(result)) {
           toastManager.add(
             stackedThreadToast({
               type: "error",
               title: "Could not create the project",
-              description: errorMessage(squashAtomCommandFailure(result)),
+              description: errorMessage(failure),
             }),
           );
         }
         return false;
       }
-      pendingAttemptRef.current = null;
+      // The server confirmed the project, and the palette closes on success,
+      // so a later Create with this name is a new project.
+      newProjectAttempts.settle(attempt);
 
       const { projectId, workspaceRoot, commitError } = result.value;
       // The folder sits in the environment's Pylon data directory, so always

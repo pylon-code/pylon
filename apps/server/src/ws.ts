@@ -18,7 +18,10 @@ import {
   vcsStatusForClient,
 } from "./sourceControl/forgejoClientCompatibility.ts";
 import { withPublishedRepositoryIdentityRefresh } from "./sourceControl/refreshPublishedRepositoryIdentities.ts";
-import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
+import {
+  OrchestrationDispatchCommandError,
+  ProjectCreateNewIdInUseError,
+} from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
 import * as NodeCrypto from "node:crypto";
@@ -3077,14 +3080,16 @@ const makeWsRpcLayer = (
         [WS_METHODS.projectsCreateNew]: (input) =>
           observeRpcEffect(
             WS_METHODS.projectsCreateNew,
-            managedFolders
-              .createNamedProject(input)
-              .pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new OrchestrationDispatchCommandError({ message: cause.message, cause }),
-                ),
+            managedFolders.createNamedProject(input).pipe(
+              Effect.mapError((cause) =>
+                cause._tag === "NamedProjectIdInUseError"
+                  ? new ProjectCreateNewIdInUseError({
+                      projectId: cause.projectId,
+                      message: cause.message,
+                    })
+                  : new OrchestrationDispatchCommandError({ message: cause.message, cause }),
               ),
+            ),
             { "rpc.aggregate": "orchestration" },
           ),
         [WS_METHODS.projectCloneCancel]: (input) =>

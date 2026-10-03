@@ -12,6 +12,7 @@ import {
   ProjectReadFileError,
   ProjectListEntriesInput,
   ProjectListEntriesResult,
+  ProjectCreateNewIdInUseError,
   ProjectCreateNewInput,
   ProjectCreatePayload,
   ProjectUpdatePayload,
@@ -344,5 +345,20 @@ describe("ProjectCreateNewInput", () => {
   it("bounds the name", () => {
     expect(() => decode({ name: "   " })).toThrow();
     expect(() => decode({ name: "a".repeat(201) })).toThrow();
+  });
+});
+
+const encodeIdInUse = Schema.encodeSync(ProjectCreateNewIdInUseError);
+const decodeIdInUse = Schema.decodeUnknownSync(ProjectCreateNewIdInUseError);
+
+describe("ProjectCreateNewIdInUseError", () => {
+  it("round-trips with its tag so clients can drop the refused id", () => {
+    const error = new ProjectCreateNewIdInUseError({
+      projectId: ProjectId.make("project:taken"),
+      message: "This project id already belongs to another project.",
+    });
+    const decoded = decodeIdInUse(encodeIdInUse(error));
+    expect(decoded._tag).toBe("ProjectCreateNewIdInUseError");
+    expect(decoded.projectId).toBe("project:taken");
   });
 });

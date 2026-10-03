@@ -482,16 +482,23 @@ const make = Effect.gen(function* () {
   });
 
   // A folder claimed for a create is removed only when the committed state
-  // proves no project uses it: neither the project this create named nor any
-  // other project at the folder. A rejected create, a store failure, and an
+  // proves no project uses it: neither the project this create named (when
+  // it is rooted at this folder) nor any other project at the folder. A rejected create, a store failure, and an
   // interrupt that landed before the commit all leave it unused; an interrupt
   // after the commit, or a conflict with an existing owner, keeps it. If the
   // state cannot be read, the folder stays, since deleting a project's files
   // is never acceptable.
   const removeUnownedFolder = (projectId: ProjectId, workspaceRoot: string) =>
     Effect.gen(function* () {
+      // A project that already had this id elsewhere does not own the folder;
+      // keeping it would leave an orphan scaffold behind.
       const byId = yield* projects.getById(projectId, { includeDeleted: true });
-      if (Option.isSome(byId)) return;
+      if (
+        Option.isSome(byId) &&
+        path.resolve(byId.value.workspaceRoot) === path.resolve(workspaceRoot)
+      ) {
+        return;
+      }
       const byRoot = yield* projects.getByWorkspaceRoot(workspaceRoot, { includeDeleted: true });
       if (Option.isSome(byRoot)) return;
       yield* fileSystem.remove(workspaceRoot, { recursive: true });

@@ -901,7 +901,10 @@ export const ServerConfig = Schema.Struct({
   rollbackRecoveryOperationIdentity: Schema.optionalKey(Schema.Boolean),
   /**
    * Folder that holds projects started from just a name. Present only on
-   * servers that answer projects.createNew.
+   * servers that answer projects.createNew and honor its client-chosen
+   * `projectId`, so clients offer New project (and rely on retry replay) only
+   * when it is set. Earlier servers that already answered the RPC never put
+   * it on the wire, since their schema did not declare it.
    */
   newProjectsRoot: Schema.optionalKey(TrimmedNonEmptyString),
   /**

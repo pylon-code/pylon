@@ -22,7 +22,8 @@ import {
   getNewProjectPathPreview,
   normalizePastedCloneUrl,
   resolveAddProjectPath,
-  resolveNewProjectAttempt,
+  createNewProjectAttemptStore,
+  isNewProjectIdInUseFailure,
   sortAddProjectProviderSources,
 } from "./projects.ts";
 import type { EnvironmentProject } from "../state/models.ts";
@@ -332,21 +333,47 @@ describe("add project shared logic", () => {
   it("reuses the unfinished New project attempt so a retry cannot duplicate it", () => {
     const local = EnvironmentId.make("environment-local");
     const remote = EnvironmentId.make("environment-remote");
+    const store = createNewProjectAttemptStore();
     let minted = 0;
     const mint = () => ProjectId.make(`project-${++minted}`);
 
-    const first = resolveNewProjectAttempt(null, { environmentId: local, name: "Pinball" }, mint);
+    const first = store.attemptFor({ environmentId: local, name: "Pinball" }, mint);
     expect(first.projectId).toBe(ProjectId.make("project-1"));
-    // Same name on the same machine: the retry carries the same id.
-    expect(resolveNewProjectAttempt(first, { environmentId: local, name: "Pinball" }, mint)).toBe(
-      first,
-    );
-    // A new name or another machine is another project.
+    // Same name on the same machine, even retyped with stray spaces or a
+    // differently composed accent: the retry carries the same id.
+    expect(store.attemptFor({ environmentId: local, name: " Pinball " }, mint)).toBe(first);
+    const accented = store.attemptFor({ environmentId: local, name: "Caf\u00e9" }, mint);
+    expect(store.attemptFor({ environmentId: local, name: "Cafe\u0301" }, mint)).toBe(accented);
+    // A new name or another machine is another project, and each keeps its
+    // own pending attempt.
+    const arcade = store.attemptFor({ environmentId: local, name: "Arcade" }, mint);
+    expect(arcade.projectId).not.toBe(first.projectId);
+    const remoteAttempt = store.attemptFor({ environmentId: remote, name: "Pinball" }, mint);
+    expect(remoteAttempt.projectId).not.toBe(first.projectId);
+    expect(store.attemptFor({ environmentId: local, name: "Pinball" }, mint)).toBe(first);
+  });
+
+  it("starts a fresh attempt only once the earlier one is settled", () => {
+    const local = EnvironmentId.make("environment-local");
+    const store = createNewProjectAttemptStore();
+    let minted = 0;
+    const mint = () => ProjectId.make(`project-${++minted}`);
+
+    const first = store.attemptFor({ environmentId: local, name: "Pinball" }, mint);
+    store.settle(first);
+    const second = store.attemptFor({ environmentId: local, name: "Pinball" }, mint);
+    expect(second.projectId).toBe(ProjectId.make("project-2"));
+    // Settling a stale attempt leaves the newer one pending.
+    store.settle(first);
+    expect(store.attemptFor({ environmentId: local, name: "Pinball" }, mint)).toBe(second);
+  });
+
+  it("recognizes a refused project id as final", () => {
     expect(
-      resolveNewProjectAttempt(first, { environmentId: local, name: "Arcade" }, mint).projectId,
-    ).toBe(ProjectId.make("project-2"));
-    expect(
-      resolveNewProjectAttempt(first, { environmentId: remote, name: "Pinball" }, mint).projectId,
-    ).toBe(ProjectId.make("project-3"));
+      isNewProjectIdInUseFailure({ _tag: "ProjectCreateNewIdInUseError", projectId: "p" }),
+    ).toBe(true);
+    expect(isNewProjectIdInUseFailure({ _tag: "OrchestrationDispatchCommandError" })).toBe(false);
+    expect(isNewProjectIdInUseFailure(new Error("socket closed"))).toBe(false);
+    expect(isNewProjectIdInUseFailure(null)).toBe(false);
   });
 });
