@@ -26,7 +26,7 @@ import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 import type * as EffectAcpErrors from "effect-acp/errors";
-import type * as EffectAcpSchema from "effect-acp/schema";
+import type * as EffectAcpSchema from "effect-acp/compat";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
@@ -37,7 +37,7 @@ import {
   ProviderAdapterSessionNotFoundError,
   ProviderAdapterValidationError,
 } from "../Errors.ts";
-import { mapAcpToAdapterError } from "../acp/AcpAdapterSupport.ts";
+import { mapAcpToAdapterError } from "../legacy/AcpAdapterSupport.ts";
 import type * as AcpSessionRuntime from "../acp/AcpSessionRuntime.ts";
 import {
   makeAcpAssistantItemEvent,
@@ -53,7 +53,7 @@ import {
   type PrimeAgentAcpTerminalUpdate,
 } from "../acp/PrimeAgentAcpSupport.ts";
 import type { PrimeAgentAdapterShape } from "../Services/PrimeAgentAdapter.ts";
-import { BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES } from "../Services/ProviderAdapter.ts";
+import { BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES } from "../legacy/ProviderAdapter.ts";
 import { canonicalPrimeToolItemId } from "../prime/PrimeAgentDaemonRuntimeEvents.ts";
 import type { PrimeAgentRuntimeContext } from "../prime/PrimeAgentRuntimeContext.ts";
 import {
@@ -725,11 +725,21 @@ export function makePrimeAgentAdapter(
                     return;
                   case "PlanUpdated": {
                     yield* logNative(ctx.threadId, "session/update", event.rawPayload);
-                    const fingerprint = [
-                      notificationTurnId ?? "no-turn",
-                      event.payload.explanation ?? "",
-                      ...event.payload.plan.map((entry) => `${entry.status}:${entry.step}`),
-                    ].join("\0");
+                    const plan = event.payload;
+                    const detail =
+                      plan.kind === "items"
+                        ? [
+                            plan.explanation ?? "",
+                            ...plan.plan.map((entry) => `${entry.status}:${entry.step}`),
+                          ].join("\0")
+                        : plan.kind === "markdown"
+                          ? plan.markdown
+                          : plan.kind === "file"
+                            ? plan.uri
+                            : plan.kind === "unknown"
+                              ? plan.contentType
+                              : "";
+                    const fingerprint = `${notificationTurnId ?? "no-turn"}\0${plan.nativePlanId}\0${plan.kind}\0${detail}`;
                     if (ctx.lastPlanFingerprint === fingerprint) return;
                     ctx.lastPlanFingerprint = fingerprint;
                     yield* offerRuntimeEvent(

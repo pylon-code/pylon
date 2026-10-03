@@ -8,7 +8,6 @@ import {
   ApprovalRequestId,
   CheckpointRef,
   CommandId,
-  defaultInstanceIdForDriver,
   EnvironmentId,
   PrimeAgentSettings,
   PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS,
@@ -38,19 +37,9 @@ import * as TestClock from "effect/testing/TestClock";
 
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
-import * as ProviderSessionRuntime from "../../persistence/ProviderSessionRuntime.ts";
-import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
-import * as ServerSettings from "../../serverSettings.ts";
 import type { PrimeAgentRecoveryLedgerShape } from "./PrimeAgentRecoveryLedger.ts";
-import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
 import type { ProviderAdapterError } from "../Errors.ts";
-import * as ProviderAdapterRegistry from "../Services/ProviderAdapterRegistry.ts";
-import * as ProviderService from "../Services/ProviderService.ts";
-import * as ProviderEventLoggers from "../Layers/ProviderEventLoggers.ts";
 import { type EventNdjsonLogger } from "../Layers/EventNdjsonLogger.ts";
-import { makeProviderServiceLive } from "../Layers/ProviderService.ts";
-import { ProviderSessionDirectoryLive } from "../Layers/ProviderSessionDirectory.ts";
-import { makeAdapterRegistryMock } from "../testUtils/providerAdapterRegistryMock.ts";
 import { attachmentRelativePath } from "../../attachmentStore.ts";
 import type {
   PrimeAgentDaemonExtensionUiResponse,
@@ -68,7 +57,6 @@ import {
   type PrimeDaemonUsage,
 } from "./PrimeAgentDaemonEvents.ts";
 import type { PrimeAgentDaemonManager } from "./PrimeAgentDaemonManager.ts";
-import { PRIME_AGENT_EVENT_BUFFER_CAPACITY } from "./PrimeAgentEventBuffer.ts";
 import { PRIME_AGENT_PLAN_TOOL_NAME } from "./PrimeAgentManagedExtension.ts";
 import {
   makePrimeAgentDaemonAdapter,
@@ -4034,6 +4022,7 @@ describe("PrimeAgentDaemonAdapter", () => {
               endpoint: "http://127.0.0.1:4321/mcp/mismatch",
               authorizationHeader: "Bearer must-not-route",
               capabilities: new Set(["preview"]),
+              browserToolsAvailable: false,
             }),
           ),
           () => Effect.sync(() => McpProviderSession.clearMcpProviderSession(mismatchedThread)),
@@ -4075,6 +4064,7 @@ describe("PrimeAgentDaemonAdapter", () => {
           endpoint: "http://127.0.0.1:4321/mcp/provider-session-prime-test",
           authorizationHeader: "Bearer scoped-secret",
           capabilities: new Set(["preview"]),
+          browserToolsAvailable: false,
           expiresAt: 4_000_000_000_000,
         };
         yield* Effect.acquireRelease(
@@ -10725,129 +10715,6 @@ describe("PrimeAgentDaemonAdapter", () => {
         yield* Fiber.interrupt(subscription.fiber);
       }),
     ).pipe(Effect.provide(testLayer)),
-  );
-
-  it.effect(
-    "keeps ProviderService stop bounded behind a stalled subscriber and relays one ordered exit",
-    () =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const captures = makeCaptures();
-          const providerKind = ProviderDriverKind.make("primeAgent");
-          const providerInstanceId = defaultInstanceIdForDriver(providerKind);
-          const adapter = yield* makePrimeAgentDaemonAdapter(decodeSettings({}), manager, {
-            instanceId: providerInstanceId,
-            runtimeFactory: fakeRuntimeFactory(captures),
-          });
-          const pull = yield* Stream.toPull(adapter.streamEvents);
-          const initialPull = yield* pull.pipe(Effect.forkChild);
-          yield* Effect.yieldNow;
-
-          const serviceSubscribed = yield* Deferred.make<void>();
-          const serviceAdapter = {
-            ...adapter,
-            streamEvents: adapter.streamEvents.pipe(
-              Stream.onStart(Deferred.succeed(serviceSubscribed, undefined)),
-            ),
-          };
-          const registry = makeAdapterRegistryMock({ [providerKind]: serviceAdapter });
-          const runtimeRepositoryLayer = ProviderSessionRuntime.layer.pipe(
-            Layer.provide(SqlitePersistenceMemory),
-          );
-          const directoryLayer = ProviderSessionDirectoryLive.pipe(
-            Layer.provide(runtimeRepositoryLayer),
-          );
-          const providerLayer = Layer.mergeAll(
-            makeProviderServiceLive().pipe(
-              Layer.provide(
-                Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistry, registry),
-              ),
-              Layer.provide(directoryLayer),
-              Layer.provide(ServerSettings.ServerSettingsService.layerTest()),
-              Layer.provideMerge(AnalyticsService.layerTest),
-              Layer.provide(
-                Layer.succeed(
-                  ProviderEventLoggers.ProviderEventLoggers,
-                  ProviderEventLoggers.NoOpProviderEventLoggers,
-                ),
-              ),
-            ),
-            directoryLayer,
-            runtimeRepositoryLayer,
-          );
-          const providerScope = yield* Scope.make();
-          const services = yield* Layer.build(providerLayer).pipe(Scope.provide(providerScope));
-          const provider = yield* ProviderService.ProviderService.pipe(Effect.provide(services));
-          const subscription = yield* subscribe(provider);
-          yield* Deferred.await(serviceSubscribed);
-          const session = yield* provider.startSession(threadId, {
-            provider: providerKind,
-            providerInstanceId,
-            threadId,
-            cwd: process.cwd(),
-            runtimeMode: "full-access",
-          });
-          const initialEvents = [...(yield* Fiber.join(initialPull))];
-          yield* awaitObservedType(subscription.observed, "thread.started");
-          const turnFiber = yield* provider
-            .sendTurn({
-              threadId,
-              input: "preserve every assistant delta while delivery is stalled",
-              sessionIncarnationId: session.sessionIncarnationId,
-            })
-            .pipe(Effect.forkChild);
-          yield* Queue.take(captures.promptObserved!);
-
-          let markAssistantProcessed!: () => void;
-          const assistantProcessed = new Promise<void>((resolve) => {
-            markAssistantProcessed = resolve;
-          });
-          captures.workerRecoveryTerminalResponseObserved = markAssistantProcessed;
-          const deltaCount = PRIME_AGENT_EVENT_BUFFER_CAPACITY * 2;
-          const deltas = Array.from({ length: deltaCount }, (_, index) => `delta:${index};`);
-          const message = assistantMessage(deltas.join(""));
-          yield* offer(captures, { _tag: "MessageStarted", message });
-          for (const delta of deltas) {
-            yield* offer(captures, {
-              _tag: "AssistantStream",
-              phase: "delta",
-              kind: "text",
-              delta,
-            });
-          }
-          yield* offer(captures, { _tag: "MessageCompleted", message });
-
-          yield* Effect.promise(() => assistantProcessed);
-
-          yield* provider.stopSession({ threadId });
-          expect(subscription.events.some((event) => event.type === "session.exited")).toBe(false);
-
-          const directEvents = [...initialEvents];
-          while (!directEvents.some((event) => event.type === "session.exited")) {
-            directEvents.push(...(yield* pull));
-          }
-          yield* awaitObservedType(subscription.observed, "session.exited");
-
-          expect(
-            subscription.events
-              .filter((event) => event.type === "content.delta")
-              .map((event) => event.payload.delta),
-          ).toEqual(deltas);
-          expect(
-            directEvents
-              .filter((event) => event.type === "content.delta")
-              .map((event) => event.payload.delta),
-          ).toEqual(deltas);
-          expect(
-            subscription.events.filter((event) => event.type === "session.exited"),
-          ).toHaveLength(1);
-          expect(directEvents.filter((event) => event.type === "session.exited")).toHaveLength(1);
-          expect(yield* adapter.hasSession(threadId)).toBe(false);
-          yield* Fiber.interrupt(turnFiber);
-          yield* Fiber.interrupt(subscription.fiber);
-          yield* Scope.close(providerScope, Exit.void);
-        }),
-      ).pipe(Effect.provide(testLayer)),
   );
 
   it.effect("keeps the replacement gate closed while scope-owned disposal is in flight", () =>

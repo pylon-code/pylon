@@ -410,6 +410,98 @@ describe("EventNdjsonLogger", () => {
     }),
   );
 
+  it.effect("filters v2 native envelopes while retaining decoded results and diagnostics", () =>
+    Effect.gen(function* () {
+      const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-log-"));
+      const basePath = NodePath.join(tempDir, "events.log");
+      const threadId = ThreadId.make("thread-v2-envelope");
+
+      try {
+        const store = yield* makeEventNdjsonLogStore(basePath, { batchWindowMs: 0 });
+        const native = store.logger("native");
+        const raw = {
+          stage: "raw",
+          get payload() {
+            throw new Error("discarded raw frames must not be traversed");
+          },
+        };
+        yield* native.write(raw, threadId);
+        yield* native.write({ provider: "codex", event: raw }, threadId);
+        yield* native.write(
+          {
+            method: "item/agentMessage/delta",
+            get payload() {
+              throw new Error("discarded legacy deltas must not be traversed");
+            },
+          },
+          threadId,
+        );
+        yield* native.write(
+          { stage: "decoded", payload: { method: "item/agentMessage/delta" } },
+          threadId,
+        );
+        yield* native.write(
+          {
+            provider: "claudeAgent",
+            event: {
+              stage: "decoded",
+              payload: {
+                type: "stream_event",
+                event: { type: "content_block_delta", delta: { text: "delta" } },
+              },
+            },
+          },
+          threadId,
+        );
+        yield* native.write(
+          {
+            event: {
+              stage: "decoded",
+              payload: {
+                method: "session/update",
+                payload: { update: { sessionUpdate: "agent_thought_chunk" } },
+              },
+            },
+          },
+          threadId,
+        );
+        yield* native.write(
+          { event: { stage: "decoded", payload: { type: "message.part.delta" } } },
+          threadId,
+        );
+
+        const decodedResult = {
+          provider: "codex",
+          event: { stage: "decoded", payload: { id: 42, result: { thread: { id: "native" } } } },
+        };
+        const decodeFailure = { event: { stage: "decode_failed", message: "Invalid frame" } };
+        const canonical = { stage: "raw", type: "item.completed", id: "canonical" };
+        const orchestration = { stage: "raw", type: "content.delta", id: "orchestration" };
+        yield* native.write(decodedResult, threadId);
+        yield* native.write(decodeFailure, threadId);
+        yield* store.logger("canonical").write(canonical, threadId);
+        yield* store.logger("orchestration").write(orchestration, threadId);
+        yield* store.close();
+
+        const lines = NodeFS.readFileSync(ownedLogPath(basePath, "thread-v2-envelope"), "utf8")
+          .trim()
+          .split("\n")
+          .map(parseLogLine);
+        assert.deepEqual(
+          lines.map(({ stream, payload }) => ({ stream, event: decodeUnknownJson(payload) })),
+          [
+            { stream: "NTIVE", event: decodedResult },
+            { stream: "NTIVE", event: decodeFailure },
+            { stream: "CANON", event: canonical },
+            { stream: "ORCH", event: orchestration },
+          ],
+        );
+      } finally {
+        NodeFS.rmSync(tempDir, { recursive: true, force: true });
+      }
+    }),
+  );
+
   it.effect("summarizes large histories without reading their items", () =>
     Effect.gen(function* () {
       const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-log-"));

@@ -1,3 +1,13 @@
+import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
+import * as ProviderRegistry from "../provider/Services/ProviderRegistry.ts";
+import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as GitWorkflowService from "../git/GitWorkflowService.ts";
+import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
+import * as VcsStatusBroadcaster from "../vcs/VcsStatusBroadcaster.ts";
 import { expect, it } from "@effect/vitest";
 import { loopbackHttpServerTest } from "../testUtils/loopbackHttpServer.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -12,8 +22,7 @@ import * as Stream from "effect/Stream";
 import { McpProtocol, McpSchema, McpServer } from "effect/unstable/ai";
 import { HttpBody, HttpClient, HttpRouter, HttpServerResponse } from "effect/unstable/http";
 
-import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
-import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import * as ProjectService from "../project/ProjectService.ts";
 import * as ServerConfig from "../config.ts";
 import { CuaService } from "../computer/CuaService.ts";
 import { DeviceService } from "../device/DeviceService.ts";
@@ -58,10 +67,9 @@ const PullRequestsTestLayer = McpHttpServer.PullRequestsToolkitRegistrationLive.
   Layer.provideMerge(McpServer.McpServer.layer),
   Layer.provide(
     Layer.mergeAll(
-      Layer.mock(ProjectionSnapshotQuery)({
-        getThreadShellById: () => Effect.succeedNone,
-      }),
-      Layer.mock(OrchestrationEngineService)({}),
+      Layer.mock(ProjectService.ProjectService)({}),
+      Layer.mock(Orchestrator.OrchestratorV2)({}),
+      Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
       NodeServices.layer,
     ),
   ),
@@ -884,7 +892,7 @@ it.effect("registers annotated tools and preserves authenticated request context
   ).pipe(Effect.provide(TestLayer)),
 );
 
-it.effect("serves only the retained MCP tools, without pair or delegation tools", () =>
+it.effect("serves retained tools and v2 orchestration without removed pair tools", () =>
   Effect.gen(function* () {
     const server = yield* McpServer.McpServer;
     const names = server.tools.map(({ tool }) => tool.name);
@@ -894,9 +902,10 @@ it.effect("serves only the retained MCP tools, without pair or delegation tools"
         "device_open",
         "link_pull_request",
         "list_thread_pull_requests",
+        "delegate_task",
       ]),
     );
-    expect(names.filter((name) => /pair_|delegat/.test(name))).toEqual([]);
+    expect(names.filter((name) => /pair_/.test(name))).toEqual([]);
   }).pipe(
     Effect.provide(
       McpHttpServer.layer.pipe(
@@ -906,8 +915,17 @@ it.effect("serves only the retained MCP tools, without pair or delegation tools"
             Layer.mock(CuaService)({}),
             Layer.mock(DeviceService)({}),
             Layer.mock(McpSessionRegistry)({}),
-            Layer.mock(ProjectionSnapshotQuery)({}),
-            Layer.mock(OrchestrationEngineService)({}),
+            Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
+            Layer.mock(ProjectService.ProjectService)({}),
+            Layer.mock(Orchestrator.OrchestratorV2)({}),
+            Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+            Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({}),
+            Layer.mock(ProviderRegistry.ProviderRegistry)({}),
+            Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+            Layer.mock(ServerSettings.ServerSettingsService)({}),
+            Layer.mock(GitWorkflowService.GitWorkflowService)({}),
+            Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({}),
+            Layer.mock(VcsStatusBroadcaster.VcsStatusBroadcaster)({}),
             PreviewAutomationBroker.layer,
           ),
         ),

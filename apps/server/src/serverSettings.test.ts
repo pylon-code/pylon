@@ -3,7 +3,6 @@ import {
   DEFAULT_SERVER_SETTINGS,
   ModelSelection,
   ProjectId,
-  ProjectMetaUpdatedPayload,
   ProjectScript,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -15,9 +14,11 @@ import {
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { assert, it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Duration from "effect/Duration";
 import * as FileSystem from "effect/FileSystem";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
@@ -33,8 +34,9 @@ import { resolveProviderInstanceTerminalEnvironment } from "./terminal/Manager.t
 
 const decodeSettingsPatch = Schema.decodeUnknownEffect(ServerSettingsPatch);
 const decodeServerSettings = Schema.decodeUnknownEffect(ServerSettings);
+const decodeServerSettingsJson = Schema.decodeUnknownEffect(Schema.fromJsonString(ServerSettings));
 const encodeLegacyProjectEditJson = Schema.encodeEffect(
-  Schema.fromJsonString(ProjectMetaUpdatedPayload),
+  Schema.fromJsonString(ServerSettingsModule.LegacyProjectSettingsPayload),
 );
 const encodeModelSelectionJson = Schema.encodeEffect(Schema.fromJsonString(ModelSelection));
 const encodeProjectScriptsJson = Schema.encodeEffect(
@@ -43,7 +45,7 @@ const encodeProjectScriptsJson = Schema.encodeEffect(
 
 const appendLegacyProjectEdit = Effect.fn("appendLegacyProjectEdit")(function* (
   version: number,
-  payload: typeof ProjectMetaUpdatedPayload.Type,
+  payload: typeof ServerSettingsModule.LegacyProjectSettingsPayload.Type,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const encoded = yield* encodeLegacyProjectEditJson(payload);
@@ -76,7 +78,7 @@ const updateSettingsWithProviderInstances = Effect.fn("updateSettingsWithProvide
     const current = ServerSettingsModule.redactServerSettingsForClient(
       yield* serverSettings.getSettings,
     );
-    const receipt = yield* serverSettings.mutateProviderInstances({
+    const receipt = yield* ServerSettingsModule.mutateProviderInstances(serverSettings, {
       mutationId: ServerProviderInstancesMutationId.make(
         `server-settings-test-${providerMutationSequence++}`,
       ),
@@ -148,6 +150,42 @@ const recordProviderUsage = (provider: string, instanceId: string | null = provi
   });
 
 it.layer(NodeServices.layer)("server settings", (it) => {
+  it.effect("migrates saved token delivery to paragraph buffering without resetting settings", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const service = yield* ServerSettingsModule.ServerSettingsService;
+      yield* fs.writeFileString(
+        config.settingsPath,
+        `{
+          "responseStreamingMode": "token",
+          "enableAgentBrowserAccess": false,
+          "projectSettingsOverrides": {
+            "legacy": { "responseStreamingMode": "token", "defaultAutoPull": true },
+            "buffered": { "responseStreamingMode": "turn" },
+            "inherited": { "defaultAutoPull": false }
+          }
+        }`,
+      );
+
+      const settings = yield* service.getSettings;
+      assert.equal(settings.responseStreamingMode, "paragraph");
+      assert.isFalse(settings.enableAgentBrowserAccess);
+      assert.deepEqual(settings.projectSettingsOverrides, {
+        [ProjectId.make("legacy")]: { responseStreamingMode: "paragraph", defaultAutoPull: true },
+        [ProjectId.make("buffered")]: { responseStreamingMode: "turn" },
+        [ProjectId.make("inherited")]: { defaultAutoPull: false },
+      });
+
+      yield* service.updateSettings({ responseStreamingMode: "turn" });
+      const persisted = yield* decodeServerSettingsJson(
+        yield* fs.readFileString(config.settingsPath),
+      );
+      assert.equal(persisted.responseStreamingMode, "turn");
+      assert.deepEqual(persisted.projectSettingsOverrides, settings.projectSettingsOverrides);
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
   it.effect("preserves context when reading a provider environment secret fails", () => {
     const platformCause = PlatformError.systemError({
       _tag: "PermissionDenied",
@@ -321,6 +359,81 @@ it.layer(NodeServices.layer)("server settings", (it) => {
             { id: "fastMode", value: false },
           ],
         ),
+      );
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect("creates provider instances atomically without overwriting a concurrent add", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      const instanceId = ProviderInstanceId.make("acpRegistry_shared");
+      const results = yield* Effect.all(
+        ["First", "Second"].map((displayName) =>
+          serverSettings
+            .updateProviderInstance({
+              operation: "create",
+              instanceId,
+              instance: {
+                driver: ProviderDriverKind.make("acpRegistry"),
+                displayName,
+                config: { agentId: "shared", distribution: "auto" },
+              },
+            })
+            .pipe(Effect.result),
+        ),
+        { concurrency: "unbounded" },
+      );
+
+      assert.equal(results.filter((result) => result._tag === "Success").length, 1);
+      assert.equal(results.filter((result) => result._tag === "Failure").length, 1);
+      assert.isTrue(
+        ["First", "Second"].includes(
+          (yield* serverSettings.getSettings).providerInstances[instanceId]?.displayName ?? "",
+        ),
+      );
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect("pauses provider-instance mutations while a settings snapshot is in use", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      const snapshotEntered = yield* Deferred.make<void>();
+      const releaseSnapshot = yield* Deferred.make<void>();
+      const mutationCompleted = yield* Deferred.make<void>();
+      const instanceId = ProviderInstanceId.make("acpRegistry_kilo");
+
+      const snapshotFiber = yield* serverSettings
+        .withSettingsSnapshot(() =>
+          Deferred.succeed(snapshotEntered, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseSnapshot)),
+          ),
+        )
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(snapshotEntered);
+
+      const mutationFiber = yield* serverSettings
+        .updateProviderInstance({
+          operation: "upsert",
+          instanceId,
+          instance: {
+            driver: ProviderDriverKind.make("acpRegistry"),
+            displayName: "Kilo",
+            config: { agentId: "kilo", distribution: "auto" },
+          },
+        })
+        .pipe(
+          Effect.tap(() => Deferred.succeed(mutationCompleted, undefined)),
+          Effect.forkChild({ startImmediately: true }),
+        );
+      yield* Effect.yieldNow;
+
+      assert.isTrue(Option.isNone(yield* Deferred.poll(mutationCompleted)));
+      yield* Deferred.succeed(releaseSnapshot, undefined);
+      yield* Fiber.join(snapshotFiber);
+      yield* Fiber.join(mutationFiber);
+      assert.equal(
+        (yield* serverSettings.getSettings).providerInstances[instanceId]?.displayName,
+        "Kilo",
       );
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
@@ -1464,6 +1577,40 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 
+  it.effect("materializes provider secrets for terminal environment resolution", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      const serverConfig = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const instanceId = ProviderInstanceId.make("codex_terminal");
+
+      yield* updateSettingsWithProviderInstances(serverSettings, {
+        providerInstances: {
+          [instanceId]: {
+            driver: ProviderDriverKind.make("codex"),
+            environment: [
+              { name: "OPENROUTER_API_KEY", value: "sk-terminal-secret", sensitive: true },
+            ],
+            config: { homePath: "~/.codex-terminal" },
+          },
+        },
+      });
+
+      const environment = yield* resolveProviderInstanceTerminalEnvironment({
+        serverSettings,
+        path,
+        rawProviderInstanceId: instanceId,
+        env: undefined,
+      });
+      const persisted = yield* fileSystem.readFileString(serverConfig.settingsPath);
+
+      assert.equal(environment.OPENROUTER_API_KEY, "sk-terminal-secret");
+      assert.match(environment.CODEX_HOME ?? "", /[\\/][.]codex-terminal$/);
+      assert.notInclude(persisted, "sk-terminal-secret");
+      assert.include(persisted, '"valueRedacted": true');
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
   it.effect("rolls back provider secret changes when the settings file commit fails", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -1490,26 +1637,28 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       yield* Effect.gen(function* () {
         const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
         settingsPathToFail = (yield* ServerConfig.ServerConfig).settingsPath;
-        yield* updateSettingsWithProviderInstances(serverSettings, {
-          providerInstances: {
-            [instanceId]: {
-              driver: ProviderDriverKind.make("codex"),
-              environment: [{ name: "OPENROUTER_API_KEY", value: "sk-kept", sensitive: true }],
-              config: {},
-            },
+        yield* serverSettings.updateProviderInstance({
+          operation: "upsert",
+          instanceId,
+          instance: {
+            driver: ProviderDriverKind.make("codex"),
+            environment: [{ name: "OPENROUTER_API_KEY", value: "sk-kept", sensitive: true }],
+            config: {},
           },
         });
 
         failRename = true;
-        const failedUpdate = yield* updateSettingsWithProviderInstances(serverSettings, {
-          providerInstances: {
-            [instanceId]: {
+        const failedUpdate = yield* serverSettings
+          .updateProviderInstance({
+            operation: "upsert",
+            instanceId,
+            instance: {
               driver: ProviderDriverKind.make("codex"),
               environment: [{ name: "OPENROUTER_API_KEY", value: "sk-new", sensitive: true }],
               config: {},
             },
-          },
-        }).pipe(Effect.result);
+          })
+          .pipe(Effect.result);
         assert.equal(failedUpdate._tag, "Failure");
         assert.equal(
           (yield* serverSettings.getSettings).providerInstances[instanceId]?.environment?.[0]
@@ -1517,9 +1666,9 @@ it.layer(NodeServices.layer)("server settings", (it) => {
           "sk-kept",
         );
 
-        const failed = yield* updateSettingsWithProviderInstances(serverSettings, {
-          providerInstances: {},
-        }).pipe(Effect.result);
+        const failed = yield* serverSettings
+          .updateProviderInstance({ operation: "remove", instanceId })
+          .pipe(Effect.result);
         assert.equal(failed._tag, "Failure");
         assert.equal(
           (yield* serverSettings.getSettings).providerInstances[instanceId]?.environment?.[0]
@@ -1781,7 +1930,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
 
       const expectedProviderInstances =
         ServerSettingsModule.redactServerSettingsForClient(roundTripped).providerInstances;
-      const mutated = yield* serverSettings.mutateProviderInstances({
+      const mutated = yield* ServerSettingsModule.mutateProviderInstances(serverSettings, {
         mutationId: ServerProviderInstancesMutationId.make("sensitive-provider-cas"),
         expectedProviderInstances,
         patch: {
@@ -1817,13 +1966,11 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         });
       }
 
-      const stale = yield* serverSettings
-        .mutateProviderInstances({
-          mutationId: ServerProviderInstancesMutationId.make("stale-secret-deletion"),
-          expectedProviderInstances: {},
-          patch: { providerInstances: {} },
-        })
-        .pipe(Effect.flip);
+      const stale = yield* ServerSettingsModule.mutateProviderInstances(serverSettings, {
+        mutationId: ServerProviderInstancesMutationId.make("stale-secret-deletion"),
+        expectedProviderInstances: {},
+        patch: { providerInstances: {} },
+      }).pipe(Effect.flip);
       assert.deepInclude(stale, {
         _tag: "ServerProviderInstancesMutationConflictError",
         reason: "stale",
@@ -1846,7 +1993,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
         const instanceId = ProviderInstanceId.make("prime_work");
         const initial = yield* serverSettings.getSettings;
-        yield* serverSettings.mutateProviderInstances({
+        yield* ServerSettingsModule.mutateProviderInstances(serverSettings, {
           mutationId: ServerProviderInstancesMutationId.make("test-prime-managed-binding-create"),
           expectedProviderInstances: initial.providerInstances,
           patch: {
@@ -1887,7 +2034,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
           },
         });
 
-        yield* serverSettings.mutateProviderInstances({
+        yield* ServerSettingsModule.mutateProviderInstances(serverSettings, {
           mutationId: ServerProviderInstancesMutationId.make("test-prime-managed-binding-change"),
           expectedProviderInstances: selected.providerInstances,
           patch: {
@@ -1916,7 +2063,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       const instanceId = ProviderInstanceId.make("codex_terminal");
 
       const initial = yield* serverSettings.getSettings;
-      yield* serverSettings.mutateProviderInstances({
+      yield* ServerSettingsModule.mutateProviderInstances(serverSettings, {
         mutationId: ServerProviderInstancesMutationId.make("terminal-environment-secret"),
         expectedProviderInstances: initial.providerInstances,
         patch: {

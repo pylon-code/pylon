@@ -34,7 +34,7 @@ const startRuntime = (authMethodId?: string) =>
         name: "acp-session-runtime-test",
         version: "0.0.0",
       },
-      ...(authMethodId !== undefined ? { authMethodId } : {}),
+      ...(authMethodId !== undefined ? { authMethodId, authenticateEagerly: true } : {}),
       requestLogger: (event) => Ref.update(requestLog, (events) => [...events, event]),
     });
 
@@ -44,7 +44,7 @@ const startRuntime = (authMethodId?: string) =>
       .map((event) => event.method);
   });
 
-it.effect("skips ACP authentication only when no auth method is configured", () =>
+it.effect("authenticates eagerly only when explicitly requested", () =>
   Effect.gen(function* () {
     const withoutAuthentication = yield* startRuntime();
     const withAuthentication = yield* startRuntime("cursor_login");
@@ -97,7 +97,9 @@ it.effect("bounds every ACP startup RPC with typed default and configured timeou
             name: "acp-session-runtime-timeout-test",
             version: "0.0.0",
           },
-          ...(testCase.authMethodId === undefined ? {} : { authMethodId: testCase.authMethodId }),
+          ...(testCase.authMethodId === undefined
+            ? {}
+            : { authMethodId: testCase.authMethodId, authenticateEagerly: true }),
           ...(testCase.startupRpcTimeout === undefined
             ? {}
             : { startupRpcTimeout: testCase.startupRpcTimeout }),
@@ -460,7 +462,7 @@ it.effect(
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
-it.effect("retires runtime on cancel timeout with wait-for-prompt and returns success", () =>
+it.effect("retires runtime on cancel timeout with a typed cancellation failure", () =>
   Effect.gen(function* () {
     const promptStarted = yield* Deferred.make<void>();
     const runtime = yield* make({
@@ -497,7 +499,8 @@ it.effect("retires runtime on cancel timeout with wait-for-prompt and returns su
     yield* TestClock.adjust("5 seconds");
     yield* Effect.yieldNow;
 
-    yield* Fiber.join(cancelFiber);
+    const cancelError = yield* Fiber.join(cancelFiber).pipe(Effect.flip);
+    assert.equal(cancelError._tag, "AcpTransportError");
 
     const promptResult = yield* Fiber.join(promptFiber).pipe(Effect.flip);
     assert.equal(promptResult._tag, "AcpTransportError");
@@ -530,7 +533,8 @@ it.effect("Antigravity stops an unresponsive prompt within three seconds", () =>
     yield* Deferred.await(promptStarted);
     const stopping = yield* runtime.cancel.pipe(Effect.forkChild);
     yield* TestClock.adjust("3 seconds");
-    yield* Fiber.join(stopping);
+    const cancelError = yield* Fiber.join(stopping).pipe(Effect.flip);
+    assert.equal(cancelError._tag, "AcpTransportError");
     const result = yield* Fiber.join(prompt).pipe(Effect.flip);
     assert.equal(result._tag, "AcpTransportError");
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),

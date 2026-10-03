@@ -21,8 +21,15 @@ export interface McpProviderSessionConfig {
   readonly providerInstanceId: ProviderInstanceId;
   readonly endpoint: string;
   readonly authorizationHeader: string;
+  /**
+   * Whether this credential includes the "preview" capability. Adapters read
+   * it to keep developer instructions truthful: when the user withholds agent
+   * browser access, the prompt must not advertise `preview_*` tools that every
+   * call would reject.
+   */
+  readonly browserToolsAvailable: boolean;
   /** Capabilities the credential grants ("preview", "device", "computer", "pull-requests"). */
-  readonly capabilities: ReadonlySet<string>;
+  readonly capabilities?: ReadonlySet<string>;
   /**
    * Set when the session may drive devices. Adapters spread this into the
    * provider subprocess environment so the `agent-device` CLI is on PATH and
@@ -66,7 +73,7 @@ export function readMcpProviderSession(threadId: ThreadId): McpProviderSessionCo
 
 /** Whether the thread's live provider MCP session was granted a capability. */
 export function hasMcpProviderCapability(threadId: ThreadId, capability: string): boolean {
-  return readMcpProviderSession(threadId)?.capabilities.has(capability) === true;
+  return readMcpProviderSession(threadId)?.capabilities?.has(capability) === true;
 }
 
 export function isMcpProviderSessionOwnedByGeneration(
@@ -85,9 +92,4 @@ export function clearMcpProviderSession(
   }
   generationsByThread.delete(threadId);
   return sessionsByThread.delete(threadId);
-}
-
-export function clearAllMcpProviderSessions(): void {
-  sessionsByThread.clear();
-  generationsByThread.clear();
 }

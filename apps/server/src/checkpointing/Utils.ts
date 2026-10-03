@@ -11,7 +11,7 @@ export function checkpointRefForThreadTurn(threadId: ThreadId, turnCount: number
   return CheckpointRef.make(`${checkpointRefPrefixForThread(threadId)}turn/${turnCount}`);
 }
 
-export function resolveThreadWorkspaceCwd(input: {
+function resolveThreadWorkspaceCwd(input: {
   readonly thread: {
     readonly projectId: ProjectId;
     readonly worktreePath: string | null;

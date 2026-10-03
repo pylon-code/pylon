@@ -1,7 +1,15 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import type { ChatAttachment, ModelSelection, ProviderInstanceId } from "@t3tools/contracts";
+import * as Option from "effect/Option";
+import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
+import * as ThreadTitleLinks from "./ThreadTitleLinks.ts";
+import type {
+  BranchNamingOptions,
+  ChatAttachment,
+  ModelSelection,
+  ProviderInstanceId,
+} from "@t3tools/contracts";
 import { TextGenerationError } from "@t3tools/contracts";
 
 import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
@@ -59,6 +67,7 @@ export interface PrContentGenerationResult {
 }
 
 export interface BranchNameGenerationInput {
+  naming?: BranchNamingOptions | undefined;
   cwd: string;
   message: string;
   attachments?: ReadonlyArray<ChatAttachment> | undefined;
@@ -71,6 +80,7 @@ export interface BranchNameGenerationResult {
 }
 
 export interface ThreadTitleGenerationInput {
+  linkedContext?: string | undefined;
   cwd: string;
   message: string;
   /** Present when replacing an existing title from the current thread history. */
@@ -82,6 +92,7 @@ export interface ThreadTitleGenerationInput {
 
 export interface ThreadTitleGenerationResult {
   title: string;
+  needsRefinement?: boolean | undefined;
 }
 
 /**
@@ -152,6 +163,9 @@ export const makeTextGenerationFromRegistry = (
   registry: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
   refreshProviderCapacity: (instanceId: ProviderInstanceId) => Effect.Effect<void> = () =>
     Effect.void,
+  resolveLinkedContext: (
+    input: ThreadTitleGenerationInput,
+  ) => Effect.Effect<string | undefined> = () => Effect.undefined,
 ): TextGeneration["Service"] => {
   const afterAttempt = <A, E>(
     instance: ProviderInstance,
@@ -183,7 +197,13 @@ export const makeTextGenerationFromRegistry = (
     generateThreadTitle: (input) =>
       resolveInstance(registry, "generateThreadTitle", input.modelSelection.instanceId).pipe(
         Effect.flatMap((instance) =>
-          afterAttempt(instance, instance.textGeneration.generateThreadTitle(input)),
+          Effect.gen(function* () {
+            const linkedContext = input.linkedContext ?? (yield* resolveLinkedContext(input));
+            return yield* afterAttempt(
+              instance,
+              instance.textGeneration.generateThreadTitle({ ...input, linkedContext }),
+            );
+          }),
         ),
       ),
   });
@@ -192,8 +212,19 @@ export const makeTextGenerationFromRegistry = (
 /** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.gen(function* () {
   const instanceRegistry = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
-  const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
-  return makeTextGenerationFromRegistry(instanceRegistry, providerRegistry.refreshProviderCapacity);
+  const providerRegistry = yield* Effect.serviceOption(ProviderRegistry.ProviderRegistry);
+  const sourceControl = yield* SourceControlProviderRegistry.SourceControlProviderRegistry;
+  return makeTextGenerationFromRegistry(
+    instanceRegistry,
+    Option.isSome(providerRegistry) ? providerRegistry.value.refreshProviderCapacity : undefined,
+    (input) =>
+      ThreadTitleLinks.resolveThreadTitleLinks(input).pipe(
+        Effect.provideService(
+          SourceControlProviderRegistry.SourceControlProviderRegistry,
+          sourceControl,
+        ),
+      ),
+  );
 });
 
 export const layer = Layer.effect(TextGeneration, make);

@@ -52,6 +52,7 @@ it.effect(
         enabled: true,
         continuationIdentity: { driverKind: driver, continuationKey: "claude:test" },
         snapshot: {
+          applyUsageLimits: () => Effect.void,
           resolveMaintenance: () =>
             Effect.succeed(
               makeManualOnlyProviderMaintenanceCapabilities({
@@ -63,7 +64,7 @@ it.effect(
           refresh: Effect.never,
           streamChanges: Stream.never,
         },
-        adapter: {} as ProviderInstance["adapter"],
+        orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
         textGeneration: {} as ProviderInstance["textGeneration"],
         reconcileUsage: ({ isCurrent }) =>
           Effect.gen(function* () {

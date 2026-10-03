@@ -14,8 +14,10 @@ import {
   makeUnavailableUsageLimits,
   makeUsageLimits,
 } from "../usageLimitsSnapshot.ts";
+import { readMacCursorAccessToken } from "../cursorKeychainToken.ts";
 
 const CursorCredentials = Schema.Struct({ accessToken: Schema.optional(Schema.String) });
+const DEFAULT_CURSOR_API_ENDPOINT = "https://api2.cursor.sh";
 const decodeCredentials = Schema.decodeEffect(Schema.fromJsonString(CursorCredentials));
 const CursorUsageResponse = Schema.Struct({
   billingCycleEnd: Schema.optional(Schema.Union([Schema.String, Schema.Number])),
@@ -60,30 +62,49 @@ export function cursorUsageResponseToLimits(
 export const readCursorUsageLimits = Effect.fn("readCursorUsageLimits")(function* (
   settings: Pick<CursorSettings, "apiEndpoint">,
   environment: NodeJS.ProcessEnv = process.env,
+  allowKeychain = false,
+  keychainToken: () => Promise<string | null> = readMacCursorAccessToken,
 ) {
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
   return yield* Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const platform = yield* HostProcessPlatform;
+    const endpoint = (
+      settings.apiEndpoint?.trim() ||
+      environment.CURSOR_API_ENDPOINT?.trim() ||
+      DEFAULT_CURSOR_API_ENDPOINT
+    ).replace(/\/$/, "");
     let token = environment.CURSOR_AUTH_TOKEN?.trim();
     // An explicit API key can name a different account from the stored login.
     if (!token && environment.CURSOR_API_KEY?.trim()) {
       return makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" });
     }
     const credentialStore = environment.AGENT_CLI_CREDENTIAL_STORE;
-    if (
-      !token &&
-      (credentialStore === "memory" || (platform === "darwin" && credentialStore !== "file"))
-    ) {
-      // Cursor's default macOS login lives in the keychain; a leftover file may be another account.
+    if (!token && credentialStore === "memory") {
       return makeUnavailableUsageLimits({
         checkedAt,
         reason: "unsupported",
-        message: "Cursor usage requires a file-based login or CURSOR_AUTH_TOKEN.",
+        message: "Cursor usage requires a CLI login or CURSOR_AUTH_TOKEN.",
       });
     }
-    if (!token) {
+    if (!token && platform === "darwin" && credentialStore !== "file") {
+      if (!allowKeychain) {
+        return makeUnavailableUsageLimits({
+          checkedAt,
+          reason: "unsupported",
+          message: "Enable Cursor account usage in Pylon to read its Keychain login.",
+        });
+      }
+      if (endpoint !== DEFAULT_CURSOR_API_ENDPOINT) {
+        return makeUnavailableUsageLimits({
+          checkedAt,
+          reason: "unsupported",
+          message: "Cursor account usage requires the default Cursor endpoint when using Keychain.",
+        });
+      }
+      token = (yield* Effect.tryPromise(keychainToken))?.trim();
+    } else if (!token) {
       const home =
         (platform === "win32" ? environment.USERPROFILE : environment.HOME) || NodeOS.homedir();
       const directory =
@@ -103,11 +124,6 @@ export const readCursorUsageLimits = Effect.fn("readCursorUsageLimits")(function
     }
     if (!token) return makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" });
     const client = yield* HttpClient.HttpClient;
-    const endpoint = (
-      settings.apiEndpoint.trim() ||
-      environment.CURSOR_API_ENDPOINT?.trim() ||
-      "https://api2.cursor.sh"
-    ).replace(/\/$/, "");
     const response = yield* client.execute(
       HttpClientRequest.post(`${endpoint}/aiserver.v1.DashboardService/GetCurrentPeriodUsage`).pipe(
         HttpClientRequest.bearerToken(token),

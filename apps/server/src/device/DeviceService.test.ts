@@ -18,12 +18,12 @@ import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
-import { ServerSettingsService } from "../serverSettings.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as DeviceHost from "./DeviceHost.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 
-import { type DeviceService, makeWithHosts, stateStream } from "./DeviceService.ts";
+import * as DeviceService from "./DeviceService.ts";
 
 const baseState: DeviceServiceState = {
   hosts: [],
@@ -42,16 +42,14 @@ describe("DeviceService.stateStream", () => {
     Effect.gen(function* () {
       const pubsub = yield* PubSub.unbounded<DeviceServiceState>();
       const current = yield* Ref.make(baseState);
-      const service: Pick<DeviceService["Service"], "state" | "subscribe"> = {
+      const service: Pick<DeviceService.DeviceService["Service"], "state" | "subscribe"> = {
         state: Ref.get(current),
         subscribe: PubSub.subscribe(pubsub),
       };
 
-      const collected = yield* stateStream(service as DeviceService["Service"]).pipe(
-        Stream.take(3),
-        Stream.runCollect,
-        Effect.forkChild,
-      );
+      const collected = yield* DeviceService.stateStream(
+        service as DeviceService.DeviceService["Service"],
+      ).pipe(Stream.take(3), Stream.runCollect, Effect.forkChild);
       yield* Effect.yieldNow;
       for (const revision of [1, 2]) {
         const next = { ...baseState, revision, hostStatus: "ready" as const };
@@ -70,7 +68,7 @@ const fixture = Effect.fn("fixture")(function* (
   failListAfterShutdown = false,
   runtimeFailure?: DeviceHost.DeviceHostError,
   inspectError = false,
-  installTool?: Parameters<typeof makeWithHosts>[3],
+  installTool?: Parameters<typeof DeviceService.makeWithHosts>[3],
 ) {
   const settings = yield* Ref.make(DEFAULT_SERVER_SETTINGS);
   const starts: string[] = [];
@@ -132,7 +130,7 @@ const fixture = Effect.fn("fixture")(function* (
       starts.push("stop");
     }),
   };
-  const service = yield* makeWithHosts(
+  const service = yield* DeviceService.makeWithHosts(
     new Map([[host.id, host]]),
     undefined,
     (hostId) =>
@@ -144,9 +142,11 @@ const fixture = Effect.fn("fixture")(function* (
   ).pipe(
     Effect.provideService(DeviceHost.DeviceHost, host),
     Effect.provideService(
-      ServerSettingsService,
-      ServerSettingsService.of({
+      ServerSettings.ServerSettingsService,
+      ServerSettings.ServerSettingsService.of({
         mutateProviderInstances: () => Effect.die("unused"),
+        updateProviderInstance: () => Effect.die("Unexpected provider mutation"),
+        withSettingsSnapshot: (use) => Effect.flatMap(Ref.get(settings), use),
         start: Effect.void,
         ready: Effect.void,
         getSettings: Ref.get(settings),
@@ -539,7 +539,7 @@ it.effect.each([
           throw new Error(`Unexpected hub path: ${path}`);
         }),
       );
-      const service = yield* makeWithHosts(new Map([[host.id, host]])).pipe(
+      const service = yield* DeviceService.makeWithHosts(new Map([[host.id, host]])).pipe(
         Effect.provideService(HttpClient.HttpClient, http),
       );
       yield* service.list;
@@ -558,10 +558,7 @@ it.effect.each([
           (yield* service.state).devices.find((device) => device.id === deviceId)?.booted,
         ).toBe(true);
       }
-    }).pipe(
-      Effect.provide(ServerSettingsService.layerTest({ enableDeviceSupport: true })),
-      Effect.scoped,
-    ),
+    }).pipe(Effect.provide(ServerSettings.layerTest({ enableDeviceSupport: true })), Effect.scoped),
 );
 
 it.effect("retry keeps device and agent consent unchanged", () =>

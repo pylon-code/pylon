@@ -16,7 +16,6 @@ export function toProviderRespondToInteractionError(
         return "stale" as const;
       case "ProviderAdapterSessionNotFoundError":
       case "ProviderAdapterSessionClosedError":
-      case "ProviderSessionNotFoundError":
       case "ProviderInstanceNotFoundError":
       case "ProviderValidationError":
         return "session-not-ready" as const;

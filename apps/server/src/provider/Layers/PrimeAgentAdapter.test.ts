@@ -85,6 +85,7 @@ it.effect("rejects an MCP route owned by another provider instance before ACP la
             endpoint: "http://127.0.0.1:4321/mcp/mismatch",
             authorizationHeader: "Bearer must-not-route",
             capabilities: new Set(["preview"]),
+            browserToolsAvailable: false,
           }),
         ),
         () => Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId)),
@@ -185,6 +186,7 @@ exec ${process.execPath} ${mockAgentPath} "$@"
       endpoint: "http://127.0.0.1:4321/mcp/provider-session-prime-acp-test",
       authorizationHeader: "Bearer scoped-secret",
       capabilities: new Set(["preview"]),
+      browserToolsAvailable: false,
       expiresAt: 4_000_000_000_000,
     };
     yield* Effect.acquireRelease(

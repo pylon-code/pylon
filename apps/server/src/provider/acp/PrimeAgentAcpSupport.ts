@@ -8,7 +8,7 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 import type * as EffectAcpErrors from "effect-acp/errors";
-import type * as EffectAcpSchema from "effect-acp/schema";
+import type * as EffectAcpSchema from "effect-acp/compat";
 
 import { resolveProviderHomePath } from "../../pathExpansion.ts";
 import { sanitizePrimeAgentTopLevelEnvironment } from "../prime/PrimeAgentEnvironment.ts";

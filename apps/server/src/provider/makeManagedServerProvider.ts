@@ -16,13 +16,23 @@ import * as Stream from "effect/Stream";
 import * as Semaphore from "effect/Semaphore";
 
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
-import { ServerSettingsService } from "../serverSettings.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import { applyUsageLimitsUpdate, resolveUsageLimitsAfterProbe } from "./providerUsageLimits.ts";
 import type { ManagedServerProviderShape, ServerProviderShape } from "./Services/ServerProvider.ts";
 
 interface ProviderSnapshotState {
   readonly snapshot: ServerProvider;
   readonly enrichmentGeneration: number;
   readonly publishedModels: ServerProvider["models"] | null;
+}
+
+function withUsageLimits(
+  snapshot: ServerProvider,
+  usageLimits: ServerProvider["usageLimits"],
+): ServerProvider {
+  if (snapshot.usageLimits === usageLimits) return snapshot;
+  const { usageLimits: _previous, ...rest } = snapshot;
+  return usageLimits ? { ...rest, usageLimits } : rest;
 }
 
 function applyPublishedModels(
@@ -64,10 +74,10 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
 }): Effect.fn.Return<
   ManagedServerProviderShape,
   ServerSettingsError,
-  Scope.Scope | BackgroundPolicy.BackgroundPolicy | ServerSettingsService
+  Scope.Scope | BackgroundPolicy.BackgroundPolicy | ServerSettings.ServerSettingsService
 > {
   const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
-  const serverSettings = yield* ServerSettingsService;
+  const serverSettings = yield* ServerSettings.ServerSettingsService;
   const refreshSemaphore = yield* Semaphore.make(1);
   const changesPubSub = yield* Effect.acquireRelease(
     PubSub.unbounded<ServerProvider>(),
@@ -95,7 +105,7 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
         return [null, state] as const;
       }
       const overlaidSnapshot = applyPublishedModels(
-        nextSnapshot,
+        withUsageLimits(nextSnapshot, state.snapshot.usageLimits),
         state.publishedModels,
         input.reconcilePublishedModels,
       );
@@ -183,7 +193,13 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
         ? state.enrichmentGeneration + 1
         : state.enrichmentGeneration;
       const snapshot = applyPublishedModels(
-        checkedSnapshot,
+        withUsageLimits(
+          checkedSnapshot,
+          resolveUsageLimitsAfterProbe({
+            published: state.snapshot.usageLimits,
+            probed: checkedSnapshot.usageLimits,
+          }),
+        ),
         state.publishedModels,
         input.reconcilePublishedModels,
       );
@@ -204,6 +220,26 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
   });
   const applySnapshot = (nextSettings: Settings, options?: { readonly forceRefresh?: boolean }) =>
     refreshSemaphore.withPermits(1)(applySnapshotBase(nextSettings, options));
+
+  const applyUsageLimitsBase: ServerProviderShape["applyUsageLimits"] = (update) =>
+    Effect.gen(function* () {
+      if (!(yield* isCommitCurrent)) return;
+      const snapshotToPublish = yield* Ref.modify(snapshotStateRef, (state) => {
+        const usageLimits = applyUsageLimitsUpdate({
+          previous: state.snapshot.usageLimits,
+          update,
+          checkedAt: update.checkedAt,
+        });
+        if (usageLimits === state.snapshot.usageLimits) return [null, state] as const;
+        const snapshot = withUsageLimits(state.snapshot, usageLimits);
+        return [snapshot, { ...state, snapshot }] as const;
+      });
+      if (snapshotToPublish !== null && (yield* isCommitCurrent)) {
+        yield* PubSub.publish(changesPubSub, snapshotToPublish);
+      }
+    });
+  const applyUsageLimits: ServerProviderShape["applyUsageLimits"] = (update) =>
+    refreshSemaphore.withPermits(1)(applyUsageLimitsBase(update));
 
   const publishModelsBase = Effect.fn("publishModels")(function* (
     models: ServerProvider["models"],
@@ -355,6 +391,7 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     getSnapshot: Ref.get(snapshotStateRef).pipe(Effect.map((state) => state.snapshot)),
     refresh: refreshSnapshot().pipe(Effect.tapError(Effect.logError), Effect.orDie),
     publishModels,
+    applyUsageLimits,
     get streamChanges() {
       return Stream.fromPubSub(changesPubSub);
     },

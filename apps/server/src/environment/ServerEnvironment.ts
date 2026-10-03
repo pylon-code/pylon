@@ -221,6 +221,7 @@ export const make = Effect.gen(function* () {
       fileAttachments: { maxUploadBytes: PROVIDER_SEND_TURN_MAX_FILE_BYTES },
       pastedTextAttachments: true,
       pullRequests: true,
+      pullRequestChecks: true,
       inlineMessageContext: true,
       threadSettlement: true,
       threadAutoSettlement: true,
@@ -238,9 +239,11 @@ export const make = Effect.gen(function* () {
       threadActiveReorder: true,
       threadAutoSettleOptOut: true,
       threadTitleRegeneration: true,
+      threadVisitedTracking: true,
       threadPullRequests: true,
       pullRequestStackActions: true,
       threadPullRequestLinking: true,
+      serverResolvedCommandContext: true,
       environmentIcon: true,
       browserProfiles: true,
       projectDefaults: true,
@@ -248,11 +251,10 @@ export const make = Effect.gen(function* () {
       worktreeSetupTracking: true,
       bitbucketCredentials: true,
       ...(serverSelfUpdate === null ? {} : { serverSelfUpdate }),
+      // V2 restart recovery uses the environment-owned opt-in. The old
+      // per-update request flag is not wired into the V2 update RPC path.
       ...(serverSelfUpdate === "boot-service" || desktopAppUpdate
-        ? {
-            serverSelfUpdateProgress: true,
-            serverUpdateThreadContinuation: true,
-          }
+        ? { serverSelfUpdateProgress: true }
         : {}),
       ...(desktopAppUpdate ? { desktopAppUpdate: true } : {}),
     },

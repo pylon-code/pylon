@@ -574,6 +574,7 @@ export const makePrimeAgentTextGeneration = Effect.fn("makePrimeAgentTextGenerat
         message: input.message,
         previousTitle: input.previousTitle,
         attachments: input.attachments,
+        linkedContext: input.linkedContext,
       });
       const images = yield* materializeImageAttachments(input.attachments);
       const generated = yield* runPrimeAgentJson({
@@ -584,7 +585,10 @@ export const makePrimeAgentTextGeneration = Effect.fn("makePrimeAgentTextGenerat
         outputSchema,
         modelSelection: input.modelSelection,
       });
-      return { title: sanitizeThreadTitle(generated.title) };
+      return {
+        title: sanitizeThreadTitle(generated.title),
+        ...(generated.needsRefinement ? { needsRefinement: true } : {}),
+      };
     });
 
   return TextGeneration.TextGeneration.of({

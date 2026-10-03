@@ -240,13 +240,16 @@ it.layer(OpenCodeTextGenerationTestLayer)("OpenCodeTextGeneration", (it) => {
       Effect.gen(function* () {
         runtimeMock.state.promptResult = {
           data: {
-            parts: [{ type: "text", text: '{"title":"Review uploaded report"}' }],
+            parts: [
+              { type: "text", text: '{"title":"Review uploaded report","needsRefinement":true}' },
+            ],
           },
         };
 
-        yield* textGeneration.generateThreadTitle({
+        const generated = yield* textGeneration.generateThreadTitle({
           cwd: process.cwd(),
           message: "Review these attachments.",
+          linkedContext: "The report proposes shared account reset credits.",
           modelSelection: DEFAULT_TEST_MODEL_SELECTION,
           attachments: [
             {
@@ -266,8 +269,12 @@ it.layer(OpenCodeTextGenerationTestLayer)("OpenCodeTextGeneration", (it) => {
           ],
         });
 
+        expect(generated).toEqual({ title: "Review uploaded report", needsRefinement: true });
         expect(runtimeMock.state.promptParts[0]).toEqual([
-          expect.objectContaining({ type: "text" }),
+          expect.objectContaining({
+            type: "text",
+            text: expect.stringContaining("The report proposes shared account reset credits."),
+          }),
           expect.objectContaining({ type: "file", filename: "screenshot.png" }),
         ]);
       }),
