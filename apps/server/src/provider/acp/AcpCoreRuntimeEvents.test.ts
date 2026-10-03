@@ -189,6 +189,7 @@ describe("AcpCoreRuntimeEvents", () => {
           sessionId: "session-1",
           update: {
             sessionUpdate: "agent_thought_chunk",
+            messageId: "thought-1",
             content: { type: "text", text: "reasoning" },
           },
         },

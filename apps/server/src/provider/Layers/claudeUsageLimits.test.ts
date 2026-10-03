@@ -92,7 +92,12 @@ describe("claudeUsageResponseToLimits", () => {
         checkedAt,
         response: { rate_limits_available: false, rate_limits: null },
       }).limits,
-    ).toEqual({ checkedAt, windows: [], unavailable: { reason: "unsupported" } });
+    ).toEqual({
+      source: "provider",
+      checkedAt,
+      windows: [],
+      unavailable: { reason: "unsupported" },
+    });
   });
 
   it("skips a window the endpoint reports without a utilization", () => {

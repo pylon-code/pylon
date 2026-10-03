@@ -228,7 +228,7 @@ it.layer(NodeServices.layer)("migrate-dev-db", (it) => {
         { baseDir: isolated, source, projects: 5, threadsPerProject: 10 },
         { homeDir },
       );
-      assert.equal(result.databasePath, path.join(isolated, "userdata", "state.sqlite"));
+      assert.equal(result.databasePath, path.join(isolated, "userdata", "statev2.sqlite"));
     }),
   );
 
