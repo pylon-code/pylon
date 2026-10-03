@@ -14,6 +14,11 @@ attention. Color has a consistent meaning:
 Monitoring states remain still. Active progress can pulse, but Pylon stops that
 motion when your device has Reduce Motion enabled.
 
+With the [Working section (beta)](./thread-sidebar.md#fold-working-threads-beta)
+turned on, working, delegating, and monitoring threads keep these colors and
+counts inside the collapsed **Working** section. Approval, input, plan-ready,
+failed, and unread completed threads stay in the active list.
+
 Connection indicators use green for connected, amber for connecting or
 reconnecting, red for an error, and muted grey while offline. Connecting or
 reconnecting environments use an amber halo. Connected client sessions use a
