@@ -443,6 +443,41 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
     }).pipe(Effect.provide(makeKeybindingsLayer())),
   );
 
+  it.effect("applies a late default and the legacy numbered migration in one startup", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const { keybindingsConfigPath } = yield* ServerConfig.ServerConfig;
+      const keybindings = yield* Keybindings.Keybindings;
+      const when = "composerFocus && draftThreadRoute";
+      // A pre-late-default config that also carries the legacy numbered block.
+      const legacy = Keybindings.DEFAULT_KEYBINDINGS.flatMap((rule) => {
+        if (rule.command === "composer.sendBackground") {
+          return rule.key === "mod+alt+enter" ? [rule] : [];
+        }
+        if (rule.command.startsWith("thread.jump.")) {
+          return [{ key: rule.key, command: rule.command }];
+        }
+        if (rule.command.startsWith("modelPicker.jump.")) {
+          return [{ key: rule.key, command: rule.command, when: "modelPickerOpen" }];
+        }
+        return [rule];
+      });
+      yield* writeKeybindingsConfig(keybindingsConfigPath, legacy);
+
+      yield* keybindings.syncDefaultKeybindingsOnStartup;
+      const persisted = yield* readKeybindingsConfig(keybindingsConfigPath);
+      assert.equal(persisted.find((rule) => rule.command === "thread.jump.1")?.when, "isDesktop");
+      assert.deepStrictEqual(
+        persisted.filter((rule) => rule.command === "composer.sendBackground"),
+        [
+          { key: "mod+alt+enter", command: "composer.sendBackground", when },
+          { key: "mod+enter", command: "composer.sendBackground", when },
+        ],
+      );
+      assert.isTrue(yield* fs.exists(`${keybindingsConfigPath}.desktop-numbered-defaults-v1`));
+    }).pipe(Effect.provide(makeKeybindingsLayer())),
+  );
+
   it.effect("keeps a late default pending while the config is full", () =>
     Effect.gen(function* () {
       const { keybindingsConfigPath } = yield* ServerConfig.ServerConfig;
