@@ -317,6 +317,11 @@ import {
   sortProviderInstanceEntries,
 } from "../providerInstances";
 import {
+  getPortableThreadHandoffOffer,
+  resolveThreadHandoffTargetModel,
+} from "./chat/ThreadHandoff.logic";
+import { ThreadHandoffTab } from "./chat/ThreadHandoffTab";
+import {
   useClientSettings,
   useClientSettingsHydrated,
   useEnvironmentSettings,
@@ -402,10 +407,13 @@ import { useProjectClone } from "../state/projectClones";
 import { projectCloneDisplayName, projectCloneProgressSummary } from "@t3tools/contracts";
 import { useEnvironments, usePrimaryEnvironment } from "../state/environments";
 import {
+  readThreadActionProjection,
+  readThreadProjection,
   resolveThreadDetailRef,
   useProject,
   useProjects,
   useThreadProjection,
+  useLiveThreadProjection,
   useThreadStatus,
   useThreadHistory,
   useThreadShell,
@@ -1637,6 +1645,7 @@ export default function ChatView(props: ChatViewProps) {
   });
   const serverThreadProjection = useThreadProjection(routeThreadDetailRef);
   const serverProjection = serverThreadProjection?.projection ?? null;
+  const liveHandoffProjection = useLiveThreadProjection(routeThreadDetailRef);
   const threadStatus = useThreadStatus(routeThreadDetailRef);
   const threadSyncPhase = resolveThreadSyncPhase({
     detailExists: serverProjection !== null,
@@ -10112,6 +10121,117 @@ export default function ChatView(props: ChatViewProps) {
       settings,
     ],
   );
+  const threadHandoffBusy =
+    !isServerThread ||
+    !composerMounted ||
+    !clientSettingsHydrated ||
+    isSendBusy ||
+    isResuming ||
+    isConnecting ||
+    phase === "running" ||
+    phase === "connecting" ||
+    isRevertingCheckpoint ||
+    activeEnvironmentUnavailable ||
+    editingQueuedRun !== null ||
+    multipleModelSelections !== null;
+  const threadHandoffMessages = useMemo(
+    () => timelineEntries.flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
+    [timelineEntries],
+  );
+  const threadHandoffOffer = useMemo(
+    () =>
+      getPortableThreadHandoffOffer({
+        projection: liveHandoffProjection?.projection ?? null,
+        sessionOwner: liveHandoffProjection?.owner ?? null,
+        expectedSessionOwner: liveHandoffProjection?.owner ?? null,
+        selectedInstanceId: activeProviderInstanceId,
+        busy: Boolean(threadHandoffBusy),
+        entries: providerInstanceEntries,
+        messages: threadHandoffMessages,
+        usedTokens: activeContextWindow?.usedTokens,
+        maxTokens: activeContextWindow?.maxTokens ?? undefined,
+        nowMs: Date.parse(`${nowMinute}:00.000Z`),
+      }),
+    [
+      activeContextWindow,
+      activeProviderInstanceId,
+      liveHandoffProjection,
+      nowMinute,
+      providerInstanceEntries,
+      threadHandoffBusy,
+      threadHandoffMessages,
+    ],
+  );
+  const onSelectThreadHandoffAccount = useCallback(() => {
+    if (
+      threadHandoffOffer === null ||
+      liveHandoffProjection === null ||
+      threadHandoffBusy ||
+      sendInFlightRef.current ||
+      currentRouteThreadKeyRef.current !== routeThreadKey
+    ) {
+      return;
+    }
+    // A stale open popover cannot select an account after reconnect or after
+    // a run/request begins. Re-read capacity, live detail and draft ownership.
+    const currentAction = readThreadActionProjection(environmentId);
+    const currentProjection = readThreadProjection(routeThreadRef);
+    if (
+      currentProjection?.thread.modelSelection.instanceId !==
+      liveHandoffProjection.projection.thread.modelSelection.instanceId
+    ) {
+      return;
+    }
+    const currentProviders =
+      appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.providers ?? [];
+    const currentDraft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
+    const currentOffer = getPortableThreadHandoffOffer({
+      projection: currentProjection,
+      sessionOwner: currentAction?.owner ?? null,
+      expectedSessionOwner: liveHandoffProjection.owner,
+      selectedInstanceId:
+        currentDraft?.activeProvider ?? currentProjection?.thread.modelSelection.instanceId ?? null,
+      busy: false,
+      entries: applyProviderInstanceSettings(
+        deriveProviderInstanceEntries(currentProviders),
+        settings,
+      ),
+      messages: threadHandoffMessages,
+      usedTokens: activeContextWindow?.usedTokens,
+      maxTokens: activeContextWindow?.maxTokens ?? undefined,
+      nowMs: Date.now(),
+    });
+    if (currentOffer?.targetInstanceId !== threadHandoffOffer.targetInstanceId) return;
+    const model = resolveThreadHandoffTargetModel({
+      targetInstanceId: currentOffer.targetInstanceId,
+      settings,
+      providers: currentProviders,
+      selectedModel: composerRef.current?.getSendContext()?.selectedModel ?? composerSelectedModel,
+    });
+    if (model === null) {
+      toastManager.add({
+        type: "error",
+        title: `Can't continue on ${currentOffer.targetAccountName}`,
+        description: "That account reports no models. Refresh it in Settings → Providers.",
+      });
+      return;
+    }
+    onProviderModelSelect(currentOffer.targetInstanceId, model);
+  }, [
+    activeContextWindow,
+    composerDraftTarget,
+    composerRef,
+    composerSelectedModel,
+    environmentId,
+    liveHandoffProjection,
+    onProviderModelSelect,
+    routeThreadKey,
+    routeThreadRef,
+    settings,
+    threadHandoffBusy,
+    threadHandoffMessages,
+    threadHandoffOffer,
+  ]);
   const onEnvModeChange = useCallback(
     (mode: DraftThreadEnvMode) => {
       if (multipleModelSelections !== null) return;
@@ -10959,6 +11079,10 @@ export default function ChatView(props: ChatViewProps) {
                         aria-busy={isSavingQueuedEdit}
                       >
                         <div className="relative z-10">
+                          <ThreadHandoffTab
+                            offer={threadHandoffOffer}
+                            onContinue={onSelectThreadHandoffAccount}
+                          />
                           {showProviderSubagentBar ? (
                             <ProviderSubagentBar
                               provider={selectedProviderEntry ?? null}

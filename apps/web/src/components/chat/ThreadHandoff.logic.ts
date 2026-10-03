@@ -22,10 +22,19 @@
  *
  * @module components/chat/ThreadHandoff.logic
  */
-import type { ProviderInstanceId, ServerProvider, ThreadHandoffEstimate } from "@t3tools/contracts";
+import type {
+  OrchestrationV2ThreadProjection,
+  ProviderInstanceId,
+  ServerProvider,
+  ThreadHandoffEstimate,
+} from "@t3tools/contracts";
 import { estimateThreadHandoff, formatHandoffTokenCost } from "@t3tools/contracts";
 import type { ChatMessage } from "../../types";
 import type { UnifiedSettings } from "@t3tools/contracts/settings";
+import {
+  resolveActiveThreadRun,
+  threadSupportsProviderHandoff,
+} from "@t3tools/client-runtime/state/thread-workflows";
 
 import { getDiffLineStat, getRenderablePatch, resolveFileDiffPath } from "../../lib/diffRendering";
 import { resolveAppModelSelectionForInstance } from "../../modelSelection";
@@ -365,4 +374,37 @@ export function getThreadHandoffOffer(input: {
     costLabel: formatHandoffTokenCost(estimate.carriedTokens),
     carries,
   };
+}
+
+/** Offer the native next-message handoff only for the live, idle account on screen. */
+export function getPortableThreadHandoffOffer(
+  input: Omit<Parameters<typeof getThreadHandoffOffer>[0], "boundInstanceId"> & {
+    readonly projection: OrchestrationV2ThreadProjection | null;
+    readonly sessionOwner: object | null;
+    readonly expectedSessionOwner: object | null;
+    readonly selectedInstanceId: ProviderInstanceId | null;
+    readonly busy: boolean;
+  },
+): ThreadHandoffOffer | null {
+  const projection = input.projection;
+  if (
+    projection === null ||
+    input.expectedSessionOwner === null ||
+    input.sessionOwner !== input.expectedSessionOwner ||
+    input.busy ||
+    resolveActiveThreadRun(projection) !== null ||
+    projection.runs.some((run) => run.status === "queued") ||
+    projection.runtimeRequests.some((request) => request.status === "pending") ||
+    !threadSupportsProviderHandoff(projection)
+  ) {
+    return null;
+  }
+  const boundInstanceId =
+    projection.providerThreads.find(
+      (thread) => thread.id === projection.thread.activeProviderThreadId,
+    )?.providerInstanceId ?? projection.thread.modelSelection.instanceId;
+  // An explicit alternate selection already prepares this handoff. Do not
+  // offer another destination or overwrite that choice.
+  if (input.selectedInstanceId !== boundInstanceId) return null;
+  return getThreadHandoffOffer({ ...input, boundInstanceId });
 }

@@ -30,6 +30,8 @@ function createCitationRouter(initialEntry = "/environment-one/thread-one") {
   return createRouter({
     routeTree: root.addChildren([thread]),
     history: createMemoryHistory({ initialEntries: [initialEntry] }),
+    isServer: false,
+    origin: "http://localhost",
   });
 }
 

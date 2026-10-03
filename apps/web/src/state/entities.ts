@@ -221,18 +221,31 @@ export function watchThreadActionProjection(environmentId: EnvironmentId, onChan
   return appAtomRegistry.subscribe(threadActionProjectionAtom(environmentId), onChange);
 }
 
+const liveThreadProjectionAtom = Atom.family((ref: ScopedThreadRef | null) =>
+  Atom.make((get) => {
+    if (ref === null) return null;
+    const state = get(environmentThreadDetails.stateAtom(ref));
+    const actionProjection = get(threadActionProjectionAtom(ref.environmentId));
+    if (
+      state.status !== "live" ||
+      actionProjection === null ||
+      state.sessionOwner !== actionProjection.owner ||
+      Option.isNone(state.data)
+    ) {
+      return null;
+    }
+    return { projection: state.data.value, owner: actionProjection.owner };
+  }).pipe(Atom.withLabel(`web-live-thread-projection:${ref?.environmentId}:${ref?.threadId}`)),
+);
+
+/** Live detail must belong to the connection that owns the ordered shell. */
+export function useLiveThreadProjection(ref: ScopedThreadRef | null) {
+  return useAtomValue(liveThreadProjectionAtom(ref));
+}
+
 /** Current nested V2 projection for imperative confirmation guards. */
 export function readThreadProjection(ref: ScopedThreadRef) {
-  const state = appAtomRegistry.get(environmentThreadDetails.stateAtom(ref));
-  const actionProjection = readThreadActionProjection(ref.environmentId);
-  if (
-    state.status !== "live" ||
-    actionProjection === null ||
-    state.sessionOwner !== actionProjection.owner
-  ) {
-    return null;
-  }
-  return Option.getOrNull(state.data);
+  return appAtomRegistry.get(liveThreadProjectionAtom(ref))?.projection ?? null;
 }
 
 /** Imperative shell read for lifecycle actions. */

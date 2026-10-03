@@ -1,8 +1,13 @@
 import {
   DEFAULT_MODEL_BY_PROVIDER,
   MessageId,
+  NodeId,
   ProviderDriverKind,
   ProviderInstanceId,
+  RunId,
+  RuntimeRequestId,
+  type OrchestrationV2Run,
+  type OrchestrationV2RuntimeRequest,
   type ServerProvider,
   type ThreadHandoffEstimate,
 } from "@t3tools/contracts";
@@ -11,11 +16,13 @@ import type { ChatMessage } from "../../types";
 import { describe, expect, it } from "vite-plus/test";
 
 import { deriveProviderInstanceEntries } from "../../providerInstances";
+import { makeThreadProjectionFixture } from "../../test-fixtures";
 import {
   buildThreadHandoffSeed,
   CONDENSED_VERBATIM_TURN_COUNT,
   getThreadContinuationLinks,
   getThreadHandoffOffer,
+  getPortableThreadHandoffOffer,
   HANDOFF_DIFF_FILE_LIMIT,
   resolveThreadHandoffTargetModel,
   selectHandoffMessages,
@@ -490,5 +497,148 @@ describe("getThreadHandoffOffer", () => {
 
   it("stays silent when the thread has nothing worth carrying", () => {
     expect(offerFor([DRAINED_WORK(), HEALTHY_PERSONAL()], { usedTokens: 0 })).toBeNull();
+  });
+
+  describe("native portable handoff eligibility", () => {
+    const inputFor = () => {
+      const fixture = makeThreadProjectionFixture();
+      const instanceId = ProviderInstanceId.make("claude_work");
+      const owner = {};
+      return {
+        projection: {
+          ...fixture,
+          thread: {
+            ...fixture.thread,
+            providerInstanceId: instanceId,
+            modelSelection: { instanceId, model: "claude-sonnet-4-6" },
+            historyOrigin: "v1_import" as const,
+          },
+        },
+        sessionOwner: owner,
+        expectedSessionOwner: owner,
+        selectedInstanceId: instanceId,
+        busy: false,
+        entries: deriveProviderInstanceEntries([DRAINED_WORK(), HEALTHY_PERSONAL()]),
+        messages: conversation(4),
+        usedTokens: 31_000,
+        maxTokens: 1_000_000,
+        nowMs: NOW_MS,
+      };
+    };
+    const runFor = (status: OrchestrationV2Run["status"]) => {
+      const { projection } = inputFor();
+      return {
+        id: RunId.make("handoff-run"),
+        threadId: projection.thread.id,
+        ordinal: 1,
+        providerInstanceId: projection.thread.providerInstanceId,
+        modelSelection: projection.thread.modelSelection,
+        providerThreadId: null,
+        userMessageId: MessageId.make("handoff-message"),
+        rootNodeId: null,
+        activeAttemptId: null,
+        status,
+        requestedAt: projection.updatedAt,
+        startedAt: null,
+        completedAt: null,
+        checkpointId: null,
+        contextHandoffId: null,
+      } satisfies OrchestrationV2Run;
+    };
+
+    it("offers a healthy account for a live idle imported thread", () => {
+      expect(getPortableThreadHandoffOffer(inputFor())?.targetInstanceId).toBe("claude_personal");
+    });
+
+    it("rejects cached, replaced-session, or unavailable detail", () => {
+      const input = inputFor();
+      expect(getPortableThreadHandoffOffer({ ...input, sessionOwner: null })).toBeNull();
+      expect(getPortableThreadHandoffOffer({ ...input, expectedSessionOwner: {} })).toBeNull();
+      expect(getPortableThreadHandoffOffer({ ...input, expectedSessionOwner: null })).toBeNull();
+      expect(getPortableThreadHandoffOffer({ ...input, projection: null })).toBeNull();
+      expect(getPortableThreadHandoffOffer({ ...input, busy: true })).toBeNull();
+    });
+
+    it("preserves an account the user already selected", () => {
+      expect(
+        getPortableThreadHandoffOffer({
+          ...inputFor(),
+          selectedInstanceId: ProviderInstanceId.make("claude_personal"),
+        }),
+      ).toBeNull();
+    });
+
+    it.each(["preparing", "starting", "running", "waiting", "queued"] as const)(
+      "does not offer a switch while a run is %s",
+      (status) => {
+        const input = inputFor();
+        expect(
+          getPortableThreadHandoffOffer({
+            ...input,
+            projection: { ...input.projection, runs: [runFor(status)] },
+          }),
+        ).toBeNull();
+      },
+    );
+
+    it("requires outstanding runtime requests to settle first", () => {
+      const input = inputFor();
+      const request = {
+        id: RuntimeRequestId.make("handoff-question"),
+        nodeId: NodeId.make("handoff-node"),
+        providerTurnId: null,
+        nativeRequestRef: null,
+        kind: "user_input",
+        status: "pending",
+        responseCapability: { type: "message" },
+        createdAt: input.projection.updatedAt,
+        resolvedAt: null,
+      } satisfies OrchestrationV2RuntimeRequest;
+      expect(
+        getPortableThreadHandoffOffer({
+          ...input,
+          projection: { ...input.projection, runtimeRequests: [request] },
+        }),
+      ).toBeNull();
+      expect(
+        getPortableThreadHandoffOffer({
+          ...input,
+          projection: {
+            ...input.projection,
+            runtimeRequests: [{ ...request, status: "resolved" }],
+          },
+        })?.targetInstanceId,
+      ).toBe("claude_personal");
+    });
+
+    it("requires the native thread to support portable provider handoff", () => {
+      const input = inputFor();
+      expect(
+        getPortableThreadHandoffOffer({
+          ...input,
+          projection: {
+            ...input.projection,
+            thread: { ...input.projection.thread, historyOrigin: "native" },
+            runs: [runFor("completed")],
+          },
+        }),
+      ).toBeNull();
+    });
+
+    it("revalidates capacity before selecting an account", () => {
+      const input = inputFor();
+      expect(
+        getPortableThreadHandoffOffer({
+          ...input,
+          nowMs: Date.parse("2026-08-05T21:00:00.000Z"),
+        }),
+      ).toBeNull();
+      expect(
+        getPortableThreadHandoffOffer({
+          ...input,
+          entries: deriveProviderInstanceEntries([DRAINED_WORK()]),
+        }),
+      ).toBeNull();
+    });
   });
 });

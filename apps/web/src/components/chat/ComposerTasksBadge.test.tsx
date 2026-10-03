@@ -177,13 +177,16 @@ describe("ComposerTasksBadge", () => {
             ? "Waiting on agents"
             : "Waiting on external system";
       expect(markup).toContain(label);
+      const indicator = markup.match(/<span class="([^"]*)"[^>]*>([●○])<\/span>/);
+      expect(indicator).not.toBeNull();
+      const classes = indicator?.[1]?.split(" ");
       if (waitingOn === "user") {
-        expect(markup).toContain("●");
-        expect(markup).toContain("text-warning");
+        expect(indicator?.[2]).toBe("●");
+        expect(classes).toContain("text-warning");
       } else {
-        expect(markup).toContain("○");
-        expect(markup).toContain("text-muted-foreground/50");
-        expect(markup).not.toContain("text-warning");
+        expect(indicator?.[2]).toBe("○");
+        expect(classes).toContain("text-muted-foreground/50");
+        expect(classes).not.toContain("text-warning");
       }
     },
   );
