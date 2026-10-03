@@ -290,33 +290,6 @@ function makeThread(
   };
 }
 
-describe("Relay ownership receipts", () => {
-  it("keeps internal bindings out of the mobile conversation feed", () => {
-    const thread = makeThread({
-      id: ThreadId.make("thread-relay"),
-      projectId: ProjectId.make("project-relay"),
-      title: "Relay proof",
-      activities: [
-        makeActivity({
-          id: EventId.make("relay-binding"),
-          kind: "relay.binding",
-          summary: "Relay binding",
-          createdAt: "2026-04-01T00:00:00.000Z",
-          payload: { id: "job-1", environmentId: "env-1", threadId: "thread-relay" },
-        }),
-        makeActivity({
-          id: EventId.make("relay-activation"),
-          kind: "relay.activation",
-          summary: "Relay activation",
-          createdAt: "2026-04-01T00:00:01.000Z",
-          payload: { id: "job-1", attempt: 2, toolCallId: "tool-2" },
-        }),
-      ],
-    });
-    expect(buildThreadFeed(thread)).toEqual([]);
-  });
-});
-
 describe("buildThreadFeed", () => {
   it("reuses unchanged feed and presentation rows during an assistant text update", () => {
     const completedTurnId = TurnId.make("completed-turn");
@@ -3667,70 +3640,6 @@ describe("quiet timeline: nested agents", () => {
     },
   );
 
-  it("places recovered Relay cards beside their original dispatch after history pagination", () => {
-    const oldTime = "2026-09-24T10:00:00.000Z";
-    const restartTime = "2026-09-27T11:00:00.000Z";
-    const receipt = makeActivity({
-      id: EventId.make("original-dispatch"),
-      kind: "tool.completed",
-      summary: "Relay dispatch",
-      turnId: TurnId.make("old-turn"),
-      createdAt: oldTime,
-      sequence: 1,
-      payload: { toolCallId: "dispatch", status: "completed", itemType: "mcp_tool_call" },
-    });
-    const start = makeActivity({
-      id: EventId.make("recovered-start"),
-      kind: "task.started",
-      summary: "Relay worker started",
-      turnId: TurnId.make("old-turn"),
-      createdAt: restartTime,
-      sequence: 100,
-      payload: {
-        taskId: "relay:job-old",
-        agentKind: "agent",
-        source: "relay",
-        toolUseId: "dispatch",
-        timelineBypass: true,
-      },
-    });
-    const recent = makeActivity({
-      id: EventId.make("recent-work"),
-      kind: "tool.completed",
-      summary: "Recent work",
-      turnId: TurnId.make("new-turn"),
-      createdAt: "2026-09-27T10:00:00.000Z",
-      sequence: 2,
-      payload: { toolCallId: "new-dispatch", status: "completed" },
-    });
-    const rows = (activities: ReadonlyArray<OrchestrationThreadActivity>) =>
-      buildThreadFeed(
-        makeThread({
-          id: ThreadId.make("relay-thread"),
-          projectId: ProjectId.make("project-1"),
-          title: "Relay recovery",
-          activities,
-        }),
-      ).flatMap((entry) => (entry.type === "activity-group" ? entry.activities : []));
-    expect(rows([start, recent]).find((entry) => entry.workEntry.agentSpawn)?.createdAt).toBe(
-      restartTime,
-    );
-    const recoveredRows = rows([receipt, recent, start]);
-    expect(recoveredRows.find((entry) => entry.workEntry.agentSpawn)?.createdAt).toBe(oldTime);
-    expect(recoveredRows.findIndex((entry) => entry.workEntry.agentSpawn)).toBeLessThan(
-      recoveredRows.findIndex((entry) => entry.id === "recent-work"),
-    );
-    expect(start.createdAt).toBe(restartTime);
-    const native = {
-      ...start,
-      id: EventId.make("native-start"),
-      payload: { taskId: "native", agentKind: "agent", toolUseId: "dispatch" },
-    };
-    expect(rows([receipt, native]).find((entry) => entry.workEntry.agentSpawn)?.createdAt).toBe(
-      restartTime,
-    );
-  });
-
   it("folds bypassed Claude workflow members into the coordinator's batch and settles them with it", () => {
     const turnId = TurnId.make("turn-workflow");
     const at = (seconds: number) => `2026-04-01T00:00:${String(seconds).padStart(2, "0")}.000Z`;
@@ -3807,43 +3716,6 @@ describe("quiet timeline: nested agents", () => {
       },
     });
     expect(rows[0]?.getFullDetail()).toBe("Reviewer 0 · completed\nReviewer 1 · completed");
-  });
-
-  it("groups Relay panel members with their coordinator in one mobile spawn card", () => {
-    const panel = "relay-panel:panel-22222222-2222-4222-8222-222222222222";
-    const turnId = TurnId.make("turn-relay-panel");
-    const activities = [panel, `${panel}:member:0`, `${panel}:member:1`].map((taskId, index) =>
-      makeActivity({
-        id: EventId.make(`relay-panel-${index}`),
-        kind: "task.started",
-        summary: index === 0 ? "Relay panel started" : "Relay worker started",
-        createdAt: `2026-04-01T00:00:0${index}.000Z`,
-        turnId,
-        payload: {
-          taskId,
-          taskType: index === 0 ? "local_workflow" : "subagent",
-          workflowName: "Relay panel",
-          agentKind: "agent",
-          source: "relay",
-          status: "running",
-          timelineBypass: true,
-        },
-      }),
-    );
-    const thread = makeThread({
-      id: ThreadId.make("thread-relay-panel"),
-      projectId: ProjectId.make("project-1"),
-      title: "Relay panel",
-      activities,
-    });
-    const rows = buildThreadFeed(thread).flatMap((entry) =>
-      entry.type === "activity-group" ? entry.activities : [],
-    );
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.workEntry.agentSpawn).toMatchObject({
-      workflowId: panel,
-      agentTaskIds: [panel, `${panel}:member:0`, `${panel}:member:1`],
-    });
   });
 
   it("summarizes a spawn card from the newest member report and the batch outcome", () => {

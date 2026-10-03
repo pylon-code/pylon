@@ -70,7 +70,6 @@ import { type CodexAdapterShape } from "../Services/CodexAdapter.ts";
 import { BUILT_IN_ADAPTER_CONVERSATION_ROLLBACK_MODES } from "../Services/ProviderAdapter.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
-import { relayCliFromEnvironment, relayCodexAppServerArgs } from "../relayMcpConfig.ts";
 import {
   CodexResumeCursorSchema,
   CodexSessionRuntimeThreadIdMissingError,
@@ -2309,7 +2308,6 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             ? getCodexServiceTierOptionValue(input.modelSelection)
             : undefined;
         const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
-        const relayCli = relayCliFromEnvironment(options?.environment ?? process.env);
         const hasPrivateResumeProof =
           typeof input.resumeCursor === "object" &&
           input.resumeCursor !== null &&
@@ -2355,20 +2353,15 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
                 mcpCapabilities: mcpSession.capabilities,
               }
             : {}),
-          ...(mcpSession || relayCli
+          ...(mcpSession
             ? {
                 appServerArgs: [
-                  ...(mcpSession
-                    ? [
-                        "-c",
-                        `mcp_servers.t3-code.url=${mcpSession.endpoint}`,
-                        "-c",
-                        'mcp_servers.t3-code.bearer_token_env_var="T3_MCP_BEARER_TOKEN"',
-                        "-c",
-                        `mcp_servers.t3-code.tool_timeout_sec=${(McpProviderSession.MCP_PROVIDER_TOOL_TIMEOUT_MS / 1000).toFixed(1)}`,
-                      ]
-                    : []),
-                  ...(relayCli ? relayCodexAppServerArgs(relayCli) : []),
+                  "-c",
+                  `mcp_servers.t3-code.url=${mcpSession.endpoint}`,
+                  "-c",
+                  'mcp_servers.t3-code.bearer_token_env_var="T3_MCP_BEARER_TOKEN"',
+                  "-c",
+                  `mcp_servers.t3-code.tool_timeout_sec=${(McpProviderSession.MCP_PROVIDER_TOOL_TIMEOUT_MS / 1000).toFixed(1)}`,
                 ],
               }
             : {}),

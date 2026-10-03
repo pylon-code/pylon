@@ -126,8 +126,6 @@
   "src/orchestration/Normalizer.test.ts": 0.5,
   "src/orchestration/ProjectSettingsReactor.test.ts": 0.5,
   "src/orchestration/PullRequestSyncReactor.test.ts": 2,
-  "src/orchestration/RelayCli.test.ts": 0.5,
-  "src/orchestration/RelayWorkerBridge.test.ts": 4.4,
   "src/orchestration/ThreadBackgroundLiveness.test.ts": 0.6,
   "src/orchestration/ThreadLiveEventCoalescer.test.ts": 0.6,
   "src/orchestration/ThreadPlanProgress.test.ts": 0.5,

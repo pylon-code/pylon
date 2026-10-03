@@ -88,7 +88,6 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
-import { relayCliFromEnvironment } from "../relayMcpConfig.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { resolveClaudeSdkExecutablePath } from "../Drivers/ClaudeExecutable.ts";
 import { claudeSignedOutMessage, makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
@@ -5452,7 +5451,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     const sessionEnvironment = claudeSettings.taskTools
       ? { ...claudeEnvironment, CLAUDE_CODE_ENABLE_TODO_TOOLS: "1" }
       : claudeEnvironment;
-    const relayCli = relayCliFromEnvironment(sessionEnvironment);
     const queryOptions: ClaudeQueryOptions = {
       ...(input.cwd ? { cwd: input.cwd } : {}),
       ...(apiModelId ? { model: apiModelId } : {}),
@@ -5487,21 +5485,14 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       env: McpProviderSession.withAgentDeviceEnvironment(sessionEnvironment, mcpSession),
       additionalDirectories,
       ...(Object.keys(extraArgs).length > 0 ? { extraArgs } : {}),
-      ...(mcpSession || relayCli
+      ...(mcpSession
         ? {
             mcpServers: {
-              ...(mcpSession
-                ? {
-                    "t3-code": {
-                      type: "http" as const,
-                      url: mcpSession.endpoint,
-                      headers: { Authorization: mcpSession.authorizationHeader },
-                    },
-                  }
-                : {}),
-              ...(relayCli
-                ? { relay: { command: process.execPath, args: [relayCli, "mcp"] } }
-                : {}),
+              "t3-code": {
+                type: "http" as const,
+                url: mcpSession.endpoint,
+                headers: { Authorization: mcpSession.authorizationHeader },
+              },
             },
           }
         : {}),

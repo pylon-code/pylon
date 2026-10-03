@@ -483,7 +483,6 @@ import {
   buildLoadingThreadFromShell,
   buildRunningThreadTurnInterruptInput,
   buildThreadTurnInterruptInput,
-  planBackgroundAgentStop,
   collectLocalTimelineMessageIds,
   collectUserMessageBlobPreviewUrls,
   createLocalDispatchSnapshot,
@@ -3184,13 +3183,8 @@ export default function ChatView(props: ChatViewProps) {
     (activeThread.session.status === "ready" || activeThread.session.status === "running") &&
     supportsSessionAgentCancel(activeSessionProviderStatus);
   const canCancelAgent = useCallback(
-    (agent: RuntimeSubagent) =>
-      canCancelSessionAgent(
-        agent,
-        canCancelSessionAgents,
-        activeEnvironmentConnectionPhase === "connected",
-      ),
-    [activeEnvironmentConnectionPhase, canCancelSessionAgents],
+    (agent: RuntimeSubagent) => canCancelSessionAgent(agent, canCancelSessionAgents),
+    [canCancelSessionAgents],
   );
   const canMessageSessionAgents =
     agentSessionLive &&
@@ -6705,29 +6699,13 @@ export default function ChatView(props: ChatViewProps) {
     switchGitRef,
     updateThreadMetadata,
   ]);
-  // Background work can outlive the turn. The banner addresses each detached
-  // Relay worker through agent cancellation, then interrupts native work on
+  // Background work can outlive the turn. The banner interrupts that work on
   // the parent session when it is still available.
   const activeBackgroundLiveness =
     !isWorking && activeThread ? (activeThreadShell?.backgroundLiveness ?? null) : null;
-  const backgroundStopPlan = useMemo(
-    () =>
-      planBackgroundAgentStop(
-        runtimeSubagents,
-        canCancelAgent,
-        activeEnvironmentConnectionPhase === "connected" &&
-          (activeThread?.session?.status === "ready" ||
-            activeThread?.session?.status === "running"),
-        activeThreadShell?.nativeBackgroundWork,
-      ),
-    [
-      activeEnvironmentConnectionPhase,
-      activeThread?.session?.status,
-      activeThreadShell?.nativeBackgroundWork,
-      canCancelAgent,
-      runtimeSubagents,
-    ],
-  );
+  const canStopBackgroundWork =
+    activeEnvironmentConnectionPhase === "connected" &&
+    (activeThread?.session?.status === "ready" || activeThread?.session?.status === "running");
   const [isStoppingBackgroundWork, setIsStoppingBackgroundWork] = useState(false);
   useEffect(() => {
     // "Stopping..." holds until the liveness clears; the interrupt command
@@ -6742,29 +6720,17 @@ export default function ChatView(props: ChatViewProps) {
     setIsStoppingBackgroundWork(false);
   }, [activeThreadId]);
   const handleStopBackgroundWork = useCallback(async () => {
-    if (!activeThread || !backgroundStopPlan.canStopAll) return;
+    if (!activeThread || !canStopBackgroundWork) return;
     setIsStoppingBackgroundWork(true);
     let failed = false;
     let reportFailure = false;
-    for (const agentId of backgroundStopPlan.relayAgentIds) {
-      const result = await cancelThreadSessionAgent({
-        environmentId,
-        input: { threadId: activeThread.id, agentId: RuntimeTaskId.make(agentId) },
-      });
-      if (result._tag === "Failure") {
-        failed = true;
-        reportFailure ||= !isAtomCommandInterrupted(result);
-      }
-    }
-    if (backgroundStopPlan.interruptParent) {
-      const result = await interruptThreadTurn({
-        environmentId,
-        input: buildThreadTurnInterruptInput(activeThread),
-      });
-      if (result._tag === "Failure") {
-        failed = true;
-        reportFailure ||= !isAtomCommandInterrupted(result);
-      }
+    const result = await interruptThreadTurn({
+      environmentId,
+      input: buildThreadTurnInterruptInput(activeThread),
+    });
+    if (result._tag === "Failure") {
+      failed = true;
+      reportFailure ||= !isAtomCommandInterrupted(result);
     }
     if (failed) {
       setIsStoppingBackgroundWork(false);
@@ -6772,14 +6738,7 @@ export default function ChatView(props: ChatViewProps) {
         setThreadError(activeThread.id, "Could not stop all background work.");
       }
     }
-  }, [
-    activeThread,
-    backgroundStopPlan,
-    cancelThreadSessionAgent,
-    environmentId,
-    interruptThreadTurn,
-    setThreadError,
-  ]);
+  }, [activeThread, canStopBackgroundWork, environmentId, interruptThreadTurn, setThreadError]);
   const agentsSurfaceOnScreen = rightPanelOpen && activeRightPanelSurface?.kind === "agents";
   const backgroundLivenessBannerItem = useMemo<ComposerBannerStackItem | null>(() => {
     if (activeBackgroundLiveness === null || !activeThread) {
@@ -6817,12 +6776,12 @@ export default function ChatView(props: ChatViewProps) {
           <Button
             size="xs"
             variant="ghost"
-            disabled={isStoppingBackgroundWork || !backgroundStopPlan.canStopAll}
+            disabled={isStoppingBackgroundWork || !canStopBackgroundWork}
             onClick={() => void handleStopBackgroundWork()}
           >
             {isStoppingBackgroundWork
               ? "Stopping..."
-              : backgroundStopPlan.canStopAll
+              : canStopBackgroundWork
                 ? "Stop"
                 : "Stop unavailable"}
           </Button>
@@ -6835,7 +6794,7 @@ export default function ChatView(props: ChatViewProps) {
     addAgentsSurface,
     agentsSurfaceOnScreen,
     agentPanelModel.liveCount,
-    backgroundStopPlan.canStopAll,
+    canStopBackgroundWork,
     handleStopBackgroundWork,
     isStoppingBackgroundWork,
   ]);

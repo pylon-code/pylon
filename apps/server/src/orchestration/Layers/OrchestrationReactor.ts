@@ -14,7 +14,6 @@ import * as PullRequestSyncReactor from "../PullRequestSyncReactor.ts";
 import * as ProjectSettingsReactor from "../ProjectSettingsReactor.ts";
 import * as ThreadPullRequestReactor from "../ThreadPullRequestReactor.ts";
 import * as AgentAwarenessRelay from "../../relay/AgentAwarenessRelay.ts";
-import { RelayWorkerBridge } from "../RelayWorkerBridge.ts";
 import * as Option from "effect/Option";
 
 export const makeOrchestrationReactor = Effect.gen(function* () {
@@ -27,7 +26,6 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
   const threadPullRequestReactor = yield* ThreadPullRequestReactor.ThreadPullRequestReactor;
   const projectSettingsReactor = yield* ProjectSettingsReactor.ProjectSettingsReactor;
   const agentAwarenessRelay = yield* AgentAwarenessRelay.AgentAwarenessRelay;
-  const relayWorkerBridge = Option.getOrUndefined(yield* Effect.serviceOption(RelayWorkerBridge));
 
   const start: OrchestrationReactorShape["start"] = Effect.fn("start")(function* () {
     yield* providerRuntimeIngestion.start();
@@ -39,7 +37,6 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
     yield* threadSettlementReactor.start();
     yield* pullRequestSyncReactor.start();
     yield* agentAwarenessRelay.start();
-    if (relayWorkerBridge) yield* relayWorkerBridge.start;
   });
 
   return {

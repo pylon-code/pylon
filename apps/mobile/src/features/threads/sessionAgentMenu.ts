@@ -29,12 +29,7 @@ export function buildSessionAgentMenuActions(input: {
   return input.agents.flatMap((agent) => {
     if (!isActiveSubagentStatus(agent.status)) return [];
     const actions: SessionAgentMenuAction[] = [];
-    if (
-      input.canWatchLiveActivity &&
-      agent.watchable !== false &&
-      agent.source !== "relay" &&
-      agent.kind !== "workflow"
-    ) {
+    if (input.canWatchLiveActivity && agent.watchable !== false && agent.kind !== "workflow") {
       actions.push({
         id: `${LIVE_ACTIVITY_PREFIX}${encodeURIComponent(input.scopeKey)}:${encodeURIComponent(agent.id)}`,
         title: `Live activity · ${agent.title}`,
@@ -42,12 +37,7 @@ export function buildSessionAgentMenuActions(input: {
         image: "eye",
       });
     }
-    if (
-      input.canMessage &&
-      agent.source !== "relay" &&
-      agent.messageable &&
-      agent.kind !== "workflow"
-    ) {
+    if (input.canMessage && agent.messageable && agent.kind !== "workflow") {
       actions.push({
         id: `${MESSAGE_PREFIX}${encodeURIComponent(input.scopeKey)}:${encodeURIComponent(agent.id)}`,
         title: `Message ${agent.title}`,
