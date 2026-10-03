@@ -40,6 +40,8 @@ export class CodexAppServerClient extends Context.Service<
   CodexAppServerClient,
   {
     readonly raw: CodexAppServerClientRaw;
+    /** Waits until the app-server process or transport ends and returns why. */
+    readonly awaitTermination: Effect.Effect<CodexError.CodexAppServerError>;
     readonly request: <M extends CodexRpc.ClientRequestMethod>(
       method: M,
       payload: CodexRpc.ClientRequestParamsByMethod[M],
@@ -252,6 +254,7 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
       respond: transport.respond,
       respondError: transport.respondError,
     },
+    awaitTermination: transport.awaitTermination,
     request,
     notify,
     handleServerRequest: (method, handler) =>
