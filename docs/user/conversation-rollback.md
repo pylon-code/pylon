@@ -6,7 +6,7 @@ Choose **Revert and keep changes** to preserve workspace files, or **Revert file
 
 The selected prompt, attachments, and inline context return to the web or desktop composer for editing. Any unsent draft stays above the restored prompt. Later conversation leaves the active history after rollback succeeds. This does not undo external actions or separate provider memory.
 
-Rollback availability depends on the active provider, its conversation history, and the saved checkpoint. Prime's initial v2 bridge does not support native conversation rollback, so Prime does not offer this action.
+Rollback availability depends on the active provider, its conversation history, and the saved checkpoint. Prime's initial v2 integration does not offer conversation rollback in either native daemon or ACP compatibility mode. Pylon can still record Prime filesystem checkpoints, but a checkpoint does not enable the rollback action. Rolling back a managed Prime build changes its executable and is separate from reverting a conversation.
 
 ## Failure and queued messages
 
