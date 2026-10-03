@@ -85,6 +85,12 @@ function makeController(input: {
 
 const server = () => identity(process.pid, 1, process.pid, process.pid, "server");
 
+// Linux caps PIDs at PID_MAX_LIMIT (2^22) and macOS below 100_000, so synthetic
+// PIDs from this base can never alias the test worker's real process.pid. The
+// termination path deliberately never signals its own PID, process group, or
+// session, so an aliased fake process would be retained by design.
+const syntheticPidBase = 4_194_304;
+
 function processExists(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -655,7 +661,12 @@ describe("terminatePosixOwnedProcessTree", () => {
   it.live("rotates more than 64 live parents without scanning retained tombstones", () =>
     Effect.gen(function* () {
       const parents = Array.from({ length: 130 }, (_, index) =>
-        identity(1_000 + index, 100, 1_000 + index, 1_000 + index),
+        identity(
+          syntheticPidBase + 1_000 + index,
+          100,
+          syntheticPidBase + 1_000 + index,
+          syntheticPidBase + 1_000 + index,
+        ),
       );
       let childListReads = 0;
       let identityCalls = 0;
@@ -683,7 +694,8 @@ describe("terminatePosixOwnedProcessTree", () => {
       const ledger = new Map<string, AcpOwnedPosixProcess>();
       const root: AcpPosixOwnershipRoot = { value: undefined };
       for (let index = 0; index < 5_000; index += 1) {
-        const tombstone = identity(100_000 + index, 1, 100_000 + index, 100_000 + index);
+        const tombstonePid = syntheticPidBase + 100_000 + index;
+        const tombstone = identity(tombstonePid, 1, tombstonePid, tombstonePid);
         ledger.set(`${tombstone.pid}:${tombstone.startTime}`, {
           ...tombstone,
           parentExecutable: undefined,
