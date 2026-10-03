@@ -10,10 +10,12 @@ import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { useCheckpointDiff } from "../../state/queries";
 import { useEnvironmentQuery } from "../../state/query";
 import { reviewEnvironment } from "../../state/review";
+import { vcsEnvironment } from "../../state/vcs";
 import { useSelectedThreadProjection } from "../../state/use-thread-detail";
 import { useSelectedThreadWorktree } from "../../state/use-selected-thread-worktree";
 import {
   buildReviewSectionItems,
+  type ChangesIncludeWorkingTree,
   getDefaultReviewSectionId,
   getReadyReviewCheckpoints,
   getReviewSectionIdForCheckpoint,
@@ -45,6 +47,20 @@ export function useReviewSections(input: {
         })
       : null,
   );
+  const gitStatus = useEnvironmentQuery(
+    enabled && environmentId !== undefined && selectedThreadCwd !== null
+      ? vcsEnvironment.status({
+          environmentId,
+          input: { cwd: selectedThreadCwd },
+        })
+      : null,
+  );
+  // Servers that report Changes totals diff Changes against the working tree; older ones
+  // diff it up to HEAD. Unknown until status loads (or when it cannot load).
+  const changesIncludeWorkingTree: ChangesIncludeWorkingTree = gitStatus.data
+    ? gitStatus.data.branchChanges !== undefined
+    : undefined;
+  const gitStatusSettled = gitStatus.data !== undefined || gitStatus.error != null;
   const { loadingTurnIds } = reviewCache.asyncState;
 
   useEffect(() => {
@@ -78,8 +94,10 @@ export function useReviewSections(input: {
         turnDiffById: reviewCache.turnDiffById,
         loadingTurnIds,
         loadingGitSections: diffPreview.isPending,
+        changesIncludeWorkingTree,
       }),
     [
+      changesIncludeWorkingTree,
       diffPreview.isPending,
       diffPreview.data?.sources,
       loadingTurnIds,
@@ -88,16 +106,17 @@ export function useReviewSections(input: {
       reviewCache.turnDiffById,
     ],
   );
+  const fallbackSectionId = useMemo(
+    () => getDefaultReviewSectionId(reviewSections, changesIncludeWorkingTree),
+    [changesIncludeWorkingTree, reviewSections],
+  );
   const selectedSection = useMemo(
     () =>
       reviewSections.find((section) => section.id === reviewCache.selectedSectionId) ??
+      reviewSections.find((section) => section.id === fallbackSectionId) ??
       reviewSections[0] ??
       null,
-    [reviewCache.selectedSectionId, reviewSections],
-  );
-  const fallbackSectionId = useMemo(
-    () => getDefaultReviewSectionId(reviewSections),
-    [reviewSections],
+    [fallbackSectionId, reviewCache.selectedSectionId, reviewSections],
   );
   const selectedSectionIdExists = useMemo(
     () =>
@@ -108,7 +127,10 @@ export function useReviewSections(input: {
   );
 
   useEffect(() => {
+    // Wait for git status before persisting a default: it decides which git section
+    // matches the thread's counts. Until then the fallback is shown without being stored.
     if (
+      gitStatusSettled &&
       reviewSections.length > 0 &&
       reviewCache.threadKey &&
       (!reviewCache.selectedSectionId || !selectedSectionIdExists)
@@ -117,6 +139,7 @@ export function useReviewSections(input: {
     }
   }, [
     fallbackSectionId,
+    gitStatusSettled,
     reviewCache.selectedSectionId,
     reviewCache.threadKey,
     reviewSections.length,

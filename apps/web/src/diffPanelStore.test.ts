@@ -2,7 +2,14 @@ import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { EnvironmentId, ThreadId, RunId } from "@t3tools/contracts";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
-import { selectThreadDiffPanelSelection, useDiffPanelStore } from "./diffPanelStore";
+import {
+  resolveDefaultDiffGitScope,
+  resolveThreadDiffPanelSelection,
+  selectExplicitThreadDiffPanelSelection,
+  selectThreadBranchBaseRef,
+  selectThreadDiffPanelSelection,
+  useDiffPanelStore,
+} from "./diffPanelStore";
 
 const THREAD_REF = scopeThreadRef(EnvironmentId.make("environment-1"), ThreadId.make("thread-1"));
 
@@ -14,16 +21,29 @@ describe("diffPanelStore", () => {
     }),
   );
 
-  it("defaults each thread to working tree changes without requiring git status", () => {
+  it("defaults each thread to Changes without requiring git status", () => {
     expect(
       selectThreadDiffPanelSelection(useDiffPanelStore.getState().byThreadKey, THREAD_REF),
-    ).toEqual({ kind: "unstaged" });
+    ).toEqual({ kind: "branch", baseRef: null });
   });
 
-  it("defaults to working tree changes before a thread is selected", () => {
+  it("defaults to Changes before a thread is selected", () => {
     expect(selectThreadDiffPanelSelection(useDiffPanelStore.getState().byThreadKey, null)).toEqual({
-      kind: "unstaged",
+      kind: "branch",
+      baseRef: null,
     });
+  });
+
+  it("keeps a custom base when a generic open selects Changes again", () => {
+    const store = useDiffPanelStore.getState();
+    store.selectBranchBaseRef(THREAD_REF, "origin/release");
+    store.selectGitScope(THREAD_REF, "branch");
+    store.selectTurn(THREAD_REF, RunId.make("turn-1"));
+    store.selectGitScope(THREAD_REF, "branch");
+
+    expect(
+      selectThreadDiffPanelSelection(useDiffPanelStore.getState().byThreadKey, THREAD_REF),
+    ).toEqual({ kind: "branch", baseRef: "origin/release" });
   });
 
   it("preserves an explicit branch selection", () => {
@@ -144,6 +164,58 @@ describe("diffPanelStore", () => {
       turnId: latestTurnId,
       filePath: "src/app.ts",
       revealRequestId: 1,
+    });
+  });
+
+  describe("default scope across server versions", () => {
+    const resolveFor = (status: { readonly branchChanges?: unknown } | null | undefined) => {
+      const state = useDiffPanelStore.getState();
+      return resolveThreadDiffPanelSelection({
+        explicit: selectExplicitThreadDiffPanelSelection(state.byThreadKey, THREAD_REF),
+        defaultScope: resolveDefaultDiffGitScope(status),
+        branchBaseRef: selectThreadBranchBaseRef(state.branchBaseRefByThreadKey, THREAD_REF),
+      });
+    };
+    const branchChanges = { baseRef: "main", insertions: 3, deletions: 1 };
+
+    it("opens Changes when the server reports Changes totals", () => {
+      expect(resolveDefaultDiffGitScope({ branchChanges })).toBe("branch");
+      expect(resolveFor({ branchChanges })).toEqual({ kind: "branch", baseRef: null });
+    });
+
+    it("opens Uncommitted on an older server so the view matches the uncommitted counts", () => {
+      expect(resolveDefaultDiffGitScope({})).toBe("unstaged");
+      expect(resolveFor({})).toEqual({ kind: "unstaged" });
+    });
+
+    it("assumes Changes until status loads, then follows it", () => {
+      expect(resolveFor(undefined)).toEqual({ kind: "branch", baseRef: null });
+      expect(resolveFor(null)).toEqual({ kind: "branch", baseRef: null });
+      expect(resolveFor({})).toEqual({ kind: "unstaged" });
+    });
+
+    it("returns a generic reopen to the default scope while keeping the custom base", () => {
+      const store = useDiffPanelStore.getState();
+      store.selectBranchBaseRef(THREAD_REF, "origin/release");
+      store.selectTurn(THREAD_REF, RunId.make("turn-1"));
+      store.selectBranchBaseRef(THREAD_REF, "origin/release");
+      store.selectDefaultGitScope(THREAD_REF);
+
+      expect(
+        selectExplicitThreadDiffPanelSelection(
+          useDiffPanelStore.getState().byThreadKey,
+          THREAD_REF,
+        ),
+      ).toBeUndefined();
+      expect(resolveFor({ branchChanges })).toEqual({ kind: "branch", baseRef: "origin/release" });
+      expect(resolveFor({})).toEqual({ kind: "unstaged" });
+    });
+
+    it("keeps an explicit choice regardless of server version", () => {
+      useDiffPanelStore.getState().selectGitScope(THREAD_REF, "branch");
+      expect(resolveFor({})).toEqual({ kind: "branch", baseRef: null });
+      useDiffPanelStore.getState().selectGitScope(THREAD_REF, "unstaged");
+      expect(resolveFor({ branchChanges })).toEqual({ kind: "unstaged" });
     });
   });
 });

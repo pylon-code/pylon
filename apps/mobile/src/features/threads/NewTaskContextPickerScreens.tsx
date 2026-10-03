@@ -56,7 +56,7 @@ function SelectionRow(props: {
       accessibilityRole="radio"
       accessibilityState={{ checked: props.selected }}
       className={cn(
-        "min-h-14 flex-row items-center gap-3 bg-card px-4 py-3 active:bg-subtle",
+        "min-h-14 flex-row items-center gap-3 bg-grouped-card px-4 py-3 active:bg-subtle",
         !props.isLast && "border-b border-border-subtle",
       )}
       disabled={props.disabled}
@@ -102,7 +102,7 @@ function ToggleRow(props: {
   readonly onValueChange: (value: boolean) => void;
 }) {
   return (
-    <View className="min-h-14 flex-row items-center gap-3 bg-card px-4 py-3">
+    <View className="min-h-14 flex-row items-center gap-3 bg-grouped-card px-4 py-3">
       <Text className="min-w-0 flex-1 text-base font-t3-medium text-foreground" numberOfLines={1}>
         {props.title}
       </Text>
@@ -147,7 +147,7 @@ function BranchSelectionRow(props: {
 }
 
 function PickerSurface(props: { readonly children: ReactNode }) {
-  return <View className="overflow-hidden rounded-2xl bg-card">{props.children}</View>;
+  return <View className="overflow-hidden rounded-2xl bg-grouped-card">{props.children}</View>;
 }
 
 export function NewTaskEnvironmentPickerRouteScreen() {

@@ -171,7 +171,7 @@ function AddProjectShell(props: { readonly children: ReactNode }) {
 }
 
 function ListSection(props: { readonly children: ReactNode }) {
-  return <View className="overflow-hidden rounded-[24px] bg-card">{props.children}</View>;
+  return <View className="overflow-hidden rounded-[24px] bg-grouped-card">{props.children}</View>;
 }
 
 function ListRow(props: {
@@ -189,7 +189,7 @@ function ListRow(props: {
       disabled={props.disabled}
       onPress={props.onPress}
       className={cn(
-        "bg-card px-3.5 py-2.5 active:opacity-70",
+        "bg-grouped-card px-3.5 py-2.5 active:opacity-70",
         !props.isFirst && "border-t border-border-subtle",
         props.disabled && "opacity-[0.45]",
       )}
@@ -425,7 +425,7 @@ function EmptyEnvironmentState() {
   const navigation = useNavigation();
 
   return (
-    <View className="items-center gap-3 rounded-2xl bg-card px-5 py-8">
+    <View className="items-center gap-3 rounded-2xl bg-grouped-card px-5 py-8">
       <Text className="text-center text-lg font-t3-bold">Environment unavailable</Text>
       <Text className="text-center text-sm leading-normal text-foreground-muted">
         Start or reconnect an environment before adding a project.
@@ -1328,7 +1328,7 @@ export function AddProjectDestinationScreen(props: {
     <AddProjectShell>
       {error ? <ErrorBanner message={error} /> : null}
       {repositoryTitle ? (
-        <View className="rounded-[24px] bg-card px-4 py-3">
+        <View className="rounded-[24px] bg-grouped-card px-4 py-3">
           <Text className="text-base font-t3-bold">{repositoryTitle}</Text>
           <Text className="mt-0.5 text-xs text-foreground-muted" numberOfLines={2}>
             {remoteUrl}

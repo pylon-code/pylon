@@ -563,8 +563,8 @@ export function ReviewSheet(props: ReviewSheetProps) {
       attributes: section ? undefined : { disabled: true },
     });
     const actions: MenuAction[] = [
-      sectionAction(sectionMenu.workingTree, "Working tree"),
-      sectionAction(sectionMenu.branchChanges, "Branch changes"),
+      sectionAction(sectionMenu.branchChanges, "Changes"),
+      sectionAction(sectionMenu.workingTree, "Uncommitted"),
       sectionAction(sectionMenu.latestTurn, "Latest turn"),
     ];
 
@@ -755,17 +755,6 @@ export function ReviewSheet(props: ReviewSheetProps) {
             <NativeHeaderToolbar.Menu icon="ellipsis" title="Select diff" separateBackground>
               <NativeHeaderToolbar.Menu inline>
                 <NativeHeaderToolbar.MenuAction
-                  disabled={sectionMenu.workingTree === null}
-                  isOn={selectedSection?.id === sectionMenu.workingTree?.id}
-                  onPress={() => {
-                    if (sectionMenu.workingTree) {
-                      selectSection(sectionMenu.workingTree.id);
-                    }
-                  }}
-                >
-                  <NativeHeaderToolbar.Label>Working tree</NativeHeaderToolbar.Label>
-                </NativeHeaderToolbar.MenuAction>
-                <NativeHeaderToolbar.MenuAction
                   disabled={sectionMenu.branchChanges === null}
                   isOn={selectedSection?.id === sectionMenu.branchChanges?.id}
                   onPress={() => {
@@ -774,7 +763,18 @@ export function ReviewSheet(props: ReviewSheetProps) {
                     }
                   }}
                 >
-                  <NativeHeaderToolbar.Label>Branch changes</NativeHeaderToolbar.Label>
+                  <NativeHeaderToolbar.Label>Changes</NativeHeaderToolbar.Label>
+                </NativeHeaderToolbar.MenuAction>
+                <NativeHeaderToolbar.MenuAction
+                  disabled={sectionMenu.workingTree === null}
+                  isOn={selectedSection?.id === sectionMenu.workingTree?.id}
+                  onPress={() => {
+                    if (sectionMenu.workingTree) {
+                      selectSection(sectionMenu.workingTree.id);
+                    }
+                  }}
+                >
+                  <NativeHeaderToolbar.Label>Uncommitted</NativeHeaderToolbar.Label>
                 </NativeHeaderToolbar.MenuAction>
                 <NativeHeaderToolbar.MenuAction
                   disabled={sectionMenu.latestTurn === null}
