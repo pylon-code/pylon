@@ -1,4 +1,6 @@
 import type { SidebarThreadSummary } from "../types";
+import { presentThreadShell } from "@t3tools/client-runtime/state/models";
+import * as DateTime from "effect/DateTime";
 import { deriveActiveWorkStartedAt } from "../session-logic.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { defaultAnimateLayoutChanges, type AnimateLayoutChanges } from "@dnd-kit/sortable";
@@ -2186,7 +2188,7 @@ describe("resolveThreadStatusPill", () => {
       resolveThreadStatusPill({
         thread: {
           ...baseThread,
-          pendingBackgroundTasks: [{ taskId: "bg-1", description: "sleep 20", kind: "command" }],
+          pendingBackgroundTasks: [{ taskId: "bg-1", description: "Watch build", kind: "monitor" }],
           runtime: {
             ...baseThread.runtime,
             status: "idle",
@@ -3017,6 +3019,41 @@ describe("navigation after parking a thread", () => {
   );
 });
 
+describe("unseen completion with background work", () => {
+  it.each([
+    { kind: "command", status: "ready", topStatus: "done", receded: false, pill: "Completed" },
+    { kind: "monitor", status: "waiting", topStatus: "waiting", receded: true, pill: "Waiting" },
+    // Pylon's Working shelf (#991) keeps any unseen completion in the inbox,
+    // so neither roster folds the thread into the shelf until it is visited.
+  ] as const)("presents a completed thread with a $kind roster", (expected) => {
+    const thread = presentThreadShell(localEnvironmentId, {
+      ...makeThreadFixture().source,
+      latestRunId: RunId.make("run-background-completion"),
+      status: "completed",
+      latestRunCompletedAt: DateTime.makeUnsafe("2026-06-20T01:00:00.000Z"),
+      lastVisitedAt: DateTime.makeUnsafe("2026-06-20T00:59:00.000Z"),
+      pendingBackgroundTasks: [{ taskId: "background-work", kind: expected.kind }],
+    });
+    const status = resolveSidebarThreadStatus(thread);
+    const isUnread = hasUnseenCompletion(thread);
+
+    expect(isUnread).toBe(true);
+    expect(status).toBe(expected.status);
+    expect(resolveSidebarV2TopStatus({ status, isUnread, isWoke: false })).toBe(expected.topStatus);
+    expect(
+      shouldRecedeSidebarThread({
+        status,
+        isUnread,
+        isWoke: false,
+        isActive: false,
+        isSelected: false,
+      }),
+    ).toBe(expected.receded);
+    expect(isSidebarThreadWorking(thread)).toBe(false);
+    expect(resolveThreadStatusPill({ thread })).toMatchObject({ label: expected.pill });
+  });
+});
+
 describe("Working shelf (beta)", () => {
   const runtime = {
     status: "running" as const,
@@ -3026,7 +3063,7 @@ describe("Working shelf (beta)", () => {
     lastError: null,
     updatedAt: "2026-03-09T10:00:00.000Z",
   };
-  const backgroundTask = { taskId: "bg-1", description: "sleep 20", kind: "command" as const };
+  const backgroundTask = { taskId: "bg-1", description: "Watch build", kind: "monitor" as const };
   const idle = {
     hasActionableProposedPlan: false,
     hasPendingApprovals: false,

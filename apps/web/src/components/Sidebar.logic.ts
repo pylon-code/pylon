@@ -1,4 +1,5 @@
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
+import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
 import * as React from "react";
 import {
@@ -1055,8 +1056,9 @@ export function shouldShowSidebarV2Duration(status: SidebarThreadStatus): boolea
 }
 
 /** Working beta: threads busy with work that does not need the user fold into
-    the Working shelf: a running run, or one stopped with background tasks
-    still open. In v2, delegated fleets (subagent tasks) and monitors arrive
+    the Working shelf: a running run, or one stopped with background work
+    that will wake it (commands left running, such as a dev server, read as
+    ready). In v2, delegated fleets (subagent tasks) and monitors arrive
     as open background tasks, which resolve to "waiting"; the delegating and
     monitoring statuses are folded too so the shelf keeps Pylon's meaning if
     those statuses are produced again. Approvals, questions, plan prompts,
@@ -1364,7 +1366,7 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
-  if ((thread.pendingBackgroundTasks?.length ?? 0) > 0) {
+  if (backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? [])) {
     return {
       label: "Waiting",
       colorClass: "text-sidebar-muted-foreground",
