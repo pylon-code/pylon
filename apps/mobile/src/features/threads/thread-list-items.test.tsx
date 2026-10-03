@@ -1,3 +1,4 @@
+import { makeThreadShellFixture } from "../../test-fixtures";
 import type { MenuAction } from "@react-native-menu/menu";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
@@ -41,29 +42,12 @@ import { ThreadListRow } from "./thread-list-items";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
-const thread: EnvironmentThreadShell = {
+const thread = makeThreadShellFixture({
   environmentId: EnvironmentId.make("environment-a"),
   id: ThreadId.make("thread-a"),
   projectId: ProjectId.make("project-a"),
   title: "Thread A",
-  modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
-  runtimeMode: "full-access",
-  interactionMode: "default",
-  branch: null,
-  worktreePath: null,
-  pullRequests: [],
-  latestTurn: null,
-  createdAt: "2026-06-01T00:00:00.000Z",
-  updatedAt: "2026-06-01T00:00:00.000Z",
-  archivedAt: null,
-  settledOverride: null,
-  settledAt: null,
-  session: null,
-  latestUserMessageAt: null,
-  hasPendingApprovals: false,
-  hasPendingUserInput: false,
-  hasActionableProposedPlan: false,
-};
+});
 
 function menu(renderer: ReactTestRenderer) {
   // The renderer's native interop props are untyped; recover the component contract.

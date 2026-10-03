@@ -32,7 +32,7 @@ const liveDeviceStateAtom = createEnvironmentSubscriptionAtomFamily(connectionAt
   label: "mobile-device-state-scoped",
   subscribe: () =>
     Stream.unwrap(
-      EnvironmentSupervisor.pipe(
+      EnvironmentSupervisor.EnvironmentSupervisor.pipe(
         Effect.map((supervisor) =>
           subscribeDynamicWithSession(WS_METHODS.subscribeDeviceState, () =>
             Effect.succeed({}),
@@ -90,11 +90,11 @@ const deviceHubAccessAtom = Atom.family((environmentId: EnvironmentId) =>
       // waitingFrom value as the ticket's identity. Read the live supervisor.
       get(environmentSession.preparedConnectionValueAtom(environmentId));
       if (connection?.phase !== "connected") return Effect.never;
-      return EnvironmentRegistry.pipe(
+      return EnvironmentRegistry.EnvironmentRegistry.pipe(
         Effect.flatMap((registry) =>
           registry.run(
             environmentId,
-            EnvironmentSupervisor.pipe(
+            EnvironmentSupervisor.EnvironmentSupervisor.pipe(
               Effect.flatMap((supervisor) =>
                 Effect.all([
                   SubscriptionRef.get(supervisor.state),

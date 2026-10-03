@@ -13,12 +13,7 @@ import {
   shouldRefreshProviderModelCatalog,
 } from "../../lib/providerModelSelection";
 import { resolveProviderContinuationTransition } from "@t3tools/client-runtime/providerContinuation";
-import type {
-  ModelSelection,
-  OrchestrationSession,
-  ServerConfig,
-  ServerProvider,
-} from "@t3tools/contracts";
+import type { ModelSelection, ServerConfig, ServerProvider } from "@t3tools/contracts";
 
 /** Resolve every composer surface against the persisted session binding first. */
 export function resolveThreadComposerAuthority(input: {
@@ -90,7 +85,10 @@ export function resolveThreadComposerAdmissionReason(input: {
 
 /** Provider unavailability must never remove the active turn's escape hatch. */
 export function threadComposerShowsStopAction(
-  status: OrchestrationSession["status"] | null | undefined,
+  status:
+    | import("@t3tools/client-runtime/state/models").ThreadRuntimeSummary["status"]
+    | null
+    | undefined,
 ): boolean {
   return status === "running" || status === "starting";
 }
@@ -109,7 +107,10 @@ export function threadComposerShowsCollapsedActions(input: {
 export function getThreadComposerModelChangeDisabledReason(input: {
   readonly option: ModelOption;
   readonly currentModelSelection: ModelSelection;
-  readonly session: Pick<OrchestrationSession, "providerInstanceId"> | null | undefined;
+  readonly session:
+    | { readonly providerInstanceId: ModelSelection["instanceId"] }
+    | null
+    | undefined;
   readonly providers: ReadonlyArray<ServerProvider>;
   readonly sessionInputBlocked: boolean | undefined;
   readonly modelChangesLocked: boolean;

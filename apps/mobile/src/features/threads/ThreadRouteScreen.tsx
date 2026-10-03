@@ -1,9 +1,5 @@
 import { makeTurnCommandMetadata } from "../../lib/commandMetadata";
-import { enqueueThreadOutboxMessage } from "../../state/thread-outbox";
-import {
-  getComposerDraftSnapshot,
-  clearComposerDraftContent,
-} from "../../state/use-composer-drafts";
+import { buildProjectThreadStartTurnInput } from "../../lib/projectThreadStartTurn";
 import { useWorktreeSetup } from "./use-worktree-setup";
 import { worktreeSetupAgentStarted } from "@t3tools/client-runtime/worktree-setup";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
@@ -13,47 +9,14 @@ import {
   useNavigation,
   type StaticScreenProps,
 } from "@react-navigation/native";
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
-import { useAtomValue } from "@effect/atom-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as Option from "effect/Option";
 import {
-  CommandId,
-  MessageId,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   ThreadId,
   type ProjectScript,
-  type ProviderAskSessionSideQuestionResult,
-  type ProviderSessionSideQuestionRequestId,
 } from "@t3tools/contracts";
-import {
-  isAtomCommandInterrupted,
-  squashAtomCommandFailure,
-} from "@t3tools/client-runtime/state/runtime";
-import {
-  deriveRollbackTargets,
-  isRollbackActive,
-  type RollbackTarget,
-} from "@t3tools/client-runtime/rollback";
-import {
-  currentMobileRollbackSessionOwner,
-  mobileRollbackDetailIsCurrent,
-  resolveMobileRollbackStatus,
-} from "./rollback-status-presentation";
-import { environmentCatalog } from "../../connection/catalog";
-import { environmentShell } from "../../state/shell";
-import {
-  requestOlderThreadTurns,
-  threadHasOlderTurns,
-} from "@t3tools/client-runtime/state/threads";
 import {
   projectScriptCwd,
   projectScriptRuntimeEnv,
@@ -61,8 +24,8 @@ import {
 } from "@t3tools/shared/projectScripts";
 import { Alert, Platform, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useWorkspaceState } from "../../state/workspace";
-import { useEnvironmentShellState } from "../../state/shell";
+import { useConnectionsReady } from "../../state/workspace";
+import { useEnvironmentShellReadiness } from "../../state/shell";
 import { restoredNewTaskDraftKey } from "../../state/new-task-draft-key";
 import { clearPendingThreadCreationOutcome } from "../../state/pending-thread-creation";
 import {
@@ -115,6 +78,8 @@ import { useSelectedThreadGitState } from "../../state/use-selected-thread-git-s
 import { useSelectedThreadRequests } from "../../state/use-selected-thread-requests";
 import { useSelectedThreadWorktree } from "../../state/use-selected-thread-worktree";
 import { useThreadComposerState } from "../../state/use-thread-composer-state";
+import { resolveMergeBackTargetThreadId } from "@t3tools/client-runtime/state/thread-relationships";
+import { resolveLatestMergeBackRun } from "@t3tools/client-runtime/state/thread-workflows";
 import { threadEnvironment } from "../../state/threads";
 import { projectThreadContentPresentation } from "./threadContentPresentation";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
@@ -192,7 +157,7 @@ function ThreadUnavailableScreen(props: {
 }
 
 export function ThreadRouteScreen(props: ThreadRouteScreenProps) {
-  const { state: workspaceState } = useWorkspaceState();
+  const connectionsReady = useConnectionsReady();
   const { connectionState } = useRemoteConnectionStatus();
   const { selectedThread } = useThreadSelection();
   const params = props.route.params;
@@ -200,7 +165,7 @@ export function ThreadRouteScreen(props: ThreadRouteScreenProps) {
   const threadIdRaw = firstRouteParam(params.threadId);
   const environmentId = environmentIdRaw ? EnvironmentId.make(environmentIdRaw) : null;
   const routeEnvironmentRuntime = useRemoteEnvironmentRuntime(environmentId);
-  const routeEnvironmentShellState = useEnvironmentShellState(environmentId);
+  const routeEnvironmentShellState = useEnvironmentShellReadiness(environmentId);
   const { onReconnectEnvironment } = useRemoteConnections();
   const navigation = useNavigation();
   const routeConnectionState =
@@ -229,10 +194,10 @@ export function ThreadRouteScreen(props: ThreadRouteScreenProps) {
   }
 
   const stillHydrating = threadRouteIsHydrating({
-    isLoadingConnections: workspaceState.isLoadingConnections,
+    isLoadingConnections: !connectionsReady,
     connectionState: routeConnectionState,
     shellStatus: routeEnvironmentShellState.status,
-    shellHasError: Option.isSome(routeEnvironmentShellState.error),
+    shellHasError: routeEnvironmentShellState.hasError,
     detailStatus: selectedThreadDetailState.status,
     detailHasError: Option.isSome(selectedThreadDetailState.error),
   });
@@ -301,68 +266,71 @@ function ThreadRouteContent(
   } = useThreadSelection();
   const selectedThreadDetailState = props.selectedThreadDetailState;
   const selectedThreadDetail = Option.getOrNull(selectedThreadDetailState.data);
-  const rollbackEnvironmentId = EnvironmentId.make(props.route.params.environmentId);
-  const rollbackShellState = useAtomValue(environmentShell.stateValueAtom(rollbackEnvironmentId));
-  const rollbackConnectionResult = useAtomValue(
-    environmentCatalog.stateAtom(rollbackEnvironmentId),
-  );
-  const rollbackSessionOwner = currentMobileRollbackSessionOwner(rollbackConnectionResult);
-  // "Load earlier turns" header state for windowed (paginated) thread loads.
-  const loadEarlierTurns = useMemo(() => {
-    if (selectedThread === null || !threadHasOlderTurns(selectedThreadDetailState)) {
-      return null;
-    }
-    return {
-      loading:
-        selectedThreadDetailState.page._tag === "Some" &&
-        selectedThreadDetailState.page.value.loadingOlder,
-      onLoadEarlier: () => {
-        requestOlderThreadTurns(selectedThread.environmentId, selectedThread.id);
-      },
-    };
-  }, [selectedThread, selectedThreadDetailState]);
   const { selectedThreadCwd } = useSelectedThreadWorktree();
   const composer = useThreadComposerState();
   const gitState = useSelectedThreadGitState();
   const gitActions = useSelectedThreadGitActions();
   const requests = useSelectedThreadRequests();
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, "thread interrupt");
-  const revertThreadCheckpoint = useAtomCommand(threadEnvironment.revertCheckpoint, {
-    label: "thread rollback",
+  const loadEarlierHistory = useAtomCommand(threadEnvironment.loadEarlierHistory, {
+    label: "load earlier thread history",
     reportFailure: false,
   });
-  const recoverThreadRollback = useAtomCommand(threadEnvironment.recoverRollback, {
-    label: "rollback recovery",
-    reportFailure: false,
-  });
-  const [rollbackCommandPending, setRollbackCommandPending] = useState(false);
-  const reloadThreadSessionResources = useAtomCommand(
-    threadEnvironment.reloadSessionResources,
-    "session resource reload",
-  );
-  const refineThreadSessionHarness = useAtomCommand(threadEnvironment.refineSessionHarness, {
-    label: "session harness refinement",
-    reportDefect: false,
-    reportFailure: false,
-  });
-  const askThreadSessionSideQuestion = useAtomCommand(threadEnvironment.askSessionSideQuestion, {
-    label: "session side question",
-    reportDefect: false,
-    reportFailure: false,
-  });
-  const cancelThreadSessionSideQuestion = useAtomCommand(
-    threadEnvironment.cancelSessionSideQuestion,
-    {
-      label: "session side question cancellation",
-      reportDefect: false,
-      reportFailure: false,
-    },
-  );
-  const setThreadSessionAgentDepth = useAtomCommand(
-    threadEnvironment.setSessionAgentDepth,
-    "session agent depth update",
-  );
+  const historyControls = useMemo(() => {
+    const history = selectedThreadDetailState.history;
+    if (!selectedThread) {
+      return undefined;
+    }
+    if (!history.hasMoreHistory && history.error === null) {
+      return undefined;
+    }
+    return {
+      hasMoreHistory: history.hasMoreHistory,
+      loading: history.loading,
+      error: history.error,
+      onLoadEarlier: () => {
+        void loadEarlierHistory({
+          environmentId: selectedThread.environmentId,
+          input: { threadId: selectedThread.id },
+        });
+      },
+    };
+  }, [loadEarlierHistory, selectedThread, selectedThreadDetailState.history]);
   const navigation = useNavigation();
+  const mergeBack = useAtomCommand(threadEnvironment.mergeBack, "merge thread back");
+  const mergeBackTargetThreadId = resolveMergeBackTargetThreadId(selectedThreadDetail);
+  const mergeBackRun =
+    selectedThreadDetail === null ? null : resolveLatestMergeBackRun(selectedThreadDetail);
+  const mergeBackBusyRef = useRef(false);
+  const handleMergeBack = useCallback(async () => {
+    if (
+      mergeBackBusyRef.current ||
+      !selectedThread ||
+      mergeBackTargetThreadId === null ||
+      mergeBackRun === null
+    ) {
+      return;
+    }
+    mergeBackBusyRef.current = true;
+    try {
+      const result = await mergeBack({
+        environmentId: selectedThread.environmentId,
+        input: {
+          sourceThreadId: selectedThread.id,
+          targetThreadId: mergeBackTargetThreadId,
+          runId: mergeBackRun.id,
+          creationSource: "mobile",
+        },
+      });
+      if (result._tag !== "Success") return;
+      navigation.navigate("Thread", {
+        environmentId: selectedThread.environmentId,
+        threadId: mergeBackTargetThreadId,
+      });
+    } finally {
+      mergeBackBusyRef.current = false;
+    }
+  }, [mergeBack, mergeBackRun, mergeBackTargetThreadId, navigation, selectedThread]);
   const params = props.route.params;
   const environmentIdRaw = firstRouteParam(params.environmentId);
   const environmentId = environmentIdRaw ? EnvironmentId.make(environmentIdRaw) : null;
@@ -473,7 +441,7 @@ function ThreadRouteContent(
       }),
     [knownTerminalSessions, selectedThreadProject?.workspaceRoot],
   );
-  const selectedThreadDetailWorktreePath = selectedThreadDetail?.worktreePath ?? null;
+  const selectedThreadDetailWorktreePath = selectedThreadDetail?.thread.worktreePath ?? null;
   const handleReconnectEnvironment = useCallback(() => {
     if (!environmentId) {
       return;
@@ -636,83 +604,17 @@ function ThreadRouteContent(
     void navigation.navigate("Connections");
   }, [navigation]);
   const handleStopThread = useCallback(() => {
-    if (
-      !selectedThread ||
-      (selectedThread.session?.status !== "running" &&
-        selectedThread.session?.status !== "starting")
-    ) {
+    if (!selectedThread || composer.interruptibleRunId === null) {
       return;
     }
     return interruptThreadTurn({
       environmentId: selectedThread.environmentId,
       input: {
         threadId: selectedThread.id,
-        ...(selectedThread.session.activeTurnId
-          ? { turnId: selectedThread.session.activeTurnId }
-          : {}),
+        runId: composer.interruptibleRunId,
       },
     });
-  }, [interruptThreadTurn, selectedThread]);
-
-  const handleReloadSessionResources = useCallback(async () => {
-    if (!selectedThread) return;
-    await reloadThreadSessionResources({
-      environmentId: selectedThread.environmentId,
-      input: { threadId: selectedThread.id },
-    });
-  }, [reloadThreadSessionResources, selectedThread]);
-
-  const handleRefineSessionHarness = useCallback(async () => {
-    if (!selectedThread) return null;
-    const result = await refineThreadSessionHarness({
-      environmentId: selectedThread.environmentId,
-      input: { threadId: selectedThread.id },
-    });
-    return result._tag === "Success" ? result.value : null;
-  }, [refineThreadSessionHarness, selectedThread]);
-
-  const handleAskSessionSideQuestion = useCallback(
-    async (
-      requestId: ProviderSessionSideQuestionRequestId,
-      question: string,
-    ): Promise<ProviderAskSessionSideQuestionResult | null> => {
-      if (!selectedThread) return null;
-      const result = await askThreadSessionSideQuestion({
-        environmentId: selectedThread.environmentId,
-        input: { threadId: selectedThread.id, requestId, question },
-      });
-      return result._tag === "Success" ? result.value : null;
-    },
-    [askThreadSessionSideQuestion, selectedThread],
-  );
-
-  const handleCancelSessionSideQuestion = useCallback(
-    async (requestId: ProviderSessionSideQuestionRequestId): Promise<void> => {
-      if (!selectedThread) return;
-      await cancelThreadSessionSideQuestion({
-        environmentId: selectedThread.environmentId,
-        input: { threadId: selectedThread.id, requestId },
-      });
-    },
-    [cancelThreadSessionSideQuestion, selectedThread],
-  );
-
-  const handleSetSessionAgentDepth = useCallback(
-    async (maxDepth: number) => {
-      if (!selectedThread) return;
-      const result = await setThreadSessionAgentDepth({
-        environmentId: selectedThread.environmentId,
-        input: { threadId: selectedThread.id, maxDepth },
-      });
-      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-        Alert.alert(
-          "Agent depth not changed",
-          "Pylon could not update this session. Confirm the session is idle and try again.",
-        );
-      }
-    },
-    [selectedThread, setThreadSessionAgentDepth],
-  );
+  }, [composer.interruptibleRunId, interruptThreadTurn, selectedThread]);
 
   const handleOpenTerminal = useCallback(
     (nextTerminalId?: string | null) => {
@@ -825,189 +727,6 @@ function ThreadRouteContent(
       terminalMenuSessions,
     ],
   );
-  const rollbackTargets = useMemo(
-    () =>
-      selectedThreadDetail === null
-        ? new Map<string, RollbackTarget>()
-        : deriveRollbackTargets(selectedThreadDetail),
-    [selectedThreadDetail],
-  );
-  const rollbackShell = Option.getOrNull(rollbackShellState.snapshot)?.threads.find(
-    (thread) => thread.id === selectedThread?.id,
-  );
-  const resolvedRollback = resolveMobileRollbackStatus({
-    detail: {
-      status: selectedThreadDetail?.rollbackStatus,
-      sequence: selectedThreadDetailState.snapshotSequence,
-      sessionOwner: selectedThreadDetailState.sessionOwner,
-      live: selectedThreadDetailState.status === "live",
-    },
-    shell: {
-      status: rollbackShell?.rollbackStatus,
-      sequence: Option.getOrNull(rollbackShellState.snapshot)?.snapshotSequence,
-      sessionOwner: rollbackShellState.sessionOwner,
-      live: rollbackShellState.status === "live" && rollbackShell !== undefined,
-    },
-    currentSessionOwner: rollbackSessionOwner,
-    rollbackStatusStreaming: selectedThreadDetailState.rollbackStatusStreaming,
-  });
-  const rollbackStatus = resolvedRollback.status;
-  const rollbackActive = resolvedRollback.uncertain || isRollbackActive(rollbackStatus);
-  const rollbackTargetIdle =
-    selectedThreadDetail?.session !== null &&
-    selectedThreadDetail?.session !== undefined &&
-    (selectedThreadDetail.session.status === "idle" ||
-      selectedThreadDetail.session.status === "ready") &&
-    selectedThreadDetail.session.activeTurnId === null &&
-    selectedThreadDetail.session.pendingTurnRequestId === undefined &&
-    selectedThreadDetail.session.activeTurnRequestId === undefined &&
-    selectedThreadDetail.session.compactionQueue === undefined &&
-    selectedThreadDetail.latestTurn?.state !== "running" &&
-    !rollbackActive &&
-    mobileRollbackDetailIsCurrent({
-      detail: {
-        live: selectedThreadDetailState.status === "live",
-        sessionOwner: selectedThreadDetailState.sessionOwner,
-      },
-      currentSessionOwner: rollbackSessionOwner,
-      uncertain: resolvedRollback.uncertain,
-    }) &&
-    composer.selectedThreadQueueCount === 0 &&
-    !composer.activeThreadBusy &&
-    !rollbackCommandPending;
-  const rollbackActionAuthority = useRef({
-    threadId: selectedThread?.id,
-    environmentId: selectedThread?.environmentId,
-    sessionOwner: rollbackSessionOwner,
-    operationId: rollbackStatus?.operationId,
-    targets: rollbackTargets,
-    targetIdle: rollbackTargetIdle,
-    uncertain: resolvedRollback.uncertain,
-    recoveryActions: rollbackStatus?.allowedActions ?? [],
-  });
-  useLayoutEffect(() => {
-    rollbackActionAuthority.current = {
-      threadId: selectedThread?.id,
-      environmentId: selectedThread?.environmentId,
-      sessionOwner: rollbackSessionOwner,
-      operationId: rollbackStatus?.operationId,
-      targets: rollbackTargets,
-      targetIdle: rollbackTargetIdle,
-      uncertain: resolvedRollback.uncertain,
-      recoveryActions: rollbackStatus?.allowedActions ?? [],
-    };
-  }, [
-    selectedThread?.id,
-    selectedThread?.environmentId,
-    rollbackSessionOwner,
-    rollbackStatus?.operationId,
-    rollbackTargets,
-    rollbackTargetIdle,
-    resolvedRollback.uncertain,
-    rollbackStatus?.allowedActions,
-  ]);
-
-  const onRevertMessage = useCallback(
-    (target: RollbackTarget) => {
-      if (!selectedThread || !rollbackTargetIdle || rollbackSessionOwner === null) return;
-      const confirmedSessionOwner = rollbackSessionOwner;
-      const confirmedOperationId = rollbackStatus?.operationId;
-      const revert = (restoreFiles: boolean) => {
-        const current = rollbackActionAuthority.current;
-        const currentTarget = current.targets.get(target.messageId);
-        if (
-          !current.targetIdle ||
-          current.threadId !== selectedThread.id ||
-          current.environmentId !== selectedThread.environmentId ||
-          current.sessionOwner !== confirmedSessionOwner ||
-          current.operationId !== confirmedOperationId ||
-          currentTarget?.targetTurnCount !== target.targetTurnCount ||
-          currentTarget.expectedSourceRevision !== target.expectedSourceRevision
-        )
-          return;
-        setRollbackCommandPending(true);
-        void revertThreadCheckpoint({
-          environmentId: selectedThread.environmentId,
-          expectedSessionOwner: confirmedSessionOwner,
-          input: {
-            threadId: selectedThread.id,
-            turnCount: target.targetTurnCount,
-            expectedSourceRevision: target.expectedSourceRevision,
-            expectedRollbackOperationId: confirmedOperationId ?? null,
-            restoreFiles,
-          },
-        }).then((result) => {
-          setRollbackCommandPending(false);
-          if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-            const failure = squashAtomCommandFailure(result);
-            Alert.alert(
-              "Rollback unavailable",
-              failure instanceof Error ? failure.message : "Pylon rejected this rollback.",
-            );
-          }
-        });
-      };
-      Alert.alert(
-        "Confirm exact rollback",
-        `Rewind the provider conversation and Pylon history to before ${target.label}? Choose whether to keep your current files or also restore the worktree, Git index, staged and unstaged changes, and untracked files to that point.`,
-        [
-          { text: "Cancel", style: "cancel" },
-          { text: "Revert files too", style: "destructive", onPress: () => revert(true) },
-          { text: "Revert and keep changes", onPress: () => revert(false) },
-        ],
-      );
-    },
-    [
-      revertThreadCheckpoint,
-      rollbackTargetIdle,
-      rollbackSessionOwner,
-      rollbackStatus?.operationId,
-      selectedThread,
-      setRollbackCommandPending,
-    ],
-  );
-
-  const onRecoverRollback = useCallback(
-    async (action: "retry-verification" | "resume-compensation") => {
-      if (!selectedThread || rollbackCommandPending) return;
-      const current = rollbackActionAuthority.current;
-      const operationId = rollbackStatus?.operationId;
-      if (
-        current.uncertain ||
-        rollbackSessionOwner === null ||
-        operationId === undefined ||
-        current.sessionOwner !== rollbackSessionOwner ||
-        current.operationId !== operationId ||
-        current.threadId !== selectedThread.id ||
-        current.environmentId !== selectedThread.environmentId ||
-        !current.recoveryActions.includes(action)
-      )
-        return;
-      setRollbackCommandPending(true);
-      const result = await recoverThreadRollback({
-        environmentId: selectedThread.environmentId,
-        expectedSessionOwner: rollbackSessionOwner,
-        input: { threadId: selectedThread.id, action, expectedOperationId: operationId },
-      });
-      setRollbackCommandPending(false);
-      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-        const failure = squashAtomCommandFailure(result);
-        Alert.alert(
-          "Recovery could not resume",
-          failure instanceof Error ? failure.message : "Pylon rejected this recovery action.",
-        );
-      }
-    },
-    [
-      recoverThreadRollback,
-      rollbackCommandPending,
-      rollbackSessionOwner,
-      rollbackStatus?.operationId,
-      selectedThread,
-      setRollbackCommandPending,
-    ],
-  );
-
   const threadGitControlProps = {
     environmentId: environmentIdRaw ?? "",
     threadId: threadId ?? "",
@@ -1021,12 +740,13 @@ function ThreadRouteContent(
     onOpenFilesInspector:
       fileInspector.supported && selectedThreadCwd !== null ? handleOpenFilesInspector : undefined,
     onOpenGitInspector: fileInspector.supported ? handleOpenGitInspector : undefined,
+    onMergeBack:
+      mergeBackTargetThreadId !== null && mergeBackRun !== null
+        ? () => void handleMergeBack()
+        : undefined,
     currentBranch: selectedThread?.branch ?? null,
     gitStatus: gitStatus.data,
-    gitOperationLabel: rollbackActive
-      ? "Rollback verification in progress"
-      : gitState.gitOperationLabel,
-    mutationBlocked: rollbackActive,
+    gitOperationLabel: gitState.gitOperationLabel,
     canOpenTerminal: Boolean(selectedThreadProject?.workspaceRoot),
     canOpenFiles: Boolean(selectedThreadProject?.workspaceRoot),
     projectScripts: selectedThreadProject
@@ -1111,7 +831,7 @@ function ThreadRouteContent(
         onPress: () => handleOpenTerminal(null),
       });
     }
-    if (!rollbackActive) {
+    {
       actions.push({
         accessibilityLabel: "Open git controls",
         icon: "point.topleft.down.curvedto.point.bottomright.up",
@@ -1133,7 +853,6 @@ function ThreadRouteContent(
     handleOpenGitInspector,
     handleToggleInspector,
     props.onReturnToThread,
-    rollbackActive,
     selectedThreadCwd,
     selectedThreadProject?.workspaceRoot,
   ]);
@@ -1168,9 +887,6 @@ function ThreadRouteContent(
       }),
     );
   }, [navigation, routeThreadIdentity, selectedThreadCreation, selectedThreadProject]);
-  // A creation the drain held (the provider or server refused admission) stays
-  // in the outbox rather than returning to a draft. Its pending-task editor
-  // edits or retargets it; deleting it stays in the thread list's menu.
   const handleEditHeldCreation = useCallback(async () => {
     const creation = selectedThreadCreation?.message;
     if (!creation?.creation) {
@@ -1199,23 +915,28 @@ function ThreadRouteContent(
       }),
     );
   }, [navigation, selectedThreadCreation, selectedThreadProject]);
-  const worktreeSetup = useWorktreeSetup({
+  const setupTurnStartedAt = composer.selectedThreadActivityRun?.startedAt ?? null;
+  const { snapshot: worktreeSetupSnapshot, visible: worktreeSetup } = useWorktreeSetup({
     environmentId: selectedThread?.environmentId ?? null,
     threadId: selectedThread?.id ?? null,
-    activities: selectedThreadDetail?.activities ?? [],
     preparing:
-      selectedThreadCreation?.message.creation?.workspaceMode === "worktree" &&
-      selectedThreadCreation.outcome == null,
-    turnStarted: selectedThreadDetail?.latestTurn?.startedAt != null,
+      composer.selectedThreadActivityRun?.status === "preparing" ||
+      selectedThread?.runtime?.status === "preparing" ||
+      selectedThread?.worktreePath != null ||
+      (selectedThreadCreation?.message.creation?.workspaceMode === "worktree" &&
+        selectedThreadCreation.outcome == null),
+    turnStarted: setupTurnStartedAt !== null,
     followUpSent:
       composer.selectedThreadFeed.filter(
         (entry) => entry.type === "message" && entry.message.role === "user",
       ).length +
-        composer.selectedThreadQueuedMessages.length >
+        composer.selectedThreadQueueCount >
       1,
   });
   const awaitingBootstrapTurn =
-    worktreeSetup?.phase === "running" && !worktreeSetupAgentStarted(worktreeSetup);
+    worktreeSetup !== null
+      ? worktreeSetup.phase === "running" && !worktreeSetupAgentStarted(worktreeSetup)
+      : (selectedThreadDetail?.runs.some((run) => run.status === "preparing") ?? false);
   const cancelWorktreeSetup = useAtomCommand(vcsEnvironment.cancelWorktreeSetup);
   const handleCancelWorktreeSetup = useCallback(() => {
     if (!selectedThread) return;
@@ -1224,75 +945,59 @@ function ThreadRouteContent(
       input: { threadId: selectedThread.id },
     });
   }, [cancelWorktreeSetup, selectedThread]);
-  const [localResendMessageId, setLocalResendMessageId] = useState<string | null>(null);
+  const startLocalThread = useAtomCommand(threadEnvironment.startTurn, "work locally");
+  const localResendBusy = useRef(false);
+  const setupMessage = selectedThreadDetail?.messages.find((message) => message.role === "user");
   const handleWorkLocally = useCallback(async () => {
-    if (!selectedThread || !selectedThreadCreation) return;
-    const result = await cancelWorktreeSetup({
-      environmentId: selectedThread.environmentId,
-      input: { threadId: selectedThread.id },
-    });
-    if (result._tag === "Success" && result.value.cancelled) {
-      setLocalResendMessageId(selectedThreadCreation.message.messageId);
-    }
-  }, [cancelWorktreeSetup, selectedThread, selectedThreadCreation]);
-  // Wait for the outbox to restore the cancelled send before queuing its replacement.
-  useEffect(() => {
-    const pending = selectedThreadCreation;
-    if (
-      !localResendMessageId ||
-      pending?.message.messageId !== localResendMessageId ||
-      pending.outcome?.kind !== "failed"
-    )
+    if (!selectedThread || !selectedThreadProject || !setupMessage || localResendBusy.current)
       return;
-    setLocalResendMessageId(null);
-    const original = pending.message;
-    if (!original.creation) return;
-    const metadata = makeTurnCommandMetadata();
-    const replacement = {
-      ...original,
-      commandId: CommandId.make(metadata.commandId),
-      messageId: MessageId.make(metadata.messageId),
-      threadId: ThreadId.make(metadata.threadId),
-      createdAt: metadata.createdAt,
-      creation: {
-        ...original.creation,
-        workspaceMode: "local" as const,
-        branch: null,
-        worktreePath: null,
-      },
-    };
-    void enqueueThreadOutboxMessage(replacement)
-      .then(() => {
-        const draftKey = restoredNewTaskDraftKey(original.messageId);
-        const restored = getComposerDraftSnapshot(draftKey);
-        // Leave any edits made during cancellation in their recovery draft.
-        if (
-          restored.text === original.text &&
-          JSON.stringify(restored.context) === JSON.stringify(original.context) &&
-          restored.attachments.length === original.attachments.length &&
-          restored.attachments.every(
-            (attachment, index) => attachment.id === original.attachments[index]?.id,
-          )
-        ) {
-          clearComposerDraftContent(draftKey, { deferAttachmentCleanup: true });
-        }
-        clearPendingThreadCreationOutcome(
-          scopedThreadKey(original.environmentId, original.threadId),
-        );
-        navigation.dispatch(
-          StackActions.replace("Thread", {
-            environmentId: String(replacement.environmentId),
-            threadId: String(replacement.threadId),
-          }),
-        );
-      })
-      .catch((error) =>
-        Alert.alert(
-          "Could not work locally",
-          error instanceof Error ? error.message : String(error),
-        ),
+    localResendBusy.current = true;
+    try {
+      const result = await cancelWorktreeSetup({
+        environmentId: selectedThread.environmentId,
+        input: { threadId: selectedThread.id },
+      });
+      if (result._tag !== "Success" || !result.value.cancelled) return;
+      // V2 accepts the launch before setup runs, so cancellation never rejects
+      // the original outbox delivery. Reuse the server-owned prompt and uploads.
+      const metadata = makeTurnCommandMetadata();
+      const launched = await startLocalThread({
+        environmentId: selectedThread.environmentId,
+        input: buildProjectThreadStartTurnInput({
+          ...metadata,
+          projectId: selectedThread.projectId,
+          projectCwd: selectedThreadProject.workspaceRoot,
+          text: setupMessage.text,
+          ...(setupMessage.context ? { context: setupMessage.context } : {}),
+          uploadedAttachments: setupMessage.attachments,
+          modelSelection: selectedThread.modelSelection,
+          runtimeMode: selectedThread.runtimeMode,
+          interactionMode: selectedThread.interactionMode,
+          workspaceMode: "local",
+          branch: null,
+          worktreePath: null,
+          startFromOrigin: false,
+          worktreeBranchName: "",
+        }),
+      });
+      if (launched._tag !== "Success") return;
+      navigation.dispatch(
+        StackActions.replace("Thread", {
+          environmentId: String(selectedThread.environmentId),
+          threadId: metadata.threadId,
+        }),
       );
-  }, [localResendMessageId, navigation, selectedThreadCreation]);
+    } finally {
+      localResendBusy.current = false;
+    }
+  }, [
+    cancelWorktreeSetup,
+    navigation,
+    selectedThread,
+    selectedThreadProject,
+    setupMessage,
+    startLocalThread,
+  ]);
   const creationState = ((): ThreadDetailScreenProps["creationState"] => {
     if (selectedThreadCreation === null) {
       return awaitingBootstrapTurn ? { kind: "preparing", preparingWorktree: true } : null;
@@ -1387,23 +1092,20 @@ function ThreadRouteContent(
           feedbackSubmissions={composer.feedbackSubmissions}
           onDismissFeedback={composer.dismissFeedback}
           selectedThreadFeed={composer.selectedThreadFeed}
-          sessionAgents={composer.selectedThreadAgents}
-          contextWindow={composer.selectedThreadContextWindow}
-          sessionResources={composer.selectedThreadResources}
-          sessionAgentDepth={composer.selectedThreadAgentDepth}
-          sessionInputQueue={composer.selectedThreadInputQueue}
-          sessionGoal={composer.selectedThreadGoal}
-          sessionCompaction={composer.selectedThreadCompaction}
-          sessionCompactionScopeKey={composer.sessionCompactionScopeKey}
-          sessionCompactionPendingAction={composer.sessionCompactionPendingAction}
-          activeWorkStartedAt={composer.activeWorkStartedAt}
+          activityRun={composer.selectedThreadActivityRun}
+          activeWorkStartedAt={
+            creationState?.kind === "preparing" ||
+            (worktreeSetup !== null && setupTurnStartedAt === null)
+              ? null
+              : composer.activeWorkStartedAt
+          }
           isCompacting={composer.isCompacting}
+          runlessWorkActive={composer.runlessWorkActive}
+          providerSubagentStatus={composer.providerSubagentStatus}
           creationState={creationState}
           setupWorkingStartedAt={
             composer.activeWorkStartedAt !== null &&
-            selectedThreadDetail?.activities.some(
-              (activity) => activity.kind === "worktree-setup",
-            ) &&
+            worktreeSetupSnapshot !== null &&
             composer.selectedThreadFeed.filter(
               (entry) => entry.type === "message" && entry.message.role === "user",
             ).length <= 1
@@ -1414,14 +1116,11 @@ function ThreadRouteContent(
             worktreeSetup
               ? {
                   snapshot: worktreeSetup,
-                  turnStartedAt: selectedThreadDetail?.latestTurn?.startedAt ?? null,
+                  turnStartedAt: setupTurnStartedAt,
                   working: composer.activeWorkStartedAt !== null,
-                  turnStarted: selectedThreadDetail?.latestTurn?.startedAt != null,
+                  turnStarted: setupTurnStartedAt !== null,
                   onCancel: handleCancelWorktreeSetup,
-                  onWorkLocally:
-                    selectedThreadCreation?.outcome == null && selectedThreadCreation
-                      ? handleWorkLocally
-                      : null,
+                  onWorkLocally: setupMessage && selectedThreadProject ? handleWorkLocally : null,
                 }
               : null
           }
@@ -1431,29 +1130,24 @@ function ThreadRouteContent(
           activePendingUserInputDrafts={requests.activePendingUserInputDrafts}
           activePendingUserInputAnswers={requests.activePendingUserInputAnswers}
           respondingUserInputId={requests.respondingUserInputId}
-          activePendingInteraction={requests.activePendingInteraction}
-          sessionInteractionPresentation={requests.sessionInteractionPresentation}
-          interactionSubmitting={requests.interactionSubmitting}
-          interactionError={requests.interactionError}
-          interactionCanRetry={requests.interactionCanRetry}
           draftMessage={composer.draftMessage}
           draftAttachments={composer.draftAttachments}
           connectionStateLabel={routeConnectionState}
           threadSyncStatus={selectedThreadDetailState.status}
-          loadEarlier={loadEarlierTurns}
-          rollbackStatus={rollbackStatus}
-          rollbackStatusUncertain={resolvedRollback.uncertain}
-          rollbackTargets={rollbackTargets}
-          rollbackTargetIdle={rollbackTargetIdle}
-          rollbackCommandPending={rollbackCommandPending}
-          onRevertMessage={onRevertMessage}
-          onRecoverRollback={onRecoverRollback}
+          historyControls={historyControls}
           activeThreadBusy={composer.activeThreadBusy}
+          canStopThread={awaitingBootstrapTurn || composer.interruptibleRunId !== null}
+          queuedRunEdit={composer.queuedRunEdit}
+          composerDraftKey={composer.composerDraftKey}
+          followUpBehavior={composer.followUpBehavior}
+          canSteerActiveTurn={composer.canSteerActiveTurn}
+          isSavingQueuedEdit={composer.isSavingQueuedEdit}
+          onCancelQueuedRunEdit={composer.cancelQueuedRunEdit}
+          onRemoveQueuedEditAttachment={composer.onRemoveQueuedEditAttachment}
           environmentId={selectedThread.environmentId}
           projectWorkspaceRoot={selectedThreadProject?.workspaceRoot ?? null}
           threadCwd={selectedThreadCwd}
           localOutboxCount={composer.selectedThreadQueueCount}
-          onManagePendingSends={composer.onManagePendingSends}
           queuedMessages={composer.selectedThreadQueuedMessages}
           dispatchingMessageId={composer.dispatchingQueuedMessageId}
           layoutVariant={layout.variant}
@@ -1467,20 +1161,9 @@ function ThreadRouteContent(
           onRemoveDraftImage={composer.onRemoveDraftImage}
           serverConfig={serverConfig}
           onStopThread={awaitingBootstrapTurn ? handleCancelWorktreeSetup : handleStopThread}
-          onReloadSessionResources={handleReloadSessionResources}
-          onRefineSessionHarness={handleRefineSessionHarness}
-          onAskSessionSideQuestion={handleAskSessionSideQuestion}
-          onCancelSessionSideQuestion={handleCancelSessionSideQuestion}
-          onSetSessionAgentDepth={handleSetSessionAgentDepth}
           onSendMessage={composer.onSendMessage}
-          onQueueFollowUp={composer.onQueueFollowUp}
-          onClearSessionInputQueue={composer.onClearSessionInputQueue}
-          onRemoveOnlySessionInputQueueItem={composer.onRemoveOnlySessionInputQueueItem}
-          onSetSessionInputQueueMode={composer.onSetSessionInputQueueMode}
-          onRunSessionCompactionAction={composer.onRunSessionCompactionAction}
-          onCancelSessionAgent={composer.onCancelSessionAgent}
-          onMessageSessionAgent={composer.onMessageSessionAgent}
           onReconnectEnvironment={handleReconnectEnvironment}
+          canSwitchThreadProvider={composer.canSwitchThreadProvider}
           onUpdateThreadModelSelection={composer.onUpdateModelSelection}
           onUpdateThreadRuntimeMode={composer.onUpdateRuntimeMode}
           onUpdateThreadInteractionMode={composer.onUpdateInteractionMode}
@@ -1488,8 +1171,6 @@ function ThreadRouteContent(
           onSelectUserInputOption={requests.onSelectUserInputOption}
           onChangeUserInputCustomAnswer={requests.onChangeUserInputCustomAnswer}
           onSubmitUserInput={requests.onSubmitUserInput}
-          onRespondToInteraction={requests.onRespondToInteraction}
-          onRetryInteraction={requests.onRetryInteraction}
           onDismissUserInput={requests.onDismissUserInput}
         />
       </View>

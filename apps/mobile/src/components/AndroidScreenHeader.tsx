@@ -48,6 +48,7 @@ export function AndroidScreenHeader(props: {
   readonly title: string;
   readonly subtitle?: string | null;
   readonly actions?: ReadonlyArray<AndroidHeaderAction>;
+  readonly leading?: ReactNode;
   readonly trailing?: ReactNode;
   readonly onBack?: () => void;
   readonly embedded?: boolean;
@@ -65,6 +66,7 @@ export function AndroidScreenHeader(props: {
       }}
     >
       <View className="min-h-12 flex-row items-center gap-2">
+        {props.leading}
         {props.onBack ? (
           <Pressable
             accessibilityLabel="Navigate up"

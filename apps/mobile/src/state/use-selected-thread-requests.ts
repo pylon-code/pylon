@@ -1,4 +1,3 @@
-import { derivePendingRequests } from "@t3tools/client-runtime/pending-requests";
 import { useServerConfigs } from "./entities";
 import { Alert } from "react-native";
 import {
@@ -8,52 +7,37 @@ import {
 } from "./question-attachments";
 import { composerDraftsAtom, clearComposerDraft } from "./use-composer-drafts";
 import {
+  composerAttachmentUploadsAtom,
   composerAttachmentUploadBlockReason,
   composerAttachmentsStillUploading,
-  composerAttachmentUploadsAtom,
 } from "./composer-attachment-uploads";
 import { useAtomValue } from "@effect/atom-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
+import { type ProviderApprovalDecision, type RuntimeRequestId } from "@t3tools/contracts";
 import {
-  ApprovalRequestId,
-  type ProviderApprovalDecision,
-  type UserInputQuestion,
-  type SessionInteractionRequestId,
-  type SessionInteractionResponse,
-} from "@t3tools/contracts";
-import * as Cause from "effect/Cause";
-import * as Option from "effect/Option";
+  type PendingThreadRequests,
+  type ThreadUserInputQuestion,
+} from "@t3tools/client-runtime/state/thread-requests";
 import { Atom } from "effect/unstable/reactivity";
 
 import { threadEnvironment } from "../state/threads";
 import { scopedRequestKey } from "../lib/scopedEntities";
 import {
   buildPendingUserInputAnswers,
-  sortThreadActivities,
   setPendingUserInputCustomAnswer,
   togglePendingUserInputOptionSelection,
   type PendingUserInputDraftAnswer,
 } from "../lib/threadActivity";
-import {
-  acquireInteractionSubmissionLock,
-  beginInteractionSubmission,
-  interactionCommandAccepted,
-  interactionCommandFailed,
-  interactionSubmissionMatchesActive,
-  reconcileInteractionSubmission,
-  releaseInteractionSubmissionLock,
-  type InteractionSubmissionState,
-} from "../lib/interactionSubmission";
-import {
-  buildSessionInteractionCommandInput,
-  compactSessionPresentationText,
-  foldSessionInteractionActivities,
-} from "../lib/sessionInteractions";
 import { appAtomRegistry } from "./atom-registry";
-import { useSelectedThreadDetailState } from "./use-thread-detail";
+import {
+  useSelectedThreadDetailState,
+  useSelectedThreadPendingRequests,
+} from "./use-thread-detail";
 import { useThreadSelection } from "./use-thread-selection";
 import { useAtomCommand } from "./use-atom-command";
+
+const EMPTY_PENDING_REQUESTS: PendingThreadRequests = { approvals: [], userInputs: [] };
 
 const userInputDraftsByRequestKeyAtom = Atom.make<
   Record<string, Record<string, PendingUserInputDraftAnswer>>
@@ -61,7 +45,7 @@ const userInputDraftsByRequestKeyAtom = Atom.make<
 
 function setUserInputDraftOption(
   requestKey: string,
-  question: UserInputQuestion,
+  question: ThreadUserInputQuestion,
   value: string,
 ): void {
   const current = appAtomRegistry.get(userInputDraftsByRequestKeyAtom);
@@ -80,7 +64,7 @@ function setUserInputDraftOption(
 
 function setUserInputDraftCustomAnswer(
   requestKey: string,
-  question: UserInputQuestion,
+  question: ThreadUserInputQuestion,
   customAnswer: string,
 ): void {
   const current = appAtomRegistry.get(userInputDraftsByRequestKeyAtom);
@@ -97,13 +81,6 @@ function setUserInputDraftCustomAnswer(
   });
 }
 
-function interactionResponseError(cause: Cause.Cause<unknown>): string {
-  const error = Cause.squash(cause);
-  return error instanceof Error && error.message.trim().length > 0
-    ? compactSessionPresentationText(error.message)
-    : "The response could not be sent. Try again.";
-}
-
 export function useSelectedThreadRequests() {
   const respondToApproval = useAtomCommand(
     threadEnvironment.respondToApproval,
@@ -113,59 +90,29 @@ export function useSelectedThreadRequests() {
     threadEnvironment.respondToUserInput,
     "thread user input response",
   );
-  const respondToInteraction = useAtomCommand(threadEnvironment.respondToInteraction, {
-    label: "thread interaction response",
-    reportFailure: false,
-  });
   const dismissUserInput = useAtomCommand(
     threadEnvironment.dismissUserInput,
     "thread user input dismissal",
   );
   const { selectedThread: selectedThreadShell } = useThreadSelection();
-  const selectedThreadState = useSelectedThreadDetailState();
-  const selectedThread = Option.getOrNull(selectedThreadState.data);
-  const selectedThreadLive = selectedThreadState.status === "live";
+  const pendingRequests = useSelectedThreadPendingRequests();
+  const detailState = useSelectedThreadDetailState();
+  const selectedThreadLive = detailState.status === "live";
   const userInputDraftsByRequestKey = useAtomValue(userInputDraftsByRequestKeyAtom);
-  const [respondingApprovalId, setRespondingApprovalId] = useState<ApprovalRequestId | null>(null);
   const userInputResponsesInFlight = useRef(new Set<string>());
-  const [respondingUserInputId, setRespondingUserInputId] = useState<ApprovalRequestId | null>(
-    null,
-  );
-  const [interactionSubmission, setInteractionSubmission] =
-    useState<InteractionSubmissionState | null>(null);
-  const interactionSubmissionLockRef = useRef<SessionInteractionRequestId | null>(null);
-  const interactionSubmissionAttemptRef = useRef(0);
+  const [respondingApprovalId, setRespondingApprovalId] = useState<RuntimeRequestId | null>(null);
+  const [respondingUserInputId, setRespondingUserInputId] = useState<RuntimeRequestId | null>(null);
 
-  // Prime interactions retain their own ordered lifecycle reducer.
-  const sortedActivities = useMemo(
-    () => (selectedThread ? sortThreadActivities(selectedThread.activities) : []),
-    [selectedThread],
-  );
-  const sessionInteractionState = useMemo(
-    () =>
-      foldSessionInteractionActivities(sortedActivities, {
-        terminalSession: selectedThreadShell?.session?.status === "stopped",
-      }),
-    [selectedThreadShell?.session?.status, sortedActivities],
-  );
-  const activePendingInteraction = sessionInteractionState.pending[0] ?? null;
-  const activeInteractionFailure =
-    sessionInteractionState.failures.find(
-      (failure) => failure.requestId === activePendingInteraction?.requestId,
-    ) ?? null;
-  const { approvals: activePendingApprovals, userInputs: activePendingUserInputs } = useMemo(
-    () => derivePendingRequests(selectedThread?.activities ?? []),
-    [selectedThread?.activities],
-  );
+  const activePendingApprovals = pendingRequests?.approvals ?? EMPTY_PENDING_REQUESTS.approvals;
   const activePendingApproval = activePendingApprovals[0] ?? null;
+  const activePendingUserInputs = pendingRequests?.userInputs ?? EMPTY_PENDING_REQUESTS.userInputs;
   const activePendingUserInput = activePendingUserInputs[0] ?? null;
   const questionServerConfigs = useServerConfigs();
   const attachmentDrafts = useAtomValue(composerDraftsAtom);
   const preparationCounts = useAtomValue(questionAttachmentPreparationAtom);
   const uploadStates = useAtomValue(composerAttachmentUploadsAtom);
   useEffect(() => {
-    // A cached snapshot can predate the question, so only live data may discard its drafts.
-    if (!selectedThreadLive || !selectedThreadShell || !selectedThread) return;
+    if (!selectedThreadLive || !selectedThreadShell || !pendingRequests) return;
     const prefix = questionAttachmentDraftPrefix(
       selectedThreadShell.environmentId,
       selectedThreadShell.id,
@@ -196,9 +143,9 @@ export function useSelectedThreadRequests() {
   }, [
     activePendingUserInputs,
     attachmentDrafts,
-    selectedThread,
-    selectedThreadLive,
+    pendingRequests,
     selectedThreadShell,
+    selectedThreadLive,
   ]);
   const activePendingUserInputDrafts =
     activePendingUserInput && selectedThreadShell
@@ -229,8 +176,8 @@ export function useSelectedThreadRequests() {
                 attachmentCount: attachments.length,
                 attachmentsBlocked:
                   (attachments.length > 0 &&
-                    uploadInput.serverConfig?.environment.capabilities.questionAttachments !==
-                      true) ||
+                    questionServerConfigs.get(selectedThreadShell.environmentId)?.environment
+                      .capabilities.questionAttachments !== true) ||
                   (preparationCounts[key] ?? 0) > 0 ||
                   composerAttachmentsStillUploading(uploadInput) ||
                   composerAttachmentUploadBlockReason({
@@ -247,7 +194,7 @@ export function useSelectedThreadRequests() {
     : null;
 
   const onSelectUserInputOption = useCallback(
-    (requestId: ApprovalRequestId, question: UserInputQuestion, value: string) => {
+    (requestId: RuntimeRequestId, question: ThreadUserInputQuestion, value: string) => {
       if (!selectedThreadShell) {
         return;
       }
@@ -259,7 +206,7 @@ export function useSelectedThreadRequests() {
   );
 
   const onChangeUserInputCustomAnswer = useCallback(
-    (requestId: ApprovalRequestId, questionId: string, customAnswer: string) => {
+    (requestId: RuntimeRequestId, questionId: string, customAnswer: string) => {
       const question = activePendingUserInputs
         .find((request) => request.requestId === requestId)
         ?.questions.find((entry) => entry.id === questionId);
@@ -274,8 +221,14 @@ export function useSelectedThreadRequests() {
   );
 
   const onRespondToApproval = useCallback(
-    async (requestId: ApprovalRequestId, decision: ProviderApprovalDecision) => {
+    async (requestId: RuntimeRequestId, decision: ProviderApprovalDecision) => {
       if (!selectedThreadShell) {
+        return;
+      }
+      if (
+        activePendingApprovals.find((approval) => approval.requestId === requestId)
+          ?.responseCapability !== "live"
+      ) {
         return;
       }
 
@@ -291,11 +244,16 @@ export function useSelectedThreadRequests() {
       setRespondingApprovalId((current) => (current === requestId ? null : current));
       return result;
     },
-    [respondToApproval, selectedThreadShell],
+    [activePendingApprovals, respondToApproval, selectedThreadShell],
   );
 
   const onSubmitUserInput = useCallback(async () => {
-    if (!selectedThreadShell || !activePendingUserInput || !activePendingUserInputAnswers) {
+    if (
+      !selectedThreadShell ||
+      !activePendingUserInput ||
+      activePendingUserInput.responseCapability === "not_resumable" ||
+      !activePendingUserInputAnswers
+    ) {
       return;
     }
 
@@ -369,97 +327,6 @@ export function useSelectedThreadRequests() {
     selectedThreadShell,
   ]);
 
-  useEffect(() => {
-    setInteractionSubmission((current) => {
-      if (current === null) {
-        return null;
-      }
-      const next = reconcileInteractionSubmission(
-        current,
-        activePendingInteraction?.requestId ?? null,
-        activeInteractionFailure,
-      );
-      if (next === null || (current.phase === "submitting" && next.phase === "error")) {
-        interactionSubmissionAttemptRef.current += 1;
-        releaseInteractionSubmissionLock(interactionSubmissionLockRef, current.requestId);
-      }
-      return next;
-    });
-  }, [activeInteractionFailure, activePendingInteraction?.requestId]);
-
-  const onRespondToInteraction = useCallback(
-    async (requestId: SessionInteractionRequestId, response: SessionInteractionResponse) => {
-      if (
-        !selectedThreadShell ||
-        !acquireInteractionSubmissionLock(interactionSubmissionLockRef, requestId)
-      ) {
-        return;
-      }
-
-      const attempt = interactionSubmissionAttemptRef.current + 1;
-      interactionSubmissionAttemptRef.current = attempt;
-      setInteractionSubmission(
-        beginInteractionSubmission(
-          requestId,
-          response,
-          activeInteractionFailure?.requestId === requestId ? activeInteractionFailure.id : null,
-        ),
-      );
-      try {
-        const result = await respondToInteraction({
-          environmentId: selectedThreadShell.environmentId,
-          input: buildSessionInteractionCommandInput(selectedThreadShell.id, requestId, response),
-        });
-        if (interactionSubmissionAttemptRef.current !== attempt) {
-          return result;
-        }
-        if (result._tag === "Failure") {
-          releaseInteractionSubmissionLock(interactionSubmissionLockRef, requestId);
-        }
-        setInteractionSubmission((current) => {
-          if (current?.requestId !== requestId) {
-            return current;
-          }
-          return result._tag === "Failure"
-            ? interactionCommandFailed(current, interactionResponseError(result.cause))
-            : interactionCommandAccepted(current);
-        });
-        // Success only means the event-sourced command was accepted. Keep the
-        // controls disabled until interaction.resolved or a matching provider
-        // failure arrives, otherwise a fast second tap can race the reactor.
-        return result;
-      } catch (error) {
-        if (interactionSubmissionAttemptRef.current !== attempt) {
-          return undefined;
-        }
-        releaseInteractionSubmissionLock(interactionSubmissionLockRef, requestId);
-        setInteractionSubmission((current) =>
-          current?.requestId === requestId
-            ? interactionCommandFailed(
-                current,
-                error instanceof Error && error.message.trim().length > 0
-                  ? compactSessionPresentationText(error.message)
-                  : "The response could not be sent. Try again.",
-              )
-            : current,
-        );
-        return undefined;
-      }
-    },
-    [activeInteractionFailure, respondToInteraction, selectedThreadShell],
-  );
-
-  const onRetryInteraction = useCallback(async () => {
-    if (interactionSubmission?.phase !== "error") {
-      return;
-    }
-    return onRespondToInteraction(interactionSubmission.requestId, interactionSubmission.response);
-  }, [interactionSubmission, onRespondToInteraction]);
-
-  const interactionSubmissionMatches = interactionSubmissionMatchesActive(
-    interactionSubmission,
-    activePendingInteraction?.requestId ?? null,
-  );
   // Closes an async question without messaging the agent.
   const onDismissUserInput = useCallback(async () => {
     if (!selectedThreadShell || !activePendingUserInput) {
@@ -485,22 +352,12 @@ export function useSelectedThreadRequests() {
     activePendingUserInput,
     activePendingUserInputDrafts,
     activePendingUserInputAnswers,
-    activePendingInteraction,
-    sessionInteractionPresentation: sessionInteractionState,
-    interactionSubmitting:
-      interactionSubmissionMatches && interactionSubmission.phase === "submitting",
-    interactionError: interactionSubmissionMatches
-      ? interactionSubmission.error
-      : (activeInteractionFailure?.message ?? null),
-    interactionCanRetry: interactionSubmissionMatches && interactionSubmission.phase === "error",
     respondingApprovalId,
     respondingUserInputId,
     onRespondToApproval,
     onSelectUserInputOption,
     onChangeUserInputCustomAnswer,
     onSubmitUserInput,
-    onRespondToInteraction,
-    onRetryInteraction,
     onDismissUserInput,
   };
 }

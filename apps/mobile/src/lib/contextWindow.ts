@@ -18,7 +18,7 @@ export function presentMobileContextWindow(
   if (snapshot === null) return null;
   const used = formatContextWindowTokens(snapshot.usedTokens);
   const warning = snapshot.usedPercentage !== null && snapshot.usedPercentage > 90;
-  if (snapshot.maxTokens === null || snapshot.usedPercentage === null) {
+  if (snapshot.maxTokens == null || snapshot.usedPercentage === null) {
     return {
       percent: null,
       detailLabel: `${used} used · window size unknown`,

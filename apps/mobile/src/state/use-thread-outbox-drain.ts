@@ -1,9 +1,10 @@
 import { useAtomValue } from "@effect/atom-react";
-import type {
-  EnvironmentProject,
-  EnvironmentThreadShell,
+import {
+  type EnvironmentProject,
+  type EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
+import { deriveThreadTitleSeed } from "@t3tools/client-runtime/operations";
 import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
@@ -808,6 +809,7 @@ export function useThreadOutboxDrain(): void {
         environmentId: queuedMessage.environmentId,
         input: {
           commandId: queuedMessage.commandId,
+          creationSource: "mobile",
           threadId: queuedMessage.threadId,
           message: {
             messageId: queuedMessage.messageId,
@@ -822,10 +824,17 @@ export function useThreadOutboxDrain(): void {
             attachments: prepared.attachments,
           },
           modelSelection: admission.selection,
+          titleSeed: deriveThreadTitleSeed({
+            text: queuedMessage.text,
+            attachments: queuedMessage.attachments,
+          }),
           runtimeMode: settings.runtimeMode,
           interactionMode: settings.interactionMode,
-          sourceEpoch: queuedMessage.sourceEpoch,
           createdAt: queuedMessage.createdAt,
+          // Rows written before follow-up behavior existed keep the previous
+          // delivery, which the server turns into a queued run when a turn is
+          // already active.
+          dispatchMode: queuedMessage.dispatchMode ?? "start",
         },
       });
       const failure = reportFailure(deliveryResult, "start-turn");
@@ -996,10 +1005,10 @@ export function useThreadOutboxDrain(): void {
         threads.some(
           (thread) =>
             scopedThreadKey(thread.environmentId, thread.id) === threadKey &&
-            (thread.latestTurn !== null ||
-              thread.session?.status === "error" ||
-              thread.session?.status === "stopped" ||
-              thread.session?.status === "interrupted"),
+            (thread.latestRun !== null ||
+              thread.runtime?.status === "failed" ||
+              thread.runtime?.status === "cancelled" ||
+              thread.runtime?.status === "interrupted"),
         )
       ) {
         clearPendingThreadCreationOutcome(threadKey);
@@ -1089,7 +1098,7 @@ export function useThreadOutboxDrain(): void {
         threadExists: thread !== undefined,
         shellStatus,
         environmentConnected: environment?.connectionState === "connected",
-        threadStatus: thread?.session?.status ?? null,
+        threadStatus: thread?.runtime?.status ?? null,
         hasDeliveryHold: nextQueuedMessage.deliveryHold !== undefined,
       });
       // The delivery action resolves first; the file-capability gate applies

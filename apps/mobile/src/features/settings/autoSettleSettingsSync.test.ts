@@ -1,4 +1,4 @@
-import { DEFAULT_SERVER_SETTINGS, EnvironmentId } from "@t3tools/contracts";
+import { DEFAULT_SERVER_SETTINGS, EnvironmentId, ProjectId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { planAutoSettleSettingsSync } from "./autoSettleSettingsSync";
@@ -65,6 +65,19 @@ describe("auto-settle settings sync", () => {
     expect(updated.newWorktreesStartFromOrigin).toBe(true);
     expect(updated.continueThreadsAfterServerUpdate).toBe(true);
     expect(updated.sourceControlWritingStyle).toEqual(target.settings.sourceControlWritingStyle);
+  });
+
+  it("compares separate project scopes on the same environment", () => {
+    const scopedReference = { ...reference, projectId: ProjectId.make("project-a") };
+    const otherProject = {
+      ...reference,
+      projectId: ProjectId.make("project-b"),
+      label: "Another project",
+      settings: { ...reference.settings, sidebarAutoSettleOnMerge: false },
+    };
+    expect(planAutoSettleSettingsSync(scopedReference, [otherProject]).mismatches).toEqual([
+      otherProject,
+    ]);
   });
 
   it("does not compare the reference or a target without loaded settings", () => {

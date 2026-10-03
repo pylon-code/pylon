@@ -1,68 +1,28 @@
+import { useConnectedPastedTextAttachmentCapability } from "../../state/pasted-text-capability";
+import type { ComposerTextPaste } from "../../native/T3ComposerEditor.types";
 import { supportsUnicodeSkillAliases } from "@t3tools/client-runtime/providerSkills";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import { useAtomValue } from "@effect/atom-react";
-import type { ContextWindowSnapshot } from "@t3tools/client-runtime/state/context-window";
+import { clampFileAttachmentUploadBytes } from "@t3tools/client-runtime/state/attachments";
+import { pastedTextDisposition, replaceTextSelection } from "@t3tools/client-runtime/text-paste";
 import {
-  formatSessionGoalStatus,
-  type SessionGoalSnapshot,
-} from "@t3tools/client-runtime/state/session-goal";
-import {
-  canAbortSessionCompaction,
-  canConfigureSessionAutoCompaction,
-  canStartSessionCompaction,
-  isSessionCompactionInProgress,
-  type SessionCompactionControlSnapshot,
-} from "@t3tools/client-runtime/state/context-compaction";
-import {
-  canCancelSessionAgent,
-  canMessageSessionAgent,
-  isActiveSubagentStatus,
-  supportsSessionAgentCancel,
-  supportsSessionAgentMessage,
-  type RuntimeSubagent,
-} from "@t3tools/client-runtime/state/subagentRuntime";
-import {
-  canWatchSessionAgentLiveActivity,
-  sessionAgentLiveActivitySelectionIsOpen,
-  type SessionAgentLiveActivitySelection,
-} from "@t3tools/client-runtime/state/session-agent-live-activity";
-import {
-  hasSessionInputQueueModes,
-  sessionInputQueueCount,
-  supportsSessionInputQueue,
-  supportsSessionInputQueueClear,
-  supportsSessionInputQueueFollowUp,
-  supportsSessionInputQueueRemove,
-  supportsSessionInputQueueSetModes,
-  type SessionInputQueueSnapshot,
-} from "@t3tools/client-runtime/state/session-input-queue";
-import {
-  canSetSessionAgentDepth,
-  supportsSessionAgentDepth,
-  type SessionAgentDepthSnapshot,
-} from "@t3tools/client-runtime/state/session-agent-depth";
-import {
-  presentSessionResourceInventory,
-  sessionResourceViewIdentity,
-  supportsSessionResourceReload,
-  type SessionResourcesSnapshot,
-} from "@t3tools/client-runtime/state/session-resources";
-import { PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS } from "@t3tools/contracts";
-import type { ComposerTextPaste } from "../../native/T3ComposerEditor.types";
-import { useConnectedPastedTextAttachmentCapability } from "../../state/pasted-text-capability";
-import type {
-  EnvironmentId,
-  MessageId,
-  ModelSelection,
-  OrchestrationThreadShell,
-  ProviderAskSessionSideQuestionResult,
-  ProviderInteractionMode,
-  ProviderRefineSessionHarnessResult,
-  ProviderSessionSideQuestionRequestId,
-  RuntimeMode,
-  ServerConfig as T3ServerConfig,
-  UsageLimitsReport,
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
+  type ChatAttachment,
+  type EnvironmentId,
+  type MessageId,
+  type ModelSelection,
+  type ProviderInteractionMode,
+  type RuntimeMode,
+  type ServerConfig as T3ServerConfig,
+  type UsageLimitsReport,
 } from "@t3tools/contracts";
+import {
+  collectProviderUsageLimits,
+  hasProviderUsageLimits,
+  isUsageLimitsCommand,
+} from "@t3tools/shared/usageLimits";
 import { StackActions, useFocusEffect, useNavigation } from "@react-navigation/native";
 import type { ReactNode } from "react";
 import {
@@ -75,18 +35,7 @@ import {
   useState,
   type RefObject,
 } from "react";
-import {
-  ActivityIndicator,
-  Alert,
-  Keyboard,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
-  Pressable,
-  useColorScheme,
-  View,
-  type ViewStyle,
-} from "react-native";
+import { Alert, Keyboard, Platform, Pressable, View, type ViewStyle } from "react-native";
 import { FilePreviewModal, type FilePreviewSource } from "../../components/FilePreviewModal";
 import {
   composerAttachmentUploadBlockReason,
@@ -103,19 +52,22 @@ import Animated, {
   withTiming,
 } from "react-native-reanimated";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
-import { presentMobileContextWindow } from "../../lib/contextWindow";
+import { themeColorWithAlpha } from "../../lib/mobileTheme";
 import { armAgentAwarenessLiveActivityForLocalWork } from "../agent-awareness/remoteRegistration";
 import { scopedThreadKey } from "../../lib/scopedEntities";
-import { composerContextImportsAtom, useComposerDraft } from "../../state/use-composer-drafts";
+import {
+  useComposerDraft,
+  composerContextImportsAtom,
+  countComposerDraftAttachmentsAfterSelection,
+} from "../../state/use-composer-drafts";
 import {
   referencedComposerAttachmentIds,
   type ComposerDocumentAttachment,
 } from "../../lib/composerContext";
-import { useProject } from "../../state/entities";
+import { useProject, useThreadShells } from "../../state/entities";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
-import { fileRoutePathSegments } from "../files/filePath";
 
-import { AppText as Text, AppTextInput as TextInput } from "../../components/AppText";
+import { AppText as Text } from "../../components/AppText";
 import { ComposerAttachmentButton } from "../../components/ComposerAttachmentButton";
 import {
   ComposerAttachmentStrip,
@@ -124,14 +76,12 @@ import {
 import { VideoPreviewModal, type VideoPreviewSource } from "../../components/VideoPreviewModal";
 import { GlassSurface } from "../../components/GlassSurface";
 import { ComposerEditor, type ComposerEditorHandle } from "../../components/ComposerEditor";
-import { ContextWindowRing } from "../../components/ContextWindowRing";
+import { fileRoutePathSegments } from "../files/filePath";
 import {
+  ComposerActionButton,
   ComposerInlineControl,
-  ComposerToolbarButton,
   ComposerToolbarRow,
-  ComposerToolbarScroller,
 } from "../../components/ComposerToolbar";
-import { ControlPill, ControlPillMenu } from "../../components/ControlPill";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import {
   composerStripAttachments,
@@ -140,39 +90,36 @@ import {
 } from "../../lib/composerImages";
 import {
   buildModelOptions,
-  type ModelOption,
   groupByProvider,
-  modelSelectionDisplayName,
-  resolveModelSelectionRuntimeMode,
-  showModelSelectionInteractionModeToggle,
+  canSendToModelSelection,
 } from "../../lib/modelOptions";
 import { useScaledTextRole } from "../settings/appearance/useScaledTextRole";
 import type { RemoteClientConnectionState } from "../../lib/connection";
 import { resolveProviderOptionDescriptors } from "../../lib/providerOptions";
+import { ControlPillMenu } from "../../components/ControlPill";
+import type { ActiveTurnComposerAction } from "@t3tools/client-runtime/state/composer-dispatch";
+import type { FollowUpBehavior } from "../../lib/followUpBehavior";
+import {
+  resolveComposerSendPresentation,
+  type ComposerSendPresentation,
+} from "./composerSendPresentation";
 import { ComposerCommandPopover } from "./ComposerCommandPopover";
-import { ProviderUnavailableNotice } from "./ProviderUnavailableNotice";
-import {
-  getThreadComposerModelChangeDisabledReason,
-  resolveThreadComposerAdmissionReason,
-  resolveThreadComposerAuthority,
-  threadComposerShowsCollapsedActions,
-  threadComposerShowsStopAction,
-} from "./ThreadComposer.logic";
+import { ComposerQueuedEditAttachments } from "./ComposerQueuedEdit";
 import { useComposerCommandMenu } from "./use-composer-command-menu";
-import {
-  collectProviderUsageLimits,
-  shouldHandleUsageLimitsCommand,
-} from "@t3tools/shared/usageLimits";
-import { ComposerUsageLimits } from "./ComposerUsageLimits";
 import {
   ComposerDictationCancelAction,
   ComposerDictationDraftContent,
   ComposerDictationPrimaryAction,
+  ComposerDictationStartAction,
   ComposerDictationStatus,
   ComposerDictationToolbar,
 } from "../voice-input/ComposerDictationControl";
 import { useVoiceInputController } from "../voice-input/useVoiceInputController";
 import { resolveVoiceComposerPresentation } from "../voice-input/voiceInputPresentation";
+import {
+  rememberModelOptions,
+  withRememberedModelOptions,
+} from "../../state/use-model-option-memory";
 import {
   type ExistingThreadSettingsRouteSession,
   useExistingThreadSettingsRoutePresentation,
@@ -181,34 +128,6 @@ import {
   useThreadSettingsSheetPresentation,
   type NavigationWithFinishTransitioning,
 } from "./use-thread-settings-sheet-presentation";
-import {
-  buildSessionInputQueueMenuActions,
-  parseSessionInputQueueModeAction,
-  parseSessionInputQueueRemoveAction,
-} from "./sessionInputQueueMenu";
-import {
-  buildSessionCompactionMenuActions,
-  parseSessionCompactionMenuAction,
-  type SessionCompactionMenuAction,
-} from "./sessionCompactionMenu";
-import { buildSessionAgentMenuActions, parseSessionAgentMenuAction } from "./sessionAgentMenu";
-import { buildSessionGoalMenuActions } from "./sessionGoalMenu";
-import {
-  buildSessionHarnessRefinementMenuActions,
-  canRefineSessionHarness,
-  parseSessionHarnessRefinementAction,
-  sessionHarnessRefinementScopeKey as buildSessionHarnessRefinementScopeKey,
-} from "./sessionHarnessRefinementMenu";
-import { SessionAgentLiveActivityModal } from "./SessionAgentLiveActivityModal";
-import { SessionResourcesModal } from "./SessionResourcesModal";
-import { QuickQuestionModal, QuickQuestionTrigger } from "./QuickQuestionModal";
-import {
-  canOpenQuickQuestion,
-  quickQuestionOpenScopeAfterAvailability,
-  quickQuestionSessionScopeKey,
-} from "./quickQuestionToolbar";
-
-const AGENT_MESSAGE_UNAVAILABLE_ERROR = "This agent is no longer available for direct messages.";
 
 /**
  * Height of the collapsed composer (pill + vertical padding, excluding safe-area inset).
@@ -230,26 +149,38 @@ export interface ThreadComposerProps {
   readonly bottomInset?: number;
   readonly connectionState: RemoteClientConnectionState;
   readonly environmentLabel: string | null;
-  readonly selectedThread: OrchestrationThreadShell;
+  /**
+   * Message sync phase for the selected thread (drives the status pill):
+   * "loading" = first fetch, nothing to show yet; "syncing" = cached messages
+   * are on screen while they reconcile with the server.
+   */
+  readonly threadSyncPhase?: "loading" | "syncing" | null;
+  readonly selectedThread: EnvironmentThreadShell;
   readonly hasCompactableConversation: boolean;
   readonly serverConfig: T3ServerConfig | null;
-  readonly localOutboxCount: number;
-  readonly onManagePendingSends: () => void;
-  readonly contextWindow: ContextWindowSnapshot | null;
-  readonly sessionResources: SessionResourcesSnapshot | null;
-  readonly sessionAgentDepth: SessionAgentDepthSnapshot | null;
-  readonly sessionAgents: ReadonlyArray<RuntimeSubagent>;
-  readonly sessionInputQueue: SessionInputQueueSnapshot | null;
-  readonly sessionGoal: SessionGoalSnapshot | null;
-  readonly sessionCompaction: SessionCompactionControlSnapshot | null;
-  readonly sessionCompactionScopeKey: string | null;
-  readonly sessionCompactionPendingAction: SessionCompactionMenuAction | null;
+  readonly queueCount: number;
   readonly activeThreadBusy: boolean;
-  readonly sessionInputBlocked: boolean;
+  readonly canStopThread: boolean;
   readonly environmentId: EnvironmentId;
   readonly projectCwd: string | null;
   /** Why sending is blocked right now (shown as the send button's label), or null. */
   readonly sendBlockedReason?: string | null;
+  /** Where the composer's content lives. Defaults to this thread's own draft. */
+  readonly draftKey?: string;
+  /**
+   * Set while a queued message is open for editing: the send button saves the
+   * edit instead of sending, and the message's server attachments stay visible
+   * above the composer so they can be removed.
+   */
+  readonly queuedEdit?: {
+    readonly existingAttachments: ReadonlyArray<ChatAttachment>;
+    readonly saving: boolean;
+    readonly onRemoveExistingAttachment: (attachmentId: string) => void;
+  } | null;
+  /** The user's configured behavior for a message sent during a running turn. */
+  readonly followUpBehavior: FollowUpBehavior;
+  /** Whether the live turn can actually be steered by this provider. */
+  readonly canSteerActiveTurn: boolean;
   readonly editorRef?: RefObject<ComposerEditorHandle | null>;
   readonly onChangeDraftMessage: (value: string) => void;
   readonly onPickDraftMedia: () => Promise<void>;
@@ -258,30 +189,14 @@ export interface ThreadComposerProps {
   readonly onNativePasteText: (paste: ComposerTextPaste) => Promise<void>;
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => void;
-  readonly onReloadSessionResources: () => Promise<void>;
-  readonly onRefineSessionHarness: () => Promise<ProviderRefineSessionHarnessResult | null>;
-  readonly onAskSessionSideQuestion: (
-    requestId: ProviderSessionSideQuestionRequestId,
-    question: string,
-  ) => Promise<ProviderAskSessionSideQuestionResult | null>;
-  readonly onCancelSessionSideQuestion: (
-    requestId: ProviderSessionSideQuestionRequestId,
-  ) => Promise<void>;
-  readonly onSetSessionAgentDepth: (maxDepth: number) => Promise<void>;
-  readonly onSendMessage: () => Promise<MessageId | null>;
-  readonly onQueueFollowUp: () => Promise<MessageId | null>;
-  readonly onClearSessionInputQueue: () => Promise<boolean>;
-  readonly onRemoveOnlySessionInputQueueItem: (queue: "steering" | "follow-up") => Promise<boolean>;
-  readonly onSetSessionInputQueueMode: (
-    queue: "steering" | "follow-up",
-    mode: "all-at-once" | "one-at-a-time",
-  ) => Promise<boolean>;
-  readonly onRunSessionCompactionAction: (action: SessionCompactionMenuAction) => Promise<boolean>;
-  readonly onCancelSessionAgent: (agentId: string) => Promise<boolean>;
-  readonly onMessageSessionAgent: (
-    agentId: string,
-    message: string,
-  ) => Promise<"delivered" | "queued" | "delivery-unknown" | null>;
+  readonly onSendMessage: (followUp?: ActiveTurnComposerAction) => Promise<MessageId | null>;
+  /** `/usage-limits` resolves locally; the host decides where the report shows. Null clears it. */
+  readonly onShowUsageLimits: (report: UsageLimitsReport | null) => void;
+  /**
+   * Whether the model picker may offer providers other than this thread's.
+   * False keeps the catalog on the instance the thread's session runs on.
+   */
+  readonly canSwitchProvider: boolean;
   readonly onUpdateModelSelection: (modelSelection: ModelSelection) => void;
   readonly onUpdateRuntimeMode: (runtimeMode: RuntimeMode) => void;
   readonly onUpdateInteractionMode: (interactionMode: ProviderInteractionMode) => void;
@@ -295,8 +210,8 @@ export interface ThreadComposerProps {
  * iOS 26+ devices, with a frosted blur fallback where supported.
  * Exported so NewTaskDraftScreen can render the same composer chrome.
  */
-// One timing for every piece of the expanded↔compact morph so the surface,
-// toolbar, and siblings move together instead of popping between layouts.
+// The bottom-anchored dock position and clipped surface height use the same
+// transition so the card grows upward without exposing its final-size content.
 // Android gets NO layout transition: the composer rides the keyboard via
 // KeyboardStickyView (frame-synced to the IME), and a time-based morph
 // running alongside that translate reads as jitter. Snapping the layout and
@@ -336,29 +251,71 @@ const COMPOSER_ATTACHMENT_ENTERING =
 
 const AnimatedGlassSurface = Animated.createAnimatedComponent(GlassSurface);
 
+const FOLLOW_UP_ACTION_LABEL = {
+  queue: "Queue",
+  steer: "Steer now",
+  restart: "Restart turn",
+} as const;
+
+const FOLLOW_UP_ACTION_SUBTITLE = {
+  queue: "Run after the current turn",
+  steer: "Interrupt what the agent is doing",
+  restart: "Start the turn over with this message",
+} as const;
+
+/**
+ * The composer's primary button. While a turn is running it also long-presses
+ * into the two follow-up behaviors, which is mobile's stand-in for the Command
+ * modifier a hardware keyboard has.
+ */
+function SendActionButton(props: {
+  readonly accessibilityLabel: string;
+  readonly presentation: ComposerSendPresentation;
+  readonly disabled: boolean;
+  readonly onSend: (followUp?: ActiveTurnComposerAction) => void;
+}) {
+  const { presentation } = props;
+  const button = (
+    <ComposerActionButton
+      accessibilityLabel={props.accessibilityLabel}
+      icon={presentation.icon}
+      variant="primary"
+      disabled={props.disabled}
+      onPress={() => props.onSend()}
+    />
+  );
+  if (!presentation.offersFollowUpChoice || presentation.action === null || props.disabled) {
+    return button;
+  }
+  const actions = [presentation.action, presentation.alternate].filter(
+    (action): action is ActiveTurnComposerAction => action !== null,
+  );
+  return (
+    <ControlPillMenu
+      accessibilityLabel="Choose how to send this message"
+      shouldOpenOnLongPress
+      actions={actions.map((action) => ({
+        id: action,
+        title: FOLLOW_UP_ACTION_LABEL[action],
+        subtitle: FOLLOW_UP_ACTION_SUBTITLE[action],
+        state: action === presentation.action ? ("on" as const) : ("off" as const),
+      }))}
+      onPressAction={({ nativeEvent }) =>
+        props.onSend(nativeEvent.event as ActiveTurnComposerAction)
+      }
+    >
+      {button}
+    </ControlPillMenu>
+  );
+}
+
 export function ComposerSurface(props: {
   readonly children: ReactNode;
   readonly style: ViewStyle;
   /** Morphs between the compact and expanded composer layouts. */
   readonly animateLayout?: boolean;
 }) {
-  const { materialYouStyleLayoutActive } = useAppearancePreferences();
   const colors = useUniwindTheme();
-  // Drop shadow lives on a wrapper: `overflow: "hidden"` on the surface itself
-  // (needed to clip content to the pill shape) would clip the shadow on iOS.
-  //
-  // The colour is set here rather than through a `shadow-adaptive-*` class. A
-  // bare Tailwind shadow-colour utility emits only `--tw-shadow-color` and no
-  // `box-shadow`, and Uniwind's native store only maps a style when
-  // `result.boxShadow` is defined — so the class contributes nothing to the RN
-  // style and `shadowOpacity: 1` would fall back to RN's default opaque black.
-  const shadowColor = colors["--color-primary-shadow"];
-  const isDarkMode = useColorScheme() === "dark";
-  // #8793's shape morph, adopted without its toolbar restructure. Animating the
-  // radius on a shared value keeps the pill/card corners interpolating with the
-  // layout instead of snapping on the first frame. Every native frame carries
-  // the same transition: animating only the outer clip leaves the glass and the
-  // content at their final height immediately.
   const targetBorderRadius =
     typeof props.style.borderRadius === "number" ? props.style.borderRadius : 0;
   const animatedBorderRadius = useSharedValue(targetBorderRadius);
@@ -375,27 +332,29 @@ export function ComposerSurface(props: {
     borderRadius: animatedBorderRadius.value,
   }));
   const layoutTransition = shouldAnimate ? COMPOSER_LAYOUT_TRANSITION : undefined;
-  const shadowStyle: ViewStyle = {
-    shadowColor,
-    shadowOpacity: isDarkMode ? 0.35 : 0.12,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 10,
-  };
 
+  // Each native frame follows the same transition. Animating only the outer
+  // clip leaves the glass and content at their final height on the first frame.
   return (
     <Animated.View
+      className={
+        Platform.OS === "android" ? undefined : "shadow-[0_6px_28px] shadow-adaptive-black-a15-a35"
+      }
       layout={layoutTransition}
-      // Material You layout draws the composer as a flat tonal surface.
-      style={[materialYouStyleLayoutActive ? null : shadowStyle, animatedShapeStyle]}
+      style={[
+        animatedShapeStyle,
+        {
+          overflow: "hidden",
+        },
+      ]}
     >
       <AnimatedGlassSurface
         chrome="none"
         fallbackColor={colors["--color-composer-surface"]}
         fallbackClassName="border border-composer-border"
         glassEffectStyle="regular"
-        // Keep native glass out of the interactive content's layout path: the
-        // content is now a sibling of this layer, not a child of it.
+        // The composer is a passive material containing interactive controls.
+        // Keep native glass out of the interactive content's layout path.
         pointerEvents="none"
         tintColor="transparent"
         layout={layoutTransition}
@@ -415,12 +374,8 @@ export function ComposerSurface(props: {
 }
 
 export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposerProps) {
-  const pastedTextAttachmentsAvailable = useConnectedPastedTextAttachmentCapability(
-    props.environmentId,
-  );
   const project = useProject(scopeProjectRef(props.environmentId, props.selectedThread.projectId));
-  const { materialYouStyleLayoutActive, themeVariables: materialTheme } =
-    useAppearancePreferences();
+  const { themeVariables: materialTheme } = useAppearancePreferences();
   const composerPanel = materialTheme["--color-composer-panel"];
   const navigation = useNavigation();
   const foregroundColor = useUniwindTheme()["--color-foreground"];
@@ -428,7 +383,8 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const fallbackInputRef = useRef<ComposerEditorHandle>(null);
   const inputRef = props.editorRef ?? fallbackInputRef;
   const [isFocused, setIsFocused] = useState(false);
-  const pendingPastedTextRef = useRef(new Map<symbol, number>());
+  const pendingPastedTextAttachmentCountRef = useRef(0);
+  const [pendingPastedTextAttachmentCount, setPendingPastedTextAttachmentCount] = useState(0);
   const settingsSheetPresentation = useThreadSettingsSheetPresentation({
     editorRef: inputRef,
     isEditorFocused: isFocused,
@@ -441,33 +397,66 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
 
   const [previewFile, setPreviewFile] = useState<FilePreviewSource | null>(null);
   const [previewVideo, setPreviewVideo] = useState<VideoPreviewSource | null>(null);
-  const hasContent = props.draftMessage.trim().length > 0 || props.draftAttachments.length > 0;
-  const composerOwnerKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
-  const pasteOwner = useMemo(
-    () => Symbol("composer-paste"),
-    [composerOwnerKey, props.selectedThread.sourceEpoch],
+  const pastedTextAttachmentsAvailable = useConnectedPastedTextAttachmentCapability(
+    props.environmentId,
   );
-  const [pendingPastedTextState, setPendingPastedTextState] = useState<{
-    owner: symbol;
-    count: number;
-  }>(() => ({ owner: pasteOwner, count: 0 }));
-  const pendingPastedTextCount =
-    pendingPastedTextState.owner === pasteOwner ? pendingPastedTextState.count : 0;
-  useLayoutEffect(() => {
-    return () => {
-      pendingPastedTextRef.current.delete(pasteOwner);
-    };
-  }, [pasteOwner]);
-  const draftContext = useComposerDraft(composerOwnerKey).context;
-  const contextImports = useAtomValue(composerContextImportsAtom);
+  const queuedEdit = props.queuedEdit ?? null;
+  const composerContentDraft = useComposerDraft(
+    props.draftKey ?? scopedThreadKey(props.environmentId, props.selectedThread.id),
+  );
+  const hasContent =
+    props.draftMessage.trim().length > 0 ||
+    props.draftAttachments.length > 0 ||
+    (queuedEdit?.existingAttachments.length ?? 0) > 0;
+  // Only media belongs above the composer; every other file reads as its inline chip.
   const stripAttachments = useMemo(
     () =>
       composerStripAttachments(
         props.draftAttachments,
-        referencedComposerAttachmentIds(props.draftMessage, draftContext),
+        referencedComposerAttachmentIds(props.draftMessage, composerContentDraft.context),
       ),
-    [props.draftAttachments, props.draftMessage, draftContext],
+    [props.draftAttachments, props.draftMessage, composerContentDraft.context],
   );
+  // Stopping the agent is not what the send button means in edit mode.
+  const showStopAction = !hasContent && props.canStopThread && queuedEdit === null;
+
+  const uploadStates = useAtomValue(composerAttachmentUploadsAtom);
+  const attachmentsUploading =
+    props.connectionState === "connected" &&
+    composerAttachmentsStillUploading({
+      environmentId: props.environmentId,
+      attachments: props.draftAttachments,
+      serverConfig: props.serverConfig,
+      states: uploadStates,
+    });
+  // Every send goes through the outbox; the label says whether it leaves now
+  // or waits (for the connection, an earlier queued message, or an upload).
+  const sendPresentation = resolveComposerSendPresentation({
+    editingQueuedMessage: queuedEdit !== null,
+    running: props.activeThreadBusy,
+    canSteer: props.canSteerActiveTurn,
+    followUpBehavior: props.followUpBehavior,
+    deliveryDeferred:
+      props.connectionState !== "connected" || props.queueCount > 0 || attachmentsUploading,
+  });
+  const sendLabel = sendPresentation.label;
+  const currentModelSelection = props.selectedThread.modelSelection;
+  const currentRuntimeMode = props.selectedThread.runtimeMode;
+  const modelUnavailable =
+    props.connectionState === "connected" &&
+    !canSendToModelSelection(props.serverConfig, currentModelSelection);
+  const selectedProviderStatus = useMemo(() => {
+    if (!props.serverConfig) return null;
+    return (
+      props.serverConfig.providers.find(
+        (p) => p.instanceId === props.selectedThread.modelSelection.instanceId,
+      ) ?? null
+    );
+  }, [props.serverConfig, props.selectedThread.modelSelection.instanceId]);
+  const composerOwnerKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
+  // Content lives under the edit's own draft while a queued message is open;
+  // the owner key still identifies this composer for settings and dictation.
+  const composerDraftKey = props.draftKey ?? composerOwnerKey;
   const openDraftDocument = (attachment: ComposerDocumentAttachment) => {
     Keyboard.dismiss();
     navigation.navigate("ThreadAttachment", {
@@ -477,16 +466,93 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       name: attachment.name,
       mimeType: attachment.mimeType,
       sizeBytes: String(attachment.sizeBytes),
-      draftKey: composerOwnerKey,
+      draftKey: composerDraftKey,
     });
   };
-  // Keep the composer expanded through opening, presentation, and restoration
-  // while focus moves between its native editor and the settings picker.
-  const isExpanded = isFocused || settingsSheetPresentation.keepsComposerExpanded;
+  const { onSendMessage, onChangeDraftMessage, onShowUsageLimits } = props;
+  // Pylon owns /usage-limits only where Limits has data for the selected provider;
+  // elsewhere the name stays the provider's own and is sent through untouched.
+  const usageLimitsOffered =
+    selectedProviderStatus !== null &&
+    hasProviderUsageLimits(
+      selectedProviderStatus.driver,
+      props.serverConfig?.providers ?? [],
+      props.serverConfig?.usageLimitSources ?? [],
+    );
+  // Answered locally from the last Limits snapshot; the agent never sees it.
+  const openUsageLimits = useCallback(() => {
+    const report = collectProviderUsageLimits(
+      currentModelSelection.instanceId,
+      props.serverConfig?.providers ?? [],
+      props.serverConfig?.usageLimitSources ?? [],
+      Date.now(),
+    );
+    onShowUsageLimits(report);
+    if (!report) {
+      Alert.alert("Usage limits unavailable", "This provider does not currently report limits.");
+    }
+    return report !== null;
+  }, [currentModelSelection.instanceId, onShowUsageLimits, props.serverConfig]);
 
-  // Notify the parent from the derived value, not focus events: the parent
-  // sizes the feed inset from this, and blur-during-sheet would otherwise
-  // report collapsed while the composer still renders expanded.
+  const composerMenu = useComposerCommandMenu({
+    draftMessage: props.draftMessage,
+    ownerKey: composerOwnerKey,
+    environmentId: props.environmentId,
+    threadShells: useThreadShells(),
+    currentThreadId: props.selectedThread.id,
+    projectCwd: props.projectCwd,
+    pullRequestProjectId: props.serverConfig?.environment.capabilities.pullRequests
+      ? (project?.id ?? null)
+      : null,
+    pullRequestRepository: project?.repositoryIdentity?.displayName ?? null,
+    selectedProviderStatus,
+    hasThread: true,
+    hasCompactableConversation: props.hasCompactableConversation,
+    onChangeDraftMessage: props.onChangeDraftMessage,
+    onUpdateInteractionMode:
+      selectedProviderStatus?.showInteractionModeToggle === false
+        ? undefined
+        : props.onUpdateInteractionMode,
+    sessionResources: null,
+    showInteractionModeToggle: selectedProviderStatus?.showInteractionModeToggle !== false,
+  });
+  const voiceInput = useVoiceInputController({
+    ownerKey: composerOwnerKey,
+    draftMessage: props.draftMessage,
+    selection: composerMenu.selection,
+    onChangeDraftMessage: props.onChangeDraftMessage,
+    onChangeSelection: composerMenu.onSelectionChange,
+  });
+  const voicePresentation = resolveVoiceComposerPresentation(
+    voiceInput.state,
+    voiceInput.elapsedSeconds,
+  );
+  const isVoiceInputPresented = voicePresentation.statusLabel !== null;
+  // An open draft stays visible; only a collapsed composer becomes a voice strip.
+  const isExpanded = isFocused || settingsSheetPresentation.keepsComposerExpanded;
+  const showsCompactDictation = isVoiceInputPresented && !isExpanded;
+  const isToolbarVisible = isExpanded || isVoiceInputPresented;
+  const attachmentBlockReason = composerAttachmentUploadBlockReason({
+    environmentId: props.environmentId,
+    attachments: props.draftAttachments,
+    connected: props.connectionState === "connected",
+    serverConfig: props.serverConfig,
+    states: uploadStates,
+  });
+  const contextImports = useAtomValue(composerContextImportsAtom);
+  const sendBlockedReason =
+    (queuedEdit?.saving === true ? "Saving…" : null) ??
+    props.sendBlockedReason ??
+    (pendingPastedTextAttachmentCount > 0 ? "Attaching pasted text" : null) ??
+    attachmentBlockReason;
+  const canSend =
+    hasContent &&
+    !contextImports[composerDraftKey] &&
+    !voiceInput.blocksSubmission &&
+    sendBlockedReason === null &&
+    !modelUnavailable;
+
+  // Keep the feed inset aligned with the card or compact dictation strip.
   useEffect(() => {
     onExpandedChange?.(isExpanded);
   }, [isExpanded, onExpandedChange]);
@@ -522,1068 +588,77 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   const onEditorFocusChange = props.onEditorFocusChange;
   const handleFocus = useCallback(() => {
     setIsFocused(true);
+    onExpandedChange?.(true);
     onEditorFocusChange?.(true);
-  }, [onEditorFocusChange]);
+  }, [onEditorFocusChange, onExpandedChange]);
 
   const handleBlur = useCallback(() => {
     setIsFocused(false);
+    if (!settingsSheetPresentation.keepsComposerExpanded) {
+      onExpandedChange?.(false);
+    }
     onEditorFocusChange?.(false);
-  }, [onEditorFocusChange]);
-  const composerAuthority = resolveThreadComposerAuthority({
-    serverConfig: props.serverConfig,
-    modelSelection: props.selectedThread.modelSelection,
-    sessionProviderInstanceId: props.selectedThread.session?.providerInstanceId,
-  });
-  // #8843: an empty composer shows the interrupt button while the agent works;
-  // adding text or an attachment swaps it for send. Provider admission never
-  // removes that active turn escape hatch.
-  const showStopAction =
-    !hasContent && threadComposerShowsStopAction(props.selectedThread.session?.status);
-  // A mismatched persisted selection is presentation-only. Admission remains
-  // blocked until the user selects an exact model for the bound instance.
-  const currentModelSelection =
-    composerAuthority.modelSelection ?? props.selectedThread.modelSelection;
-  const currentRuntimeMode = resolveModelSelectionRuntimeMode(
-    props.serverConfig,
-    currentModelSelection,
-    props.selectedThread.runtimeMode,
-  );
-  const showInteractionModeToggle = showModelSelectionInteractionModeToggle(
-    props.serverConfig,
-    currentModelSelection,
-  );
-  const selectedProviderStatus = composerAuthority.provider;
-  const providerAdmissionReason = composerAuthority.providerAdmissionReason;
-  const projectAdmissionReason =
-    props.projectCwd === null ? "This thread's project workspace is unavailable." : null;
-  const blockingAdmissionReason = providerAdmissionReason ?? projectAdmissionReason;
-  const composerAdmissionReason = resolveThreadComposerAdmissionReason({
-    providerReason: providerAdmissionReason,
-    projectCwd: props.projectCwd,
-    connectionState: props.connectionState,
-  });
-  const selectedProviderUnavailable =
-    blockingAdmissionReason === null
-      ? null
-      : { headline: "Unavailable" as const, detail: blockingAdmissionReason };
-  const uploadStates = useAtomValue(composerAttachmentUploadsAtom);
-  const attachmentBlockReason = composerAttachmentUploadBlockReason({
-    environmentId: props.environmentId,
-    attachments: props.draftAttachments,
-    connected: props.connectionState === "connected",
-    serverConfig: props.serverConfig,
-    states: uploadStates,
-  });
-  // An in-flight upload no longer blocks a send: the message waits in the
-  // outbox and the drain delivers it once the bytes are on the server.
-  const attachmentsUploading =
-    props.connectionState === "connected" &&
-    composerAttachmentsStillUploading({
-      environmentId: props.environmentId,
-      attachments: props.draftAttachments,
-      serverConfig: props.serverConfig,
-      states: uploadStates,
-    });
-  // A provider follow-up bypasses the outbox and uploads its files itself, so
-  // it still waits for the background transfer instead of starting another.
-  const sendBlockedReason =
-    props.sendBlockedReason ??
-    (pendingPastedTextCount > 0 ? "Attaching pasted text" : null) ??
-    attachmentBlockReason;
-  const followUpBlockReason =
-    sendBlockedReason ?? (attachmentsUploading ? "Attachment still uploading" : null);
-  const canSend =
-    hasContent &&
-    !contextImports[composerOwnerKey] &&
-    !props.sessionInputBlocked &&
-    composerAuthority.providerAdmissionAvailable &&
-    props.projectCwd !== null &&
-    sendBlockedReason === null &&
-    props.sessionCompactionPendingAction !== "compact" &&
-    !isSessionCompactionInProgress(props.sessionCompaction);
-  const activeSessionProviderStatus = useMemo(() => {
-    const instanceId = props.selectedThread.session?.providerInstanceId;
-    if (!props.serverConfig || instanceId === undefined) return null;
-    return (
-      props.serverConfig.providers.find((provider) => provider.instanceId === instanceId) ?? null
-    );
-  }, [props.selectedThread.session?.providerInstanceId, props.serverConfig]);
-  const modelChangesLocked =
-    props.selectedThread.session != null &&
-    (selectedProviderStatus?.requiresNewThreadForModelChange === true ||
-      activeSessionProviderStatus?.requiresNewThreadForModelChange === true);
-  const getModelChangeDisabledReason = useCallback(
-    (option: ModelOption) =>
-      getThreadComposerModelChangeDisabledReason({
-        option,
-        currentModelSelection,
-        session: props.selectedThread.session,
-        providers: props.serverConfig?.providers ?? [],
-        sessionInputBlocked: props.sessionInputBlocked,
-        modelChangesLocked,
-      }),
-    [
-      currentModelSelection,
-      modelChangesLocked,
-      props.selectedThread.session,
-      props.serverConfig,
-      props.sessionInputBlocked,
-    ],
-  );
-  const quickQuestionAvailable =
-    !props.sessionInputBlocked &&
-    canOpenQuickQuestion({
-      connectionState: props.connectionState,
-      session: props.selectedThread.session,
-      provider: activeSessionProviderStatus,
-    });
-  const quickQuestionScopeKey = quickQuestionSessionScopeKey({
-    environmentId: props.environmentId,
-    threadId: props.selectedThread.id,
-    providerInstanceId: props.selectedThread.session?.providerInstanceId,
-    sessionStartedAt: props.selectedThread.session?.startedAt,
-  });
-  const [quickQuestionOpenScopeKey, setQuickQuestionOpenScopeKey] = useState<string | null>(null);
-  useEffect(() => {
-    setQuickQuestionOpenScopeKey((current) =>
-      quickQuestionOpenScopeAfterAvailability(current, quickQuestionAvailable),
-    );
-  }, [quickQuestionAvailable]);
-  const sessionHarnessRefinementScopeKey = buildSessionHarnessRefinementScopeKey({
-    environmentId: props.environmentId,
-    threadId: props.selectedThread.id,
-    providerInstanceId: props.selectedThread.session?.providerInstanceId,
-    sessionStartedAt: props.selectedThread.session?.startedAt,
-  });
-  const sessionHarnessRefinementAvailable = canRefineSessionHarness({
-    connectionState: props.connectionState,
-    session: props.selectedThread.session,
-    provider: activeSessionProviderStatus,
-  });
-  const [sessionHarnessRefinementPendingScopeKey, setSessionHarnessRefinementPendingScopeKey] =
-    useState<string | null>(null);
-  const sessionHarnessRefinementPendingRef = useRef<string | null>(null);
-  const sessionHarnessRefinementOutcomeUnknownRef = useRef<string | null>(null);
-  const [
-    sessionHarnessRefinementOutcomeUnknownScopeKey,
-    setSessionHarnessRefinementOutcomeUnknownScopeKey,
-  ] = useState<string | null>(null);
-  const sessionHarnessRefinementControlRef = useRef({
-    scopeKey: sessionHarnessRefinementScopeKey,
-    available:
-      sessionHarnessRefinementAvailable &&
-      (props.selectedThread.session?.harnessRefinementStatus === undefined ||
-        props.selectedThread.session.harnessRefinementStatus === "available"),
-    onRefine: props.onRefineSessionHarness,
-  });
-  sessionHarnessRefinementControlRef.current = {
-    scopeKey: sessionHarnessRefinementScopeKey,
-    available:
-      sessionHarnessRefinementAvailable &&
-      (props.selectedThread.session?.harnessRefinementStatus === undefined ||
-        props.selectedThread.session.harnessRefinementStatus === "available"),
-    onRefine: props.onRefineSessionHarness,
-  };
-  useEffect(() => {
-    sessionHarnessRefinementPendingRef.current = null;
-    sessionHarnessRefinementOutcomeUnknownRef.current = null;
-    setSessionHarnessRefinementPendingScopeKey(null);
-    setSessionHarnessRefinementOutcomeUnknownScopeKey(null);
-  }, [sessionHarnessRefinementScopeKey]);
-  useEffect(() => {
-    if (
-      props.selectedThread.session?.harnessRefinementStatus === undefined ||
-      props.selectedThread.session.harnessRefinementStatus === "available"
-    ) {
-      sessionHarnessRefinementOutcomeUnknownRef.current = null;
-      setSessionHarnessRefinementOutcomeUnknownScopeKey(null);
-    }
-  }, [props.selectedThread.session?.harnessRefinementStatus]);
-
-  const sessionHarnessRefinementActions = useMemo(
-    () =>
-      buildSessionHarnessRefinementMenuActions({
-        scopeKey: sessionHarnessRefinementScopeKey,
-        connectionState: props.connectionState,
-        session: props.selectedThread.session ?? null,
-        provider: activeSessionProviderStatus,
-        pendingScopeKey: sessionHarnessRefinementPendingScopeKey,
-        outcomeUnknownScopeKey: sessionHarnessRefinementOutcomeUnknownScopeKey,
-      }),
-    [
-      activeSessionProviderStatus,
-      props.connectionState,
-      props.selectedThread.session,
-      sessionHarnessRefinementOutcomeUnknownScopeKey,
-      sessionHarnessRefinementPendingScopeKey,
-      sessionHarnessRefinementScopeKey,
-    ],
-  );
-  const runSessionHarnessRefinement = useCallback(async (expectedScopeKey: string) => {
-    const control = sessionHarnessRefinementControlRef.current;
-    if (
-      control.scopeKey !== expectedScopeKey ||
-      !control.available ||
-      sessionHarnessRefinementPendingRef.current !== null ||
-      sessionHarnessRefinementOutcomeUnknownRef.current === expectedScopeKey
-    ) {
-      return;
-    }
-    sessionHarnessRefinementPendingRef.current = expectedScopeKey;
-    setSessionHarnessRefinementPendingScopeKey(expectedScopeKey);
-    let result: ProviderRefineSessionHarnessResult | null = null;
-    try {
-      result = await control.onRefine();
-    } catch {
-      result = null;
-    }
-    if (sessionHarnessRefinementControlRef.current.scopeKey !== expectedScopeKey) return;
-    sessionHarnessRefinementPendingRef.current = null;
-    setSessionHarnessRefinementPendingScopeKey(null);
-    if (result?.outcome === "completed") {
-      Alert.alert("Local harness refined", "This thread's private session harness was improved.");
-      return;
-    }
-    if (result?.outcome === "partial") {
-      Alert.alert(
-        "Local harness partly refined",
-        "Some private session harness improvements could not be completed.",
-      );
-      return;
-    }
-    if (result?.outcome === "failed") {
-      Alert.alert(
-        "Local harness refinement failed",
-        "The private refinement for this thread could not be completed.",
-      );
-      return;
-    }
-    sessionHarnessRefinementOutcomeUnknownRef.current = expectedScopeKey;
-    setSessionHarnessRefinementOutcomeUnknownScopeKey(expectedScopeKey);
-    Alert.alert(
-      "Refinement outcome unavailable",
-      "Pylon could not confirm whether the private refinement completed and will not retry it automatically.",
-    );
-  }, []);
-  const confirmSessionHarnessRefinement = useCallback(
-    (expectedScopeKey: string) => {
-      const control = sessionHarnessRefinementControlRef.current;
+  }, [onEditorFocusChange, onExpandedChange, settingsSheetPresentation.keepsComposerExpanded]);
+  const handleSend = useCallback(
+    async (followUp?: ActiveTurnComposerAction) => {
+      if (voiceInput.blocksSubmission || pendingPastedTextAttachmentCountRef.current > 0) return;
+      // Typed out in full rather than picked from the menu. Attachments mean the
+      // user is sending a prompt, so those go through as usual.
       if (
-        control.scopeKey !== expectedScopeKey ||
-        !control.available ||
-        sessionHarnessRefinementPendingRef.current !== null ||
-        sessionHarnessRefinementOutcomeUnknownRef.current === expectedScopeKey
+        usageLimitsOffered &&
+        isUsageLimitsCommand(props.draftMessage) &&
+        props.draftAttachments.length === 0
       ) {
+        if (openUsageLimits()) onChangeDraftMessage("");
         return;
       }
-      Alert.alert(
-        "Refine local harness?",
-        "This privately improves only this thread's session harness. It may take time, and it cannot be cancelled or rolled back here.",
-        [
-          { text: "Not now", style: "cancel" },
-          {
-            text: "Refine",
-            onPress: () => void runSessionHarnessRefinement(expectedScopeKey),
-          },
-        ],
-      );
-    },
-    [runSessionHarnessRefinement],
-  );
-  const sessionQueueCount = sessionInputQueueCount(props.sessionInputQueue);
-  const showSessionInputQueue =
-    props.sessionInputQueue !== null &&
-    sessionQueueCount > 0 &&
-    supportsSessionInputQueue(activeSessionProviderStatus);
-  const canQueueFollowUp =
-    props.connectionState === "connected" &&
-    composerAuthority.providerAdmissionAvailable &&
-    props.selectedThread.session?.status === "running" &&
-    props.selectedThread.session.activeTurnId != null &&
-    !props.sessionInputBlocked &&
-    props.localOutboxCount === 0 &&
-    supportsSessionInputQueueFollowUp(activeSessionProviderStatus);
-  const canClearSessionInputQueue =
-    !props.sessionInputBlocked &&
-    props.connectionState === "connected" &&
-    props.selectedThread.session?.status === "running" &&
-    props.selectedThread.session.activeTurnId != null &&
-    sessionQueueCount > 0 &&
-    supportsSessionInputQueueClear(activeSessionProviderStatus);
-  const canRemoveOnlySessionInputQueueItem =
-    !props.sessionInputBlocked &&
-    props.connectionState === "connected" &&
-    props.selectedThread.session?.status === "running" &&
-    props.selectedThread.session.activeTurnId != null &&
-    supportsSessionInputQueueRemove(activeSessionProviderStatus);
-  const showSessionInputQueueModes =
-    hasSessionInputQueueModes(props.sessionInputQueue) &&
-    supportsSessionInputQueueSetModes(activeSessionProviderStatus);
-  const sessionInputQueueScopeKey = `${scopedThreadKey(props.environmentId, props.selectedThread.id)}:${props.selectedThread.session?.providerInstanceId ?? "none"}`;
-  const [sessionInputQueueMutation, setSessionInputQueueMutation] = useState<{
-    readonly scopeKey: string;
-  } | null>(null);
-  const isMutatingSessionInputQueue =
-    sessionInputQueueMutation?.scopeKey === sessionInputQueueScopeKey;
-  const canSetSessionInputQueueModes =
-    showSessionInputQueueModes &&
-    !props.sessionInputBlocked &&
-    props.connectionState === "connected" &&
-    composerAuthority.providerAdmissionAvailable &&
-    (props.selectedThread.session?.status === "ready" ||
-      props.selectedThread.session?.status === "running") &&
-    !isMutatingSessionInputQueue;
-  // A busy thread is no longer a reason to hold a message back: the outbox now
-  // delivers while a turn runs so the message steers it. Only a lost connection
-  // or an already-queued message still means "saved rather than sent".
-  const sendLabel = selectedProviderUnavailable
-    ? `Send unavailable. ${selectedProviderUnavailable.detail}`
-    : canQueueFollowUp
-      ? "Queue follow-up"
-      : props.connectionState !== "connected"
-        ? `Save pending send. ${composerAdmissionReason ?? "The environment is disconnected."}`
-        : props.localOutboxCount > 0 || attachmentsUploading
-          ? "Save pending send"
-          : "Send";
-
-  const showSessionResourceReload =
-    props.selectedThread.session?.runtimeMode === "full-access" &&
-    supportsSessionResourceReload(activeSessionProviderStatus);
-  const sessionResourceReloadDisabled =
-    props.connectionState !== "connected" ||
-    props.activeThreadBusy ||
-    props.selectedThread.session?.status !== "ready";
-  const sessionResourceInventory = useMemo(
-    () => presentSessionResourceInventory(props.sessionResources, activeSessionProviderStatus),
-    [activeSessionProviderStatus, props.sessionResources],
-  );
-  const [isSessionResourcesOpen, setIsSessionResourcesOpen] = useState(false);
-  const sessionResourcesScopeKey = sessionResourceViewIdentity({
-    environmentId: props.environmentId,
-    threadId: props.selectedThread.id,
-    providerInstanceId: props.selectedThread.session?.providerInstanceId,
-    sessionStartedAt: props.selectedThread.session?.startedAt,
-  });
-  useEffect(() => {
-    setIsSessionResourcesOpen(false);
-  }, [sessionResourcesScopeKey]);
-  const [isReloadingSessionResources, setIsReloadingSessionResources] = useState(false);
-  const reloadSessionResources = useCallback(async () => {
-    if (sessionResourceReloadDisabled || isReloadingSessionResources) return;
-    setIsReloadingSessionResources(true);
-    try {
-      await props.onReloadSessionResources();
-    } finally {
-      setIsReloadingSessionResources(false);
-    }
-  }, [isReloadingSessionResources, props.onReloadSessionResources, sessionResourceReloadDisabled]);
-
-  const activeSessionAgents = useMemo(
-    () => props.sessionAgents.filter((agent) => isActiveSubagentStatus(agent.status)),
-    [props.sessionAgents],
-  );
-  const sessionAgentReady =
-    props.connectionState === "connected" &&
-    (props.selectedThread.session?.status === "ready" ||
-      props.selectedThread.session?.status === "running");
-  const canCancelSessionAgents =
-    sessionAgentReady &&
-    props.selectedThread.session?.runtimeMode === "full-access" &&
-    supportsSessionAgentCancel(activeSessionProviderStatus);
-  const canCancelAgent = useCallback(
-    (agent: RuntimeSubagent) => canCancelSessionAgent(agent, canCancelSessionAgents),
-    [canCancelSessionAgents],
-  );
-  const canMessageSessionAgents =
-    sessionAgentReady &&
-    props.selectedThread.session?.runtimeMode === "full-access" &&
-    supportsSessionAgentMessage(activeSessionProviderStatus);
-  const canWatchSessionAgentActivity =
-    props.connectionState === "connected" &&
-    canWatchSessionAgentLiveActivity(activeSessionProviderStatus, props.selectedThread.session);
-  const sessionAgentScopeKey = JSON.stringify([
-    props.environmentId,
-    props.selectedThread.id,
-    props.selectedThread.session?.providerInstanceId,
-    props.selectedThread.session?.runtimeMode,
-  ]);
-  const [cancellingAgentIds, setCancellingAgentIds] = useState<ReadonlySet<string>>(new Set());
-  const [liveActivitySelection, setLiveActivitySelection] =
-    useState<SessionAgentLiveActivitySelection | null>(null);
-  const [messageAgentId, setMessageAgentId] = useState<string | null>(null);
-  const [messageStateScopeKey, setMessageStateScopeKey] = useState(sessionAgentScopeKey);
-  const [agentMessageDraft, setAgentMessageDraft] = useState("");
-  const [agentMessagePending, setAgentMessagePending] = useState(false);
-  const [agentMessageError, setAgentMessageError] = useState<string | null>(null);
-  useEffect(() => {
-    const activeIds = new Set(activeSessionAgents.map((agent) => agent.id));
-    setCancellingAgentIds((current) => {
-      const next = new Set([...current].filter((agentId) => activeIds.has(agentId)));
-      return next.size === current.size ? current : next;
-    });
-  }, [activeSessionAgents]);
-  useEffect(() => {
-    setCancellingAgentIds(new Set());
-    setLiveActivitySelection(null);
-    setMessageStateScopeKey(sessionAgentScopeKey);
-    setMessageAgentId(null);
-    setAgentMessageDraft("");
-    setAgentMessageError(null);
-    setAgentMessagePending(false);
-  }, [sessionAgentScopeKey]);
-  const messageDialogAgentIdRef = useRef(messageAgentId);
-  messageDialogAgentIdRef.current = messageAgentId;
-  const sessionAgentControlRef = useRef({
-    scopeKey: sessionAgentScopeKey,
-    agents: props.sessionAgents,
-    provider: activeSessionProviderStatus,
-    canCancel: canCancelSessionAgents,
-    canMessage: canMessageSessionAgents,
-    cancellingAgentIds,
-    onCancel: props.onCancelSessionAgent,
-    onMessage: props.onMessageSessionAgent,
-  });
-  sessionAgentControlRef.current = {
-    scopeKey: sessionAgentScopeKey,
-    agents: props.sessionAgents,
-    provider: activeSessionProviderStatus,
-    canCancel: canCancelSessionAgents,
-    canMessage: canMessageSessionAgents,
-    cancellingAgentIds,
-    onCancel: props.onCancelSessionAgent,
-    onMessage: props.onMessageSessionAgent,
-  };
-  const sessionAgentActions = useMemo(
-    () =>
-      buildSessionAgentMenuActions({
-        scopeKey: sessionAgentScopeKey,
-        agents: activeSessionAgents,
-        canMessage: canMessageSessionAgents,
-        canCancel: canCancelSessionAgents,
-        canCancelAgent,
-        canWatchLiveActivity: canWatchSessionAgentActivity,
-        cancellingAgentIds,
-      }),
-    [
-      activeSessionAgents,
-      canCancelAgent,
-      canCancelSessionAgents,
-      props.connectionState,
-      canMessageSessionAgents,
-      canWatchSessionAgentActivity,
-      cancellingAgentIds,
-      sessionAgentScopeKey,
-    ],
-  );
-  const cancelSessionAgent = useCallback(async (agentId: string, expectedScopeKey: string) => {
-    const control = sessionAgentControlRef.current;
-    const current = control.agents.find((candidate) => candidate.id === agentId);
-    if (
-      control.scopeKey !== expectedScopeKey ||
-      current === undefined ||
-      !canCancelSessionAgent(current, control.canCancel) ||
-      control.cancellingAgentIds.has(agentId)
-    ) {
-      return;
-    }
-    const pendingIds = new Set(control.cancellingAgentIds).add(agentId);
-    sessionAgentControlRef.current = { ...control, cancellingAgentIds: pendingIds };
-    setCancellingAgentIds(pendingIds);
-    const accepted = await control.onCancel(agentId);
-    if (!accepted && sessionAgentControlRef.current.scopeKey === expectedScopeKey) {
-      setCancellingAgentIds((ids) => {
-        const next = new Set(ids);
-        next.delete(agentId);
-        return next;
-      });
-      Alert.alert(
-        "Could not stop agent",
-        "The agent status was refreshed. Try again if it is still active.",
-      );
-    }
-  }, []);
-  const closeAgentMessage = useCallback(() => {
-    if (agentMessagePending) return;
-    setMessageAgentId(null);
-    setAgentMessageDraft("");
-    setAgentMessageError(null);
-  }, [agentMessagePending]);
-  const sendAgentMessage = useCallback(async () => {
-    const control = sessionAgentControlRef.current;
-    const agentId = messageDialogAgentIdRef.current;
-    const message = agentMessageDraft.trim();
-    const agent = control.agents.find((candidate) => candidate.id === agentId);
-    if (agentId === null || agentMessagePending) return;
-    if (
-      agent === undefined ||
-      !control.canMessage ||
-      !canMessageSessionAgent(control.provider, agent)
-    ) {
-      setAgentMessageError(AGENT_MESSAGE_UNAVAILABLE_ERROR);
-      return;
-    }
-    if (message.length === 0) {
-      setAgentMessageError("Enter a message for the agent.");
-      return;
-    }
-    const expectedScopeKey = control.scopeKey;
-    setAgentMessagePending(true);
-    setAgentMessageError(null);
-    let disposition: "delivered" | "queued" | "delivery-unknown" | null = null;
-    try {
-      disposition = await control.onMessage(agentId, message);
-    } catch {
-      disposition = null;
-    }
-    const latest = sessionAgentControlRef.current;
-    if (
-      latest.scopeKey !== expectedScopeKey ||
-      messageDialogAgentIdRef.current !== agentId ||
-      !latest.agents.some((candidate) => candidate.id === agentId)
-    ) {
-      return;
-    }
-    setAgentMessagePending(false);
-    if (disposition === "delivery-unknown") {
-      setAgentMessageError("Delivery could not be confirmed. Sending again may duplicate it.");
-      return;
-    }
-    if (disposition === null) {
-      setAgentMessageError(
-        "Could not send the message. Check the agent's live status and try again.",
-      );
-      return;
-    }
-    setMessageAgentId(null);
-    setAgentMessageDraft("");
-    setAgentMessageError(null);
-    Alert.alert(
-      disposition === "delivered" ? "Message delivered" : "Message queued",
-      disposition === "delivered"
-        ? `Your message was delivered to ${agent.title}.`
-        : `Your message will be delivered to ${agent.title} when it can receive it.`,
-    );
-  }, [agentMessageDraft, agentMessagePending]);
-  const handleSessionAgentAction = useCallback(
-    (eventId: string) => {
-      const action = parseSessionAgentMenuAction(eventId);
-      if (action === null) return;
-      const control = sessionAgentControlRef.current;
-      if (action.scopeKey !== control.scopeKey) return;
-      const agent = control.agents.find((candidate) => candidate.id === action.agentId);
-      if (!agent || !isActiveSubagentStatus(agent.status)) return;
-      if (action.kind === "live-activity") {
-        if (!canWatchSessionAgentActivity || agent.watchable === false || agent.kind === "workflow")
-          return;
-        setLiveActivitySelection({ agentId: agent.id, scopeKey: control.scopeKey });
-        return;
-      }
-      if (action.kind === "message") {
-        if (!control.canMessage || !canMessageSessionAgent(control.provider, agent)) return;
-        setMessageStateScopeKey(control.scopeKey);
-        setAgentMessageDraft("");
-        setAgentMessageError(null);
-        setMessageAgentId(agent.id);
-        return;
-      }
-      if (
-        !canCancelSessionAgent(agent, control.canCancel) ||
-        control.cancellingAgentIds.has(agent.id)
-      )
-        return;
-      const expectedScopeKey = control.scopeKey;
-      Alert.alert(
-        `Stop ${agent.title}?`,
-        "Its current work will end. Completed output and activity stay in the thread.",
-        [
-          { text: "Keep running", style: "cancel" },
-          {
-            text: "Stop agent",
-            style: "destructive",
-            onPress: () => void cancelSessionAgent(agent.id, expectedScopeKey),
-          },
-        ],
-      );
-    },
-    [canWatchSessionAgentActivity, cancelSessionAgent],
-  );
-  const selectedLiveActivityAgent =
-    liveActivitySelection === null
-      ? null
-      : (props.sessionAgents.find((candidate) => candidate.id === liveActivitySelection.agentId) ??
-        null);
-  const liveActivityOpen = sessionAgentLiveActivitySelectionIsOpen({
-    selection: liveActivitySelection,
-    currentScopeKey: sessionAgentScopeKey,
-    capabilityEnabled: canWatchSessionAgentActivity,
-    agent: selectedLiveActivityAgent,
-  });
-  useEffect(() => {
-    if (liveActivitySelection !== null && !liveActivityOpen) {
-      setLiveActivitySelection(null);
-    }
-  }, [liveActivityOpen, liveActivitySelection]);
-  const messageAgent =
-    messageAgentId === null || messageStateScopeKey !== sessionAgentScopeKey
-      ? null
-      : (props.sessionAgents.find((agent) => agent.id === messageAgentId) ?? null);
-  const messageAgentCanSend =
-    messageAgent !== null &&
-    canMessageSessionAgents &&
-    canMessageSessionAgent(activeSessionProviderStatus, messageAgent);
-  useEffect(() => {
-    if (messageAgentId === null) return;
-    if (messageAgent === null) {
-      setMessageAgentId(null);
-      setAgentMessageDraft("");
-      setAgentMessageError(null);
-      setAgentMessagePending(false);
-      return;
-    }
-    if (agentMessagePending) return;
-    setAgentMessageError((current) =>
-      messageAgentCanSend
-        ? current === AGENT_MESSAGE_UNAVAILABLE_ERROR
-          ? null
-          : current
-        : AGENT_MESSAGE_UNAVAILABLE_ERROR,
-    );
-  }, [agentMessagePending, messageAgent, messageAgentCanSend, messageAgentId]);
-
-  const showSessionAgentDepth =
-    props.sessionAgentDepth !== null && supportsSessionAgentDepth(activeSessionProviderStatus);
-  const [isSettingSessionAgentDepth, setIsSettingSessionAgentDepth] = useState(false);
-  const sessionAgentDepthDisabled =
-    !canSetSessionAgentDepth(activeSessionProviderStatus, props.sessionAgentDepth) ||
-    props.connectionState !== "connected" ||
-    props.activeThreadBusy ||
-    props.localOutboxCount > 0 ||
-    props.selectedThread.session?.status !== "ready" ||
-    isReloadingSessionResources ||
-    isSettingSessionAgentDepth;
-  const sessionAgentDepthActions = useMemo(
-    () =>
-      Array.from(
-        { length: (props.sessionAgentDepth?.maxSettableDepth ?? -1) + 1 },
-        (_, maxDepth) => ({
-          id: `agent-depth:${maxDepth}`,
-          title: `Depth ${maxDepth}`,
-          subtitle:
-            maxDepth === 0
-              ? "Do not spawn recursive agents"
-              : maxDepth === 1
-                ? "Allow direct child agents"
-                : `Allow up to ${maxDepth} recursive levels`,
-          state: props.sessionAgentDepth?.maxDepth === maxDepth ? ("on" as const) : undefined,
-          attributes: sessionAgentDepthDisabled ? ({ disabled: true } as const) : undefined,
-        }),
-      ),
-    [props.sessionAgentDepth, sessionAgentDepthDisabled],
-  );
-  const setSessionAgentDepth = useCallback(
-    async (eventId: string) => {
-      if (sessionAgentDepthDisabled || !eventId.startsWith("agent-depth:")) return;
-      const maxDepth = Number(eventId.slice("agent-depth:".length));
-      if (!Number.isInteger(maxDepth)) return;
-      setIsSettingSessionAgentDepth(true);
+      const threadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
+      if (inFlightThreadIdsRef.current.has(threadKey)) return;
+      inFlightThreadIdsRef.current.add(threadKey);
       try {
-        await props.onSetSessionAgentDepth(maxDepth);
-      } finally {
-        setIsSettingSessionAgentDepth(false);
-      }
-    },
-    [props.onSetSessionAgentDepth, sessionAgentDepthDisabled],
-  );
-
-  const sessionCompactionScopeKey = props.sessionCompactionScopeKey;
-  const sessionCompactionConnected =
-    props.connectionState === "connected" &&
-    (props.selectedThread.session?.status === "ready" ||
-      props.selectedThread.session?.status === "running");
-  const canCompactSessionContext =
-    sessionCompactionConnected &&
-    composerAuthority.providerAdmissionAvailable &&
-    props.sessionCompactionPendingAction === null &&
-    canStartSessionCompaction(activeSessionProviderStatus, props.sessionCompaction);
-  const canAbortSessionContext =
-    sessionCompactionConnected &&
-    props.sessionCompactionPendingAction === null &&
-    canAbortSessionCompaction(activeSessionProviderStatus, props.sessionCompaction);
-  const canSetSessionAutoCompaction =
-    sessionCompactionConnected &&
-    composerAuthority.providerAdmissionAvailable &&
-    props.sessionCompactionPendingAction === null &&
-    canConfigureSessionAutoCompaction(activeSessionProviderStatus, props.sessionCompaction);
-  const sessionCompactionControlRef = useRef({
-    scopeKey: sessionCompactionScopeKey,
-    pendingAction: props.sessionCompactionPendingAction,
-    snapshot: props.sessionCompaction,
-    canCompact: canCompactSessionContext,
-    canAbort: canAbortSessionContext,
-    canSetAuto: canSetSessionAutoCompaction,
-  });
-  sessionCompactionControlRef.current = {
-    scopeKey: sessionCompactionScopeKey,
-    pendingAction: props.sessionCompactionPendingAction,
-    snapshot: props.sessionCompaction,
-    canCompact: canCompactSessionContext,
-    canAbort: canAbortSessionContext,
-    canSetAuto: canSetSessionAutoCompaction,
-  };
-  const contextWindowPresentation = presentMobileContextWindow(props.contextWindow);
-  const sessionGoalActions = useMemo(
-    () => (props.sessionGoal ? buildSessionGoalMenuActions(props.sessionGoal) : []),
-    [props.sessionGoal],
-  );
-  const sessionCompactionActions = useMemo(
-    () =>
-      props.sessionCompaction?.available && sessionCompactionScopeKey
-        ? buildSessionCompactionMenuActions({
-            scopeKey: sessionCompactionScopeKey,
-            snapshot: props.sessionCompaction,
-            canCompact: canCompactSessionContext,
-            canAbort: canAbortSessionContext,
-            canSetAuto: canSetSessionAutoCompaction,
-            pendingAction: props.sessionCompactionPendingAction,
-          })
-        : [],
-    [
-      canAbortSessionContext,
-      canCompactSessionContext,
-      canSetSessionAutoCompaction,
-      props.sessionCompaction,
-      props.sessionCompactionPendingAction,
-      sessionCompactionScopeKey,
-    ],
-  );
-  // The ring carries no text, and a phone has no hover, so the counts ride in
-  // the menu as a leading read-only row. Disabled because it is a reading, not
-  // an action; keeping it first means the numbers sit in the same place whether
-  // or not the provider offers compaction.
-  const contextWindowMenuActions = useMemo(
-    () => [
-      ...(contextWindowPresentation
-        ? [
-            {
-              id: "context-window:detail",
-              title: contextWindowPresentation.detailLabel,
-              image: "gauge.with.dots.needle.50percent",
-              attributes: { disabled: true } as const,
-            },
-          ]
-        : []),
-      ...sessionCompactionActions,
-    ],
-    [contextWindowPresentation, sessionCompactionActions],
-  );
-  const runSessionCompactionAction = useCallback(
-    (action: SessionCompactionMenuAction, expectedScopeKey: string) => {
-      const current = sessionCompactionControlRef.current;
-      if (
-        current.scopeKey !== expectedScopeKey ||
-        current.snapshot === null ||
-        current.pendingAction !== null ||
-        (action === "compact" && !current.canCompact) ||
-        (action === "abort" && !current.canAbort) ||
-        ((action === "auto-enable" || action === "auto-disable") && !current.canSetAuto)
-      ) {
-        return;
-      }
-      void props.onRunSessionCompactionAction(action).then((accepted) => {
-        if (!accepted && sessionCompactionControlRef.current.scopeKey === expectedScopeKey) {
-          Alert.alert(
-            "Could not update compaction",
-            "The provider status was refreshed. Try again.",
-          );
-        }
-      });
-    },
-    [props.onRunSessionCompactionAction],
-  );
-  const handleSessionCompactionAction = useCallback(
-    (eventId: string) => {
-      const current = sessionCompactionControlRef.current;
-      if (!current.scopeKey || !current.snapshot || current.pendingAction !== null) return;
-      const action = parseSessionCompactionMenuAction(eventId, current.scopeKey);
-      if (
-        !action ||
-        (action === "compact" && !current.canCompact) ||
-        (action === "abort" && !current.canAbort) ||
-        ((action === "auto-enable" || action === "auto-disable") && !current.canSetAuto)
-      ) {
-        return;
-      }
-      runSessionCompactionAction(action, current.scopeKey);
-    },
-    [runSessionCompactionAction],
-  );
-
-  // ── Composer command menu ────────────────────────────────
-  const composerMenu = useComposerCommandMenu({
-    draftMessage: props.draftMessage,
-    ownerKey: composerOwnerKey,
-    environmentId: props.environmentId,
-    projectCwd: props.projectCwd,
-    pullRequestProjectId: props.serverConfig?.environment.capabilities.pullRequests
-      ? (project?.id ?? null)
-      : null,
-    pullRequestRepository: project?.repositoryIdentity?.displayName ?? null,
-    selectedProviderStatus,
-    sessionResources: props.sessionResources,
-    showInteractionModeToggle,
-    hasThread: true,
-    hasCompactableConversation: props.hasCompactableConversation,
-    enabled: !props.sessionInputBlocked,
-    onChangeDraftMessage: props.onChangeDraftMessage,
-    onUpdateInteractionMode: props.onUpdateInteractionMode,
-  });
-  const voiceInput = useVoiceInputController({
-    ownerKey: composerOwnerKey,
-    draftMessage: props.draftMessage,
-    selection: composerMenu.selection,
-    onChangeDraftMessage: props.onChangeDraftMessage,
-    onChangeSelection: composerMenu.onSelectionChange,
-  });
-  const voicePresentation = resolveVoiceComposerPresentation(
-    voiceInput.state,
-    voiceInput.elapsedSeconds,
-  );
-  const isVoiceInputPresented = voicePresentation.statusLabel !== null;
-  // An open draft stays visible; only a collapsed composer becomes a voice strip.
-  const showsCompactDictation = isVoiceInputPresented && !isExpanded;
-  const isToolbarVisible = isExpanded || isVoiceInputPresented;
-
-  const { onSendMessage } = props;
-  const [usageLimitsNotice, setUsageLimitsNotice] = useState<{
-    threadKey: string;
-    report: UsageLimitsReport;
-  } | null>(null);
-  const handleLocalUsageLimits = useCallback(() => {
-    if (
-      !shouldHandleUsageLimitsCommand(
-        props.draftMessage,
-        composerMenu.providerSlashCommands,
-        props.draftAttachments.length,
-      )
-    )
-      return false;
-    if (selectedProviderStatus && props.serverConfig) {
-      const report = collectProviderUsageLimits(
-        selectedProviderStatus.instanceId,
-        props.serverConfig.providers,
-        props.serverConfig.usageLimitSources ?? [],
-        Date.now(),
-      );
-      if (report) {
-        setUsageLimitsNotice({ threadKey: composerOwnerKey, report });
-        props.onChangeDraftMessage("");
-      }
-    }
-    return true;
-  }, [
-    props.draftMessage,
-    props.draftAttachments.length,
-    props.serverConfig,
-    props.onChangeDraftMessage,
-    composerMenu.providerSlashCommands,
-    selectedProviderStatus,
-    composerOwnerKey,
-  ]);
-
-  const handleSend = useCallback(async () => {
-    // canSend is derived above voiceInput, so the block lives here.
-    // Reachable via a hardware-keyboard Return while recording.
-    if (voiceInput.blocksSubmission || (pendingPastedTextRef.current.get(pasteOwner) ?? 0) > 0)
-      return;
-    if (!canSend) return;
-    if (handleLocalUsageLimits()) return;
-    const threadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
-    if (inFlightThreadIdsRef.current.has(threadKey)) return;
-    inFlightThreadIdsRef.current.add(threadKey);
-    try {
-      const messageId = await onSendMessage();
-      if (messageId === null) {
-        return;
-      }
-      setUsageLimitsNotice((current) => (current?.threadKey === threadKey ? null : current));
-      // Sending a prompt starts agent work: arm the lock-screen card while the
-      // app is foregrounded and the activity token can be registered. Armed
-      // after the send so its preference read and native Activity start don't
-      // contend with the queued-message feedback on the tap frame.
-      armAgentAwarenessLiveActivityForLocalWork({
-        environmentId: props.environmentId,
-        threadTitle: props.selectedThread.title,
-        projectTitle: props.environmentLabel ?? "Pylon",
-      });
-    } finally {
-      inFlightThreadIdsRef.current.delete(threadKey);
-    }
-  }, [
-    canSend,
-    handleLocalUsageLimits,
-    onSendMessage,
-    props.environmentId,
-    props.environmentLabel,
-    props.selectedThread.id,
-    props.selectedThread.title,
-    voiceInput.blocksSubmission,
-  ]);
-  const handleQueueFollowUp = useCallback(async () => {
-    // canSend is derived above voiceInput, so the block lives here.
-    // Reachable via a hardware-keyboard Return while recording.
-    if (voiceInput.blocksSubmission) return;
-    if (!canSend) return;
-    if (handleLocalUsageLimits()) return;
-    const threadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
-    if (inFlightThreadIdsRef.current.has(threadKey) || isMutatingSessionInputQueue) return;
-    inFlightThreadIdsRef.current.add(threadKey);
-    const mutation = { scopeKey: sessionInputQueueScopeKey };
-    setSessionInputQueueMutation(mutation);
-    try {
-      const messageId = await props.onQueueFollowUp();
-      if (messageId !== null)
-        setUsageLimitsNotice((current) => (current?.threadKey === threadKey ? null : current));
-    } finally {
-      setSessionInputQueueMutation((current) => (current === mutation ? null : current));
-      inFlightThreadIdsRef.current.delete(threadKey);
-    }
-  }, [
-    canSend,
-    handleLocalUsageLimits,
-    voiceInput.blocksSubmission,
-    isMutatingSessionInputQueue,
-    props.environmentId,
-    props.onQueueFollowUp,
-    props.selectedThread.id,
-    sessionInputQueueScopeKey,
-  ]);
-
-  const confirmClearSessionInputQueue = useCallback(() => {
-    if (!canClearSessionInputQueue || isMutatingSessionInputQueue) return;
-    Alert.alert(
-      "Clear pending session inputs?",
-      "This removes queued follow-ups and steering inputs without stopping current work.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Clear all",
-          style: "destructive",
-          onPress: () => {
-            const mutation = { scopeKey: sessionInputQueueScopeKey };
-            setSessionInputQueueMutation(mutation);
-            void props.onClearSessionInputQueue().finally(() => {
-              setSessionInputQueueMutation((current) => (current === mutation ? null : current));
-            });
-          },
-        },
-      ],
-    );
-  }, [
-    canClearSessionInputQueue,
-    isMutatingSessionInputQueue,
-    props.onClearSessionInputQueue,
-    sessionInputQueueScopeKey,
-  ]);
-
-  const sessionInputQueueActions = useMemo(
-    () =>
-      hasSessionInputQueueModes(props.sessionInputQueue)
-        ? buildSessionInputQueueMenuActions({
-            snapshot: props.sessionInputQueue,
-            count: sessionQueueCount,
-            canSetModes: canSetSessionInputQueueModes,
-            canClear: canClearSessionInputQueue,
-            canRemove: canRemoveOnlySessionInputQueueItem,
-            mutating: isMutatingSessionInputQueue,
-          })
-        : [],
-    [
-      canClearSessionInputQueue,
-      canRemoveOnlySessionInputQueueItem,
-      canSetSessionInputQueueModes,
-      isMutatingSessionInputQueue,
-      props.sessionInputQueue,
-      sessionQueueCount,
-    ],
-  );
-
-  const handleSessionInputQueueAction = useCallback(
-    (eventId: string) => {
-      if (eventId === "session-input-clear") {
-        confirmClearSessionInputQueue();
-        return;
-      }
-      const removalQueue = parseSessionInputQueueRemoveAction(eventId);
-      if (removalQueue !== null) {
-        const count =
-          removalQueue === "steering"
-            ? (props.sessionInputQueue?.steeringCount ?? 0)
-            : (props.sessionInputQueue?.followUpCount ?? 0);
-        if (!canRemoveOnlySessionInputQueueItem || isMutatingSessionInputQueue || count !== 1) {
+        const messageId = await onSendMessage(followUp);
+        if (messageId === null) {
           return;
         }
-        const label = removalQueue === "steering" ? "steering" : "follow-up";
-        Alert.alert(
-          `Remove pending ${label} input?`,
-          "This removes that input without stopping current work.",
-          [
-            { text: "Cancel", style: "cancel" },
-            {
-              text: "Remove",
-              style: "destructive",
-              onPress: () => {
-                const mutation = { scopeKey: sessionInputQueueScopeKey };
-                setSessionInputQueueMutation(mutation);
-                void props.onRemoveOnlySessionInputQueueItem(removalQueue).finally(() => {
-                  setSessionInputQueueMutation((current) =>
-                    current === mutation ? null : current,
-                  );
-                });
-              },
-            },
-          ],
-        );
-        return;
+        // Sending a prompt starts agent work: arm the lock-screen card while the
+        // app is foregrounded and the activity token can be registered. Armed
+        // after the send so its preference read and native Activity start don't
+        // contend with the queued-message feedback on the tap frame.
+        armAgentAwarenessLiveActivityForLocalWork({
+          environmentId: props.environmentId,
+          threadTitle: props.selectedThread.title,
+          projectTitle: props.environmentLabel ?? "Pylon",
+        });
+      } finally {
+        inFlightThreadIdsRef.current.delete(threadKey);
       }
-      const action = parseSessionInputQueueModeAction(eventId);
-      if (!action || !canSetSessionInputQueueModes || isMutatingSessionInputQueue) return;
-      const { queue, mode } = action;
-      const currentMode =
-        queue === "steering"
-          ? props.sessionInputQueue?.steeringMode
-          : props.sessionInputQueue?.followUpMode;
-      if (currentMode === mode) return;
-      const mutation = { scopeKey: sessionInputQueueScopeKey };
-      setSessionInputQueueMutation(mutation);
-      void props.onSetSessionInputQueueMode(queue, mode).finally(() => {
-        setSessionInputQueueMutation((current) => (current === mutation ? null : current));
-      });
     },
     [
-      canRemoveOnlySessionInputQueueItem,
-      canSetSessionInputQueueModes,
-      confirmClearSessionInputQueue,
-      isMutatingSessionInputQueue,
-      props.onRemoveOnlySessionInputQueueItem,
-      props.onSetSessionInputQueueMode,
-      props.sessionInputQueue?.followUpCount,
-      props.sessionInputQueue?.followUpMode,
-      props.sessionInputQueue?.steeringCount,
-      props.sessionInputQueue?.steeringMode,
-      sessionInputQueueScopeKey,
+      props.draftMessage,
+      props.draftAttachments.length,
+      onChangeDraftMessage,
+      openUsageLimits,
+      usageLimitsOffered,
+      onSendMessage,
+      props.environmentId,
+      props.environmentLabel,
+      props.selectedThread.id,
+      props.selectedThread.title,
+      voiceInput.blocksSubmission,
     ],
   );
 
   // ── Model menu ───────────────────────────────────────────
+  // A session that hands the conversation to another provider lets the picker
+  // offer the whole catalog; one that can't stays on its own instance.
+  const lockedProviderInstanceId = props.canSwitchProvider
+    ? undefined
+    : currentModelSelection.instanceId;
   const modelOptions = useMemo(
-    () => buildModelOptions(props.serverConfig, currentModelSelection),
-    [props.serverConfig, currentModelSelection],
+    () => buildModelOptions(props.serverConfig, currentModelSelection, lockedProviderInstanceId),
+    [props.serverConfig, currentModelSelection, lockedProviderInstanceId],
   );
-  const providerGroups = useMemo(() => groupByProvider(modelOptions), [modelOptions]);
-  // Keep every configured group visible. `getModelChangeDisabledReason`
-  // enables exact continuation peers and explains why every other account
-  // needs a new thread.
-  const threadProviderGroups = providerGroups;
+  const threadProviderGroups = useMemo(() => groupByProvider(modelOptions), [modelOptions]);
   const currentModelOption =
     modelOptions.find(
       (option) =>
@@ -1603,31 +678,28 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     () => ({
       ownerId: settingsOwnerId,
       environmentId: props.environmentId,
+      providerInstanceId: currentModelSelection.instanceId,
       providerGroups: threadProviderGroups,
       selectedModel: currentModelSelection,
-      onSelectModel: (option) => {
-        if (!props.sessionInputBlocked) props.onUpdateModelSelection(option.selection);
-      },
+      onSelectModel: (option) =>
+        props.onUpdateModelSelection(withRememberedModelOptions(option.selection)),
       optionDescriptors: providerOptionDescriptors,
       onUpdateOptionSelections: (options) => {
-        if (!props.sessionInputBlocked) {
-          props.onUpdateModelSelection({ ...currentModelSelection, options });
-        }
+        rememberModelOptions(
+          currentModelSelection.instanceId,
+          currentModelSelection.model,
+          options ?? [],
+        );
+        props.onUpdateModelSelection({ ...currentModelSelection, options });
       },
       runtimeMode: currentRuntimeMode,
-      onUpdateRuntimeMode: (mode) => {
-        if (!props.sessionInputBlocked) props.onUpdateRuntimeMode(mode);
-      },
-      getModelDisabledReason: getModelChangeDisabledReason,
+      onUpdateRuntimeMode: props.onUpdateRuntimeMode,
     }),
     [
-      confirmSessionHarnessRefinement,
       currentModelSelection,
       currentRuntimeMode,
-      getModelChangeDisabledReason,
       props.onUpdateModelSelection,
       props.onUpdateRuntimeMode,
-      props.sessionInputBlocked,
       providerOptionDescriptors,
       settingsOwnerId,
       threadProviderGroups,
@@ -1678,12 +750,12 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
 
   return (
     <Animated.View
-      className="px-4"
-      layout={COMPOSER_LAYOUT_TRANSITION}
+      className="px-[12px]"
       style={{
         paddingTop: isExpanded ? 8 : 6,
         paddingBottom: (props.bottomInset ?? 0) + (isExpanded ? 8 : 6),
-        backgroundColor: materialYouStyleLayoutActive ? composerPanel : undefined,
+        backgroundColor:
+          Platform.OS === "android" ? themeColorWithAlpha(composerPanel, 1) : undefined,
       }}
     >
       {/* The backdrop gradient lives on a plain View: Reanimated's Animated.View
@@ -1691,7 +763,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           strip fully transparent and the feed text legible through the composer. */}
       <View
         className={
-          materialYouStyleLayoutActive
+          Platform.OS === "android"
             ? "hidden"
             : "absolute inset-0 bg-linear-to-b from-screen/0 via-screen/60 to-screen/90"
         }
@@ -1699,7 +771,6 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       />
       <Animated.View
         className="relative w-full self-center"
-        layout={COMPOSER_LAYOUT_TRANSITION}
         style={{ maxWidth: props.contentMaxWidth }}
       >
         {!voiceInput.isBusy &&
@@ -1716,20 +787,31 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           </View>
         ) : null}
 
-        <ProviderUnavailableNotice
-          provider={selectedProviderStatus}
-          reason={blockingAdmissionReason}
-          title={projectAdmissionReason === null ? undefined : "Project unavailable"}
-        />
-
-        {usageLimitsNotice?.threadKey === composerOwnerKey ? (
-          <View className="mb-2">
-            <ComposerUsageLimits
-              report={usageLimitsNotice.report}
-              environmentId={props.environmentId}
-              onClose={() => setUsageLimitsNotice(null)}
-            />
-          </View>
+        {selectedProviderStatus?.compatibilityAdvisory?.message &&
+        (selectedProviderStatus.compatibilityAdvisory.status === "unsupported" ||
+          selectedProviderStatus.compatibilityAdvisory.status === "broken") ? (
+          <Text
+            accessibilityRole={
+              selectedProviderStatus.compatibilityAdvisory.status === "broken" ? "alert" : undefined
+            }
+            accessibilityLiveRegion={
+              selectedProviderStatus.compatibilityAdvisory.status === "broken"
+                ? "assertive"
+                : "polite"
+            }
+            className={
+              selectedProviderStatus.compatibilityAdvisory.status === "broken"
+                ? "bg-danger px-3 py-2 text-xs text-danger-foreground"
+                : "px-3 py-2 text-xs text-foreground"
+            }
+          >
+            {selectedProviderStatus.compatibilityAdvisory.message}
+          </Text>
+        ) : null}
+        {modelUnavailable ? (
+          <Pressable accessibilityRole="button" className="px-3 py-2" onPress={openSettings}>
+            <Text className="text-xs text-foreground">Model unavailable. Open model settings.</Text>
+          </Pressable>
         ) : null}
 
         <ComposerSurface
@@ -1743,16 +825,11 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   paddingTop: 14,
                 }
               : {
-                  // Bounded so the radius morph interpolates instead of
-                  // travelling from 999; still renders as a capsule at this
-                  // pill height.
+                  // Keep the numeric radius close to the expanded card so the
+                  // shape morph stays bounded while rendering as a capsule.
                   borderRadius: 27,
                   overflow: "hidden" as const,
-                  flexDirection: "row" as const,
-                  alignItems: "center" as const,
-                  paddingLeft: 18,
-                  paddingRight: 5,
-                  paddingVertical: showsCompactDictation ? 2 : 5,
+                  paddingVertical: 2,
                 }
           }
         >
@@ -1770,12 +847,25 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 onPickFiles={props.onPickDraftFiles}
               />
             ) : null}
+            {isExpanded && queuedEdit !== null && queuedEdit.existingAttachments.length > 0 ? (
+              <Animated.View
+                className="px-[14px] pb-2.5"
+                entering={COMPOSER_ATTACHMENT_ENTERING}
+                exiting={FadeOut.duration(120)}
+              >
+                <ComposerQueuedEditAttachments
+                  environmentId={props.environmentId}
+                  attachments={queuedEdit.existingAttachments}
+                  disabled={queuedEdit.saving || voiceInput.isBusy}
+                  onRemove={queuedEdit.onRemoveExistingAttachment}
+                />
+              </Animated.View>
+            ) : null}
             {isExpanded && stripAttachments.length > 0 ? (
               <Animated.View
                 className="px-[14px] pb-2.5"
                 entering={COMPOSER_ATTACHMENT_ENTERING}
                 exiting={FadeOut.duration(120)}
-                layout={COMPOSER_LAYOUT_TRANSITION}
               >
                 <ComposerAttachmentStrip
                   environmentId={props.environmentId}
@@ -1797,16 +887,15 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 />
               </Animated.View>
             ) : null}
-            {/* The expanded surface carries no horizontal padding, so the
-                editor supplies the content gutter itself and lines up with
-                the attachment strip above it. Collapsed instead sits inside
-                the surface's own paddingLeft. */}
-            <View className={isExpanded ? "px-[14px]" : "min-w-0 flex-1"}>
+            <Animated.View
+              className={isExpanded ? "px-[14px]" : "min-w-0 flex-1 px-[4px]"}
+              layout={COMPOSER_LAYOUT_TRANSITION}
+            >
               <ComposerEditor
                 allowUnicodeSkillAliases={supportsUnicodeSkillAliases(
                   selectedProviderStatus?.driver,
                 )}
-                draftKey={composerOwnerKey}
+                draftKey={composerDraftKey}
                 environmentId={props.environmentId}
                 onOpenMention={(path) => {
                   Keyboard.dismiss();
@@ -1817,45 +906,105 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   });
                 }}
                 onOpenAttachment={openDraftDocument}
+                // A rested composer full of chips left almost nowhere to tap to start typing:
+                // every chip opened its file instead. Collapsed, they focus the editor.
                 ref={inputRef}
                 multiline
                 value={props.draftMessage}
-                // Without this the keyboard stays live during dictation, and any
-                // keystroke makes resolveTranscriptCommit see a changed draft and
-                // discard the whole transcript as stale.
                 readOnly={voiceInput.freezesEditor}
                 skills={composerMenu.skills}
                 selection={composerMenu.selection}
                 onChangeText={props.onChangeDraftMessage}
                 onSelectionChange={composerMenu.onSelectionChange}
                 onPasteImages={(uris) => void props.onNativePasteImages(uris)}
-                onPasteText={
-                  pastedTextAttachmentsAvailable && !voiceInput.freezesEditor
-                    ? (paste) => {
-                        pendingPastedTextRef.current.set(
-                          pasteOwner,
-                          (pendingPastedTextRef.current.get(pasteOwner) ?? 0) + 1,
+                onPasteText={(paste) => {
+                  const insertPaste = () => {
+                    const insertion = replaceTextSelection({
+                      value: paste.value,
+                      selection: paste.selection,
+                      text: paste.text,
+                    });
+                    const selection = { start: insertion.cursor, end: insertion.cursor };
+                    props.onChangeDraftMessage(insertion.value);
+                    composerMenu.onSelectionChange(selection);
+                  };
+                  const capabilities = props.serverConfig?.environment.capabilities;
+                  const advertisedMax =
+                    capabilities?.attachmentUploads === true
+                      ? capabilities.fileAttachments?.maxUploadBytes
+                      : undefined;
+                  const maxBytes =
+                    advertisedMax === undefined
+                      ? null
+                      : clampFileAttachmentUploadBytes(advertisedMax);
+                  const wouldExceedInputLimit =
+                    paste.value.length -
+                      Math.max(0, paste.selection.end - paste.selection.start) +
+                      paste.text.length >
+                    PROVIDER_SEND_TURN_MAX_INPUT_CHARS;
+                  const canAttach =
+                    pastedTextAttachmentsAvailable &&
+                    maxBytes !== null &&
+                    countComposerDraftAttachmentsAfterSelection(composerDraftKey, {
+                      text: paste.value,
+                      ...paste.selection,
+                    }) < PROVIDER_SEND_TURN_MAX_ATTACHMENTS &&
+                    new TextEncoder().encode(paste.text).byteLength <= maxBytes;
+                  if (
+                    pastedTextDisposition({
+                      text: paste.text,
+                      wouldExceedInputLimit,
+                      canAttach: true,
+                    }) === "attachment"
+                  ) {
+                    if (canAttach) {
+                      pendingPastedTextAttachmentCountRef.current += 1;
+                      setPendingPastedTextAttachmentCount(
+                        pendingPastedTextAttachmentCountRef.current,
+                      );
+                      const finishAttachment = () => {
+                        pendingPastedTextAttachmentCountRef.current = Math.max(
+                          0,
+                          pendingPastedTextAttachmentCountRef.current - 1,
                         );
-                        setPendingPastedTextState({
-                          owner: pasteOwner,
-                          count: pendingPastedTextRef.current.get(pasteOwner) ?? 0,
-                        });
-                        void props.onNativePasteText(paste).finally(() => {
-                          const remaining = pendingPastedTextRef.current.get(pasteOwner);
-                          if (remaining === undefined) return;
-                          pendingPastedTextRef.current.set(pasteOwner, Math.max(0, remaining - 1));
-                          setPendingPastedTextState({
-                            owner: pasteOwner,
-                            count: pendingPastedTextRef.current.get(pasteOwner) ?? 0,
-                          });
-                        });
-                      }
-                    : undefined
-                }
+                        setPendingPastedTextAttachmentCount(
+                          pendingPastedTextAttachmentCountRef.current,
+                        );
+                      };
+                      void props.onNativePasteText(paste).then(finishAttachment, finishAttachment);
+                    } else if (!wouldExceedInputLimit) {
+                      insertPaste();
+                    } else {
+                      Alert.alert(
+                        wouldExceedInputLimit
+                          ? "Pasted text is too large for this message"
+                          : "Could not attach pasted text",
+                        wouldExceedInputLimit
+                          ? "Remove some text or an attachment, then paste again."
+                          : "Remove an attachment or use a smaller paste, then try again.",
+                      );
+                    }
+                    return;
+                  }
+                  insertPaste();
+                }}
                 placeholder={props.placeholder}
                 onFocus={handleFocus}
                 onBlur={handleBlur}
-                onSubmit={handleSend}
+                // Command-Return sends the other way, matching web's Mod+Enter.
+                onSubmit={(alternate) =>
+                  void handleSend(
+                    alternate && sendPresentation.alternate !== null
+                      ? sendPresentation.alternate
+                      : undefined,
+                  )
+                }
+                submitTitle={sendPresentation.label}
+                alternateSubmitTitle={
+                  sendPresentation.alternate === null
+                    ? sendPresentation.label
+                    : FOLLOW_UP_ACTION_LABEL[sendPresentation.alternate]
+                }
                 scrollEnabled={isExpanded}
                 // Android: collapsed single line centers natively (gravity) in
                 // a pill-height box matching the send button; iOS keeps insets.
@@ -1877,7 +1026,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   color: foregroundColor,
                 }}
               />
-            </View>
+            </Animated.View>
             {!isExpanded && stripAttachments.length > 0 ? (
               <View className="flex-row gap-1 pl-1">
                 {stripAttachments.slice(0, 3).map((attachment) => (
@@ -1901,78 +1050,50 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 ) : null}
               </View>
             ) : null}
-            {!isExpanded && props.contextWindow ? (
-              <ControlPillMenu
-                title="Context window"
-                actions={contextWindowMenuActions}
-                onPressAction={({ nativeEvent }) =>
-                  handleSessionCompactionAction(nativeEvent.event)
-                }
-              >
-                <Pressable
-                  accessibilityLabel={
-                    contextWindowPresentation?.accessibilityText ?? "Context window usage"
-                  }
-                  accessibilityRole="button"
-                  className="size-11 shrink-0 items-center justify-center active:opacity-70"
-                >
-                  <ContextWindowRing
-                    percent={contextWindowPresentation?.percent ?? null}
-                    warning={contextWindowPresentation?.warning ?? false}
-                  />
-                </Pressable>
-              </ControlPillMenu>
-            ) : null}
-            {threadComposerShowsCollapsedActions({ isToolbarVisible }) ? (
-              <Animated.View
-                className="flex-row items-center gap-1.5"
-                entering={FadeIn.duration(180)}
-                exiting={FadeOut.duration(100)}
-              >
-                {voiceInput.isAvailable ? (
-                  <ComposerDictationPrimaryAction
-                    state={voiceInput.state}
-                    presentation={voicePresentation}
-                    isAvailable={voiceInput.isAvailable}
-                    onStart={voiceInput.start}
-                    onConfirm={voiceInput.stop}
-                    onCancel={voiceInput.cancel}
-                  />
-                ) : null}
+            {!isExpanded ? (
+              <View className="flex-row items-center">
+                <ComposerDictationStartAction
+                  state={voiceInput.state}
+                  isAvailable={voiceInput.isAvailable}
+                  onStart={voiceInput.start}
+                  onCancel={voiceInput.cancel}
+                />
                 {showStopAction ? (
-                  <View className="flex-row items-center gap-2">
-                    <ControlPill
-                      accessibilityLabel="Stop"
-                      icon="stop.fill"
-                      variant="danger"
-                      onPress={props.onStopThread}
-                    />
-                    {canQueueFollowUp ? (
-                      <ControlPill
-                        accessibilityLabel={followUpBlockReason ?? "Queue follow-up"}
-                        icon="arrow.up"
-                        variant="primary"
-                        disabled={
-                          !canSend || followUpBlockReason !== null || isMutatingSessionInputQueue
-                        }
-                        onPress={handleQueueFollowUp}
-                      />
-                    ) : null}
-                  </View>
+                  <ComposerActionButton
+                    accessibilityLabel="Stop agent"
+                    icon="stop.fill"
+                    variant="danger"
+                    onPress={props.onStopThread}
+                  />
                 ) : (
-                  <ControlPill
+                  <SendActionButton
                     accessibilityLabel={sendBlockedReason ?? sendLabel}
-                    icon="arrow.up"
-                    variant="primary"
+                    presentation={sendPresentation}
                     disabled={!canSend}
-                    onPress={handleSend}
+                    onSend={handleSend}
                   />
                 )}
-              </Animated.View>
+              </View>
             ) : null}
             {isExpanded ? <View className="h-1" /> : null}
           </ComposerDictationDraftContent>
-          {isToolbarVisible ? (
+          <Animated.View
+            accessibilityElementsHidden={!isToolbarVisible}
+            collapsable={false}
+            importantForAccessibility={isToolbarVisible ? "auto" : "no-hide-descendants"}
+            layout={COMPOSER_LAYOUT_TRANSITION}
+            pointerEvents={isToolbarVisible ? "auto" : "none"}
+            style={
+              isExpanded
+                ? undefined
+                : {
+                    position: "absolute",
+                    bottom: 2,
+                    left: 0,
+                    right: 0,
+                  }
+            }
+          >
             <ComposerDictationToolbar
               showsDictation={isVoiceInputPresented}
               visible={isToolbarVisible}
@@ -1996,10 +1117,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                     onDismissError={voiceInput.cancel}
                   />
                 ) : (
-                  <ComposerToolbarScroller contentPaddingRight={8}>
-                    {/* #8843 replaces the Alert with a native menu anchored to
-                        the button. Kept inside Pylon's scroller rather than
-                        upstream's fixed left group. */}
+                  <View className="min-w-0 flex-1 flex-row items-center justify-between">
                     <ComposerAttachmentButton
                       supportsFiles={Boolean(
                         props.serverConfig?.environment.capabilities.fileAttachments,
@@ -2007,204 +1125,25 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                       onPickMedia={props.onPickDraftMedia}
                       onPickFiles={props.onPickDraftFiles}
                     />
-                    {quickQuestionAvailable ? (
-                      <QuickQuestionTrigger
-                        onPress={() => setQuickQuestionOpenScopeKey(quickQuestionScopeKey)}
-                      />
-                    ) : null}
                     <View className="min-w-0 shrink">
                       <ComposerInlineControl
                         accessibilityLabel="Model and reasoning settings"
                         emphasized
                         renderIcon={(size) => (
                           <ProviderIcon
-                            provider={
-                              currentModelOption?.providerDriver ?? selectedProviderStatus?.driver
-                            }
+                            iconUrl={currentModelOption?.providerIconUrl}
+                            provider={currentModelOption?.providerDriver}
                             size={size}
                           />
                         )}
-                        label={
-                          currentModelOption?.label ??
-                          modelSelectionDisplayName(currentModelSelection)
-                        }
+                        label={currentModelOption?.label ?? currentModelSelection.model}
                         maxWidth="100%"
-                        disabled={props.sessionInputBlocked}
-                        accessibilityHint={
-                          props.sessionInputBlocked
-                            ? "Provider changes are blocked while this thread has a pending safety operation"
-                            : undefined
-                        }
                         onPress={openSettings}
                       />
                     </View>
-                    {sessionHarnessRefinementActions.length > 0 ? (
-                      <ControlPillMenu
-                        title="Local harness"
-                        actions={sessionHarnessRefinementActions}
-                        onPressAction={({ nativeEvent }) => {
-                          if (
-                            parseSessionHarnessRefinementAction(
-                              nativeEvent.event,
-                              sessionHarnessRefinementScopeKey,
-                            ) === "refine"
-                          ) {
-                            confirmSessionHarnessRefinement(sessionHarnessRefinementScopeKey);
-                          }
-                        }}
-                      >
-                        <ComposerToolbarButton
-                          accessibilityLabel="Local harness refinement"
-                          icon="wand.and.stars"
-                          label="Refine"
-                        />
-                      </ControlPillMenu>
-                    ) : null}
-                    {props.sessionGoal ? (
-                      <ControlPillMenu
-                        title="Session goal · Managed in chat"
-                        actions={sessionGoalActions}
-                      >
-                        <ComposerToolbarButton
-                          accessibilityLabel={`Session goal ${formatSessionGoalStatus(props.sessionGoal.status).toLowerCase()}. Managed in chat.`}
-                          icon="target"
-                          label={
-                            props.sessionGoal.status === "idle"
-                              ? "No goal"
-                              : `Goal ${formatSessionGoalStatus(props.sessionGoal.status)}`
-                          }
-                        />
-                      </ControlPillMenu>
-                    ) : null}
-                    {sessionAgentActions.length > 0 ? (
-                      <ControlPillMenu
-                        title="Active agents"
-                        actions={[...sessionAgentActions]}
-                        onPressAction={({ nativeEvent }) =>
-                          handleSessionAgentAction(nativeEvent.event)
-                        }
-                      >
-                        <ComposerToolbarButton
-                          accessibilityLabel={`${activeSessionAgents.length} active ${activeSessionAgents.length === 1 ? "agent" : "agents"}. Open available agent actions.`}
-                          icon="person.2"
-                          label={`${activeSessionAgents.length} ${activeSessionAgents.length === 1 ? "agent" : "agents"}`}
-                        />
-                      </ControlPillMenu>
-                    ) : null}
-                    {showSessionInputQueueModes && props.sessionInputQueue ? (
-                      <ControlPillMenu
-                        title="Session input delivery"
-                        actions={sessionInputQueueActions}
-                        onPressAction={({ nativeEvent }) =>
-                          handleSessionInputQueueAction(nativeEvent.event)
-                        }
-                      >
-                        <ComposerToolbarButton
-                          accessibilityLabel={`Session input delivery. ${sessionQueueCount} pending. Steering ${props.sessionInputQueue.steeringMode === "all-at-once" ? "all at once" : "one at a time"}. Follow-ups ${props.sessionInputQueue.followUpMode === "all-at-once" ? "all at once" : "one at a time"}.`}
-                          icon="text.badge.plus"
-                          label={sessionQueueCount > 0 ? `Inputs ${sessionQueueCount}` : "Inputs"}
-                        />
-                      </ControlPillMenu>
-                    ) : null}
-                    {showSessionAgentDepth && props.sessionAgentDepth !== null ? (
-                      <ControlPillMenu
-                        title="Agent spawn depth"
-                        actions={sessionAgentDepthActions}
-                        onPressAction={({ nativeEvent }) =>
-                          void setSessionAgentDepth(nativeEvent.event)
-                        }
-                      >
-                        <ComposerToolbarButton
-                          accessibilityLabel={
-                            !props.sessionAgentDepth.writable
-                              ? `Agent spawn depth ${props.sessionAgentDepth.maxDepth}, fixed by session policy`
-                              : props.sessionAgentDepth.settable
-                                ? `Agent spawn depth ${props.sessionAgentDepth.maxDepth}`
-                                : `Agent spawn depth ${props.sessionAgentDepth.maxDepth}, unavailable until the session is idle`
-                          }
-                          icon="person.crop.circle"
-                          label={`Depth ${props.sessionAgentDepth.maxDepth}`}
-                          disabled={sessionAgentDepthDisabled}
-                        />
-                      </ControlPillMenu>
-                    ) : null}
-                    {sessionResourceInventory !== null ? (
-                      <ComposerToolbarButton
-                        accessibilityLabel={`Session resources. ${sessionResourceInventory.skills.length} skills, ${sessionResourceInventory.prompts.length} prompts.`}
-                        label={`Resources ${sessionResourceInventory.skills.length + sessionResourceInventory.prompts.length}`}
-                        onPress={() => setIsSessionResourcesOpen(true)}
-                        showChevron={false}
-                      />
-                    ) : showSessionResourceReload ? (
-                      <ComposerToolbarButton
-                        accessibilityLabel={
-                          isReloadingSessionResources
-                            ? "Reloading session commands and resources"
-                            : "Reload session commands and resources after changing commands, skills, or prompts"
-                        }
-                        icon="arrow.clockwise"
-                        label={isReloadingSessionResources ? "Reloading…" : "Reload resources"}
-                        disabled={sessionResourceReloadDisabled || isReloadingSessionResources}
-                        onPress={() => void reloadSessionResources()}
-                        showChevron={false}
-                      />
-                    ) : null}
-                  </ComposerToolbarScroller>
+                  </View>
                 )}
-                {/* Context usage is status, not an action. Inside the scroller it
-                    was the item that landed on the viewport edge and got sliced
-                    mid-glyph, so it is pinned beside the actions where it always
-                    renders whole. Hidden during dictation, which owns this row.
-                    The placeholder holds the slot before usage arrives so the
-                    Renders nothing until usage exists: a provider that never
-                    reports it should not hold the width. */}
-                {isVoiceInputPresented ? null : props.contextWindow ||
-                  (props.sessionCompaction?.available && sessionCompactionScopeKey) ? (
-                  <ControlPillMenu
-                    title="Context window"
-                    actions={contextWindowMenuActions}
-                    onPressAction={({ nativeEvent }) =>
-                      handleSessionCompactionAction(nativeEvent.event)
-                    }
-                  >
-                    <Pressable
-                      accessibilityLabel={`${
-                        contextWindowPresentation?.accessibilityText ?? "Context usage unavailable."
-                      }${
-                        props.sessionCompaction?.available
-                          ? ` ${
-                              isSessionCompactionInProgress(props.sessionCompaction)
-                                ? "Compaction in progress."
-                                : "Compaction controls."
-                            }`
-                          : ""
-                      }`}
-                      accessibilityRole="button"
-                      className="size-11 shrink-0 items-center justify-center active:opacity-70"
-                    >
-                      <ContextWindowRing
-                        percent={contextWindowPresentation?.percent ?? null}
-                        warning={contextWindowPresentation?.warning ?? false}
-                      />
-                    </Pressable>
-                  </ControlPillMenu>
-                ) : null}
-                {/* Pylon ends this row in full-bleed 44px pills rather than
-                    upstream's 30px-in-44px action buttons, which inset
-                    themselves. Without this the send pill renders flush
-                    against the surface and the corner radius clips it. */}
-                <View className="shrink-0 flex-row items-center gap-2 pe-1.5">
-                  {/* Stop lives outside the dictation ternary: an agent must stay
-                      stoppable for the whole recording and transcription window. */}
-                  {showStopAction ? (
-                    <ComposerToolbarButton
-                      accessibilityLabel="Stop"
-                      icon="stop.fill"
-                      variant="danger"
-                      onPress={props.onStopThread}
-                      showChevron={false}
-                    />
-                  ) : null}
+                <View className="shrink-0 flex-row items-center">
                   <ComposerDictationPrimaryAction
                     state={voiceInput.state}
                     presentation={voicePresentation}
@@ -2213,183 +1152,28 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                     onConfirm={voiceInput.stop}
                     onCancel={voiceInput.cancel}
                   />
-                  {/* showsSend, not isVoiceInputPresented: the error phase shows a
-                      status label AND keeps send, so gating on the label strands
-                      the user with no way to send until they dismiss the error. */}
-                  {voicePresentation.showsSend ? (
-                    <ComposerToolbarButton
-                      accessibilityLabel={
-                        (canQueueFollowUp ? followUpBlockReason : sendBlockedReason) ?? sendLabel
-                      }
-                      icon="arrow.up"
-                      variant="primary"
-                      disabled={
-                        !canSend ||
-                        (canQueueFollowUp &&
-                          (isMutatingSessionInputQueue || followUpBlockReason !== null))
-                      }
-                      onPress={canQueueFollowUp ? handleQueueFollowUp : handleSend}
-                      showChevron={false}
+                  {showStopAction ? (
+                    <ComposerActionButton
+                      accessibilityLabel="Stop agent"
+                      icon="stop.fill"
+                      variant="danger"
+                      onPress={props.onStopThread}
+                    />
+                  ) : voicePresentation.showsSend ? (
+                    <SendActionButton
+                      accessibilityLabel={sendBlockedReason ?? sendLabel}
+                      presentation={sendPresentation}
+                      disabled={!canSend}
+                      onSend={handleSend}
                     />
                   ) : null}
                 </View>
               </ComposerToolbarRow>
             </ComposerDictationToolbar>
-          ) : null}
+          </Animated.View>
         </ComposerSurface>
-
-        {showSessionInputQueue ? (
-          <Animated.View entering={FadeIn.duration(180)} exiting={FadeOut.duration(120)}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Session inputs ${sessionQueueCount}. Clear all pending session inputs`}
-              disabled={!canClearSessionInputQueue || isMutatingSessionInputQueue}
-              onPress={confirmClearSessionInputQueue}
-            >
-              <Text className="pt-2 text-xs text-foreground-muted">
-                Session inputs · {sessionQueueCount} · Clear all
-              </Text>
-            </Pressable>
-          </Animated.View>
-        ) : null}
-
-        {/* Queue count */}
-        {props.localOutboxCount > 0 ? (
-          <Animated.View entering={FadeIn.duration(180)} exiting={FadeOut.duration(120)}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Manage ${props.localOutboxCount} pending send${props.localOutboxCount === 1 ? "" : "s"}`}
-              onPress={props.onManagePendingSends}
-            >
-              <Text className="pt-2 text-xs text-foreground-muted">
-                {props.localOutboxCount} pending send{props.localOutboxCount === 1 ? "" : "s"} on
-                this device · Manage
-              </Text>
-            </Pressable>
-          </Animated.View>
-        ) : null}
       </Animated.View>
-      <QuickQuestionModal
-        key={quickQuestionScopeKey}
-        scopeKey={quickQuestionScopeKey}
-        visible={quickQuestionOpenScopeKey === quickQuestionScopeKey && quickQuestionAvailable}
-        onAsk={props.onAskSessionSideQuestion}
-        onCancel={props.onCancelSessionSideQuestion}
-        onDismiss={() => setQuickQuestionOpenScopeKey(null)}
-      />
-      {isSessionResourcesOpen &&
-      sessionResourceInventory !== null &&
-      props.sessionResources !== null ? (
-        <SessionResourcesModal
-          inventory={sessionResourceInventory}
-          snapshot={props.sessionResources}
-          showReload={showSessionResourceReload}
-          reloadDisabled={sessionResourceReloadDisabled}
-          isReloading={isReloadingSessionResources}
-          onReload={reloadSessionResources}
-          onClose={() => setIsSessionResourcesOpen(false)}
-        />
-      ) : null}
-      {liveActivityOpen && selectedLiveActivityAgent !== null ? (
-        <SessionAgentLiveActivityModal
-          key={sessionAgentScopeKey}
-          environmentId={props.environmentId}
-          threadId={props.selectedThread.id}
-          agentId={selectedLiveActivityAgent.id}
-          agent={selectedLiveActivityAgent}
-          onClose={() => setLiveActivitySelection(null)}
-        />
-      ) : null}
-      <Modal
-        visible={messageAgent !== null}
-        transparent
-        animationType="fade"
-        onRequestClose={closeAgentMessage}
-      >
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-          className="flex-1 justify-end"
-        >
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Close agent message"
-            className="absolute inset-0 bg-black/50"
-            disabled={agentMessagePending}
-            onPress={closeAgentMessage}
-          />
-          <View className="rounded-t-[28px] border-t border-border bg-sheet px-5 pb-8 pt-5">
-            <View className="mb-4 flex-row items-start justify-between gap-4">
-              <View className="min-w-0 flex-1">
-                <Text className="text-lg font-t3-bold text-foreground">
-                  Message {messageAgent?.title ?? "agent"}
-                </Text>
-                <Text className="mt-1 text-sm text-foreground-muted">
-                  Send a direct instruction to this active agent.
-                </Text>
-              </View>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Cancel agent message"
-                disabled={agentMessagePending}
-                onPress={closeAgentMessage}
-                className="h-11 items-center justify-center px-2"
-              >
-                <Text className="font-t3-bold text-foreground-muted">Cancel</Text>
-              </Pressable>
-            </View>
-            <TextInput
-              autoFocus
-              multiline
-              textAlignVertical="top"
-              maxLength={PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS}
-              value={agentMessageDraft}
-              editable={!agentMessagePending}
-              onChangeText={(value) => {
-                setAgentMessageDraft(value);
-                if (agentMessageError && agentMessageError !== AGENT_MESSAGE_UNAVAILABLE_ERROR) {
-                  setAgentMessageError(null);
-                }
-              }}
-              placeholder="What should this agent know or do?"
-              className="h-36 rounded-[20px] px-4 py-3.5"
-            />
-            <View className="mt-2 flex-row items-start justify-between gap-3">
-              <Text
-                accessibilityRole={agentMessageError ? "alert" : undefined}
-                className="min-w-0 flex-1 text-xs text-danger"
-              >
-                {agentMessageError}
-              </Text>
-              <Text className="text-xs tabular-nums text-foreground-muted">
-                {agentMessageDraft.length.toLocaleString()} /{" "}
-                {PROVIDER_SESSION_AGENT_MESSAGE_MAX_CHARS.toLocaleString()}
-              </Text>
-            </View>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={agentMessagePending ? "Sending message" : "Send message"}
-              accessibilityState={{
-                disabled:
-                  agentMessagePending ||
-                  !messageAgentCanSend ||
-                  agentMessageDraft.trim().length === 0,
-                busy: agentMessagePending,
-              }}
-              disabled={
-                agentMessagePending || !messageAgentCanSend || agentMessageDraft.trim().length === 0
-              }
-              onPress={() => void sendAgentMessage()}
-              className="mt-4 h-12 flex-row items-center justify-center rounded-full bg-primary disabled:bg-subtle-strong"
-            >
-              {agentMessagePending ? (
-                <ActivityIndicator />
-              ) : (
-                <Text className="font-t3-bold text-primary-foreground">Send message</Text>
-              )}
-            </Pressable>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
+
       <VideoPreviewModal source={previewVideo} onRequestClose={closePreview} />
       <FilePreviewModal source={previewFile} onRequestClose={closePreview} />
     </Animated.View>

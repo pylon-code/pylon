@@ -1,5 +1,5 @@
 import type { ComponentProps } from "react";
-import { View } from "react-native";
+import { View, Pressable } from "react-native";
 
 import { SymbolView } from "../../../components/AppSymbol";
 import { AppText as Text } from "../../../components/AppText";
@@ -12,7 +12,7 @@ export function SettingsSwitchRow(props: {
   readonly icon: SymbolName;
   readonly label: string;
   readonly subtitle?: string;
-  readonly value: boolean;
+  readonly value: boolean | null;
   readonly onValueChange: (value: boolean) => void;
 }) {
   return (
@@ -36,12 +36,24 @@ export function SettingsSwitchRow(props: {
           <Text className="text-sm text-foreground-muted">{props.subtitle}</Text>
         ) : null}
       </View>
-      <ThemedSwitch
-        accessibilityLabel={props.label}
-        disabled={props.disabled}
-        onValueChange={props.onValueChange}
-        value={props.value}
-      />
+      {props.value === null ? (
+        <Pressable
+          accessibilityLabel={`Set ${props.label} on for selected environments`}
+          accessibilityRole="button"
+          disabled={props.disabled}
+          className="rounded-full bg-subtle px-3 py-2 active:opacity-70"
+          onPress={() => props.onValueChange(true)}
+        >
+          <Text className="text-sm font-t3-medium text-foreground">Mixed · Set on</Text>
+        </Pressable>
+      ) : (
+        <ThemedSwitch
+          accessibilityLabel={props.label}
+          disabled={props.disabled}
+          onValueChange={props.onValueChange}
+          value={props.value}
+        />
+      )}
     </View>
   );
 }
