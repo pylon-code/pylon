@@ -344,13 +344,13 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
         }}
       >
         {canStartScratch && listScopes.length > 0 ? (
-          <View collapsable={false} className="overflow-hidden rounded-[24px] bg-card">
+          <View collapsable={false} className="overflow-hidden rounded-[24px] bg-grouped-card">
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="No project"
               accessibilityHint="Starts a task in its own folder, outside any project"
               onPress={() => void startScratch()}
-              className="flex-row items-center gap-3 bg-card px-4 py-3.5"
+              className="flex-row items-center gap-3 bg-grouped-card px-4 py-3.5"
             >
               <View className="h-7 w-7 items-center justify-center">
                 <SymbolView
@@ -376,7 +376,7 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
           </View>
         ) : null}
         {listScopes.length === 0 ? (
-          <View collapsable={false} className="items-center gap-3 rounded-[24px] bg-card px-6 py-8">
+          <View collapsable={false} className="items-center gap-3 rounded-[24px] bg-grouped-card px-6 py-8">
             {projectEmptyState.loading ? (
               <ActivityIndicator colorClassName={"accent-icon-muted"} />
             ) : null}
@@ -431,7 +431,7 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
             </Text>
           </View>
         ) : (
-          <View collapsable={false} className="overflow-hidden rounded-[24px] bg-card">
+          <View collapsable={false} className="overflow-hidden rounded-[24px] bg-grouped-card">
             {visibleScopes.map((scope, scopeIndex) => {
               const hasMultipleProjects = scope.projects.length > 1;
               const selectionTarget = getProjectScopeSelectionTarget(scope, selectedEnvironmentId);
@@ -447,7 +447,7 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
                     accessibilityState={{ disabled: reservedDestinationProject !== null }}
                     disabled={reservedDestinationProject !== null}
                     onPress={() => void selectProject(selectionTarget)}
-                    className="flex-row items-center gap-3 bg-card px-4 py-3.5"
+                    className="flex-row items-center gap-3 bg-grouped-card px-4 py-3.5"
                   >
                     <View className="h-7 w-7 items-center justify-center">
                       <ProjectFavicon
