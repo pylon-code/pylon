@@ -147,6 +147,7 @@ import {
   coalesceStoredThreadEvents,
   composeShellStreamWithEnrichment,
   dedupeShellEnrichment,
+  projectsWithResolvedRepositoryIdentities,
   shellStreamItemFromEnrichmentRefresh,
   shellStreamItemFromThreadShell,
   shellStreamItemsFromInitialSnapshot,
@@ -1067,17 +1068,10 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
       // project's metadata once a minute.
       Stream.mapEffect((changes) =>
         Effect.gen(function* () {
-          const identities = new Map(
-            Array.from(changes, (change) => [
-              change.workspaceRoot,
-              change.enrichment.repositoryIdentity,
-            ]),
-          );
           const snapshotSequence = yield* applicationEvents.latestApplicationSequence;
-          const changedProjects = (yield* projects.listShells()).flatMap((project) =>
-            identities.has(project.workspaceRoot)
-              ? [{ ...project, repositoryIdentity: identities.get(project.workspaceRoot) ?? null }]
-              : [],
+          const changedProjects = projectsWithResolvedRepositoryIdentities(
+            yield* projects.listShells(),
+            Array.from(changes),
           );
           return shellStreamItemFromEnrichmentRefresh({
             snapshot: {
