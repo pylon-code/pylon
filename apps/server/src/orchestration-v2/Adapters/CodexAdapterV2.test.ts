@@ -1856,7 +1856,11 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       // version, so pin the whole value here.
       assert.deepEqual(initializeParams, [
         {
-          clientInfo: { name: "T3 Code", title: "T3 Code", version: packageJson.version },
+          clientInfo: {
+            name: "t3code_desktop",
+            title: "Pylon Desktop",
+            version: packageJson.version,
+          },
           capabilities: {
             experimentalApi: true,
             optOutNotificationMethods: ["turn/diff/updated"],

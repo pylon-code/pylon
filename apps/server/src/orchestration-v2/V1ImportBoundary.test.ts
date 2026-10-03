@@ -72,11 +72,20 @@ it("reads the V1 tables only from the legacy importer", () => {
   }
 });
 
+function importsLegacyTranscript(path: string, source: string): boolean {
+  const importerDirectory = NodePath.join(sourceRoot, "orchestration-v2", "legacy") + NodePath.sep;
+  return [...source.matchAll(/from\s+["']([^"']*\/legacy\/[^"']*)["']/g)].some(
+    ([, specifier]) =>
+      specifier !== undefined &&
+      NodePath.resolve(sourceRoot, NodePath.dirname(path), specifier).startsWith(importerDirectory),
+  );
+}
+
 it("keeps the legacy importer out of reach of new code", () => {
   const importers = relativeSources
     .filter(
       ({ path, source }) =>
-        !path.startsWith("orchestration-v2/legacy/") && /from\s+["'][^"']*\/legacy\//.test(source),
+        !path.startsWith("orchestration-v2/legacy/") && importsLegacyTranscript(path, source),
     )
     .map(({ path }) => path)
     .toSorted();
