@@ -1,10 +1,10 @@
+import { type ProviderPresentationActivity } from "./providerPresentation.ts";
 import {
   EnvironmentId,
   EventId,
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
-  type OrchestrationThreadActivity,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -42,7 +42,7 @@ const activity = (instanceId: string, status: "idle" | "compacting") =>
       manualCompactionSettable: status === "idle",
       autoCompactionScope: "session-and-provider-default",
     },
-  }) as OrchestrationThreadActivity;
+  }) as ProviderPresentationActivity;
 
 describe("session compaction state", () => {
   it("derives only the active provider instance snapshot", () => {

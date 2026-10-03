@@ -126,6 +126,12 @@ export const MessageId = makeEntityId("MessageId");
 export type MessageId = typeof MessageId.Type;
 export const TurnId = makeEntityId("TurnId");
 export type TurnId = typeof TurnId.Type;
+export const RunId = makeEntityId("RunId");
+export type RunId = typeof RunId.Type;
+export const RunAttemptId = makeEntityId("RunAttemptId");
+export type RunAttemptId = typeof RunAttemptId.Type;
+export const NodeId = makeEntityId("NodeId");
+export type NodeId = typeof NodeId.Type;
 export const AuthSessionId = makeEntityId("AuthSessionId");
 export type AuthSessionId = typeof AuthSessionId.Type;
 export const RpcClientId = NonNegativeInt.pipe(Schema.brand("RpcClientId"));
@@ -140,40 +146,60 @@ export type RpcClientId = typeof RpcClientId.Type;
 export const ClientSurface = Schema.Literals(["web", "desktop", "mobile", "cli"]);
 export type ClientSurface = typeof ClientSurface.Type;
 
+export const ClientOs = Schema.Literals([
+  "macOS",
+  "Windows",
+  "Linux",
+  "iOS",
+  "Android",
+  "ChromeOS",
+  "other",
+  "unknown",
+]);
+export type ClientOs = typeof ClientOs.Type;
+
+export const ClientDeviceType = Schema.Literals(["desktop", "phone", "tablet", "unknown"]);
+export type ClientDeviceType = typeof ClientDeviceType.Type;
+
+export const ClientWebDeployment = Schema.Literals(["hosted", "server"]);
+export type ClientWebDeployment = typeof ClientWebDeployment.Type;
+
+export const ClientConnectionMethod = Schema.Literals(["direct", "ssh", "relay", "unknown"]);
+export type ClientConnectionMethod = typeof ClientConnectionMethod.Type;
+
 export const ProviderItemId = makeEntityId("ProviderItemId");
 export type ProviderItemId = typeof ProviderItemId.Type;
+export const ProviderSessionId = makeEntityId("ProviderSessionId");
+export type ProviderSessionId = typeof ProviderSessionId.Type;
+export const ProviderThreadId = makeEntityId("ProviderThreadId");
+export type ProviderThreadId = typeof ProviderThreadId.Type;
+export const ProviderTurnId = makeEntityId("ProviderTurnId");
+export type ProviderTurnId = typeof ProviderTurnId.Type;
 export const RuntimeSessionId = makeEntityId("RuntimeSessionId");
 export type RuntimeSessionId = typeof RuntimeSessionId.Type;
 export const RuntimeItemId = makeEntityId("RuntimeItemId");
 export type RuntimeItemId = typeof RuntimeItemId.Type;
+export const TurnItemId = makeEntityId("TurnItemId");
+export type TurnItemId = typeof TurnItemId.Type;
 export const RuntimeRequestId = makeEntityId("RuntimeRequestId");
 export type RuntimeRequestId = typeof RuntimeRequestId.Type;
 export const RuntimeTaskId = makeEntityId("RuntimeTaskId");
 export type RuntimeTaskId = typeof RuntimeTaskId.Type;
+export const ScheduledTaskId = makeEntityId("ScheduledTaskId");
+export type ScheduledTaskId = typeof ScheduledTaskId.Type;
 export const ApprovalRequestId = makeEntityId("ApprovalRequestId");
 export type ApprovalRequestId = typeof ApprovalRequestId.Type;
 export const CheckpointRef = makeEntityId("CheckpointRef");
 export type CheckpointRef = typeof CheckpointRef.Type;
-
-/**
- * Approval vocabulary lives here rather than in orchestration.ts because
- * providerRuntime.ts needs `ProviderApprovalOption` as a value (#8058) while
- * orchestration.ts already imports providerRuntime for its session payloads.
- * Upstream has no such edge, so importing across those two closes a cycle here
- * that only shows up at runtime — typecheck hoists the types and stays quiet.
- */
-export const ProviderApprovalDecision = Schema.Literals([
-  "accept",
-  "acceptForSession",
-  "acceptAlways",
-  "decline",
-  "cancel",
-]);
-export type ProviderApprovalDecision = typeof ProviderApprovalDecision.Type;
-export const ProviderApprovalOption = Schema.Struct({
-  decision: ProviderApprovalDecision,
-  label: TrimmedNonEmptyString,
-  /** Provider-supplied caution shown next to the option, such as a prompt injection warning. */
-  warning: Schema.optional(TrimmedNonEmptyString),
-});
-export type ProviderApprovalOption = typeof ProviderApprovalOption.Type;
+export const CheckpointId = makeEntityId("CheckpointId");
+export type CheckpointId = typeof CheckpointId.Type;
+export const CheckpointScopeId = makeEntityId("CheckpointScopeId");
+export type CheckpointScopeId = typeof CheckpointScopeId.Type;
+export const ContextHandoffId = makeEntityId("ContextHandoffId");
+export type ContextHandoffId = typeof ContextHandoffId.Type;
+export const ContextTransferId = makeEntityId("ContextTransferId");
+export type ContextTransferId = typeof ContextTransferId.Type;
+export const RawEventId = makeEntityId("RawEventId");
+export type RawEventId = typeof RawEventId.Type;
+export const PlanId = makeEntityId("PlanId");
+export type PlanId = typeof PlanId.Type;

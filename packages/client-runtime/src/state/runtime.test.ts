@@ -2,7 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   CommandId,
   EnvironmentId,
-  ORCHESTRATION_WS_METHODS,
+  ORCHESTRATION_V2_WS_METHODS,
   ThreadId,
   WS_METHODS,
 } from "@t3tools/contracts";
@@ -190,7 +190,7 @@ describe("environment command session binding", () => {
       let replacementCalls = 0;
       const sessionB = {
         client: {
-          [WS_METHODS.rollbackRecover]: () => {
+          [WS_METHODS.providerGetSessionAgentDepth]: () => {
             replacementCalls += 1;
             return Effect.void;
           },
@@ -205,7 +205,7 @@ describe("environment command session binding", () => {
       yield* SubscriptionRef.set(harness.supervisorSession, Option.some(sessionB));
       const command = createEnvironmentRpcCommand(harness.runtime, {
         label: "test.recovery-session-race",
-        tag: WS_METHODS.rollbackRecover,
+        tag: WS_METHODS.providerGetSessionAgentDepth,
       });
       const registry = AtomRegistry.make();
       const result = yield* Effect.promise(() =>
@@ -214,8 +214,6 @@ describe("environment command session binding", () => {
           expectedSessionOwner: ownerA,
           input: {
             threadId: ThreadId.make("thread-1"),
-            action: "retry-verification",
-            expectedOperationId: "operation-a",
           },
         }),
       );
@@ -235,7 +233,7 @@ describe("environment command session binding", () => {
       let replacementCalls = 0;
       const sessionB = {
         client: {
-          [ORCHESTRATION_WS_METHODS.dispatchCommand]: () => {
+          [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: () => {
             replacementCalls += 1;
             return Effect.succeed({ sequence: 1 });
           },
@@ -272,8 +270,6 @@ describe("environment command session binding", () => {
           input: {
             threadId: ThreadId.make("thread-1"),
             turnCount: 1,
-            expectedSourceRevision: 2,
-            expectedRollbackOperationId: null,
             commandId: CommandId.make("race-revert"),
           },
         }),

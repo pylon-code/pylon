@@ -1,10 +1,7 @@
+import { type ProviderPresentationActivity } from "./providerPresentation.ts";
 import { describe, expect, it } from "vite-plus/test";
 
-import {
-  ProviderDriverKind,
-  ProviderInstanceId,
-  type OrchestrationThreadActivity,
-} from "@t3tools/contracts";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
 
 import {
   canSetSessionAgentDepth,
@@ -17,7 +14,7 @@ const activity = (input: {
   readonly createdAt: string;
   readonly providerInstanceId?: string;
   readonly payload: Record<string, unknown>;
-}): OrchestrationThreadActivity =>
+}): ProviderPresentationActivity =>
   ({
     id: input.id,
     kind: "session.agent-depth.updated",
@@ -30,7 +27,7 @@ const activity = (input: {
       ...input.payload,
     },
     createdAt: input.createdAt,
-  }) as OrchestrationThreadActivity;
+  }) as ProviderPresentationActivity;
 
 describe("deriveLatestSessionAgentDepth", () => {
   it("selects the latest valid snapshot for the active provider instance", () => {

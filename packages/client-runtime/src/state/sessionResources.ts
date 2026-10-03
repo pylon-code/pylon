@@ -1,26 +1,25 @@
+import {
+  decodeProviderPresentation,
+  type ProviderPresentationActivity,
+  type SessionResourcesPresentation,
+} from "./providerPresentation.ts";
 import * as Option from "effect/Option";
 
-import {
-  decodeOrchestrationSessionActivity,
-  type OrchestrationThreadActivity,
-  type ProviderInstanceId,
-  type ServerProvider,
-  type SessionResourcesUpdatedActivityPayload,
-} from "@t3tools/contracts";
+import { type ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
 
-export type SessionResourcesSnapshot = SessionResourcesUpdatedActivityPayload & {
+export type SessionResourcesSnapshot = SessionResourcesPresentation & {
   readonly updatedAt: string;
 };
 
 /** Return the latest valid session-scoped provider resource inventory. */
 export function deriveLatestSessionResources(
-  activities: ReadonlyArray<OrchestrationThreadActivity>,
+  activities: ReadonlyArray<ProviderPresentationActivity>,
   providerInstanceId: ProviderInstanceId,
 ): SessionResourcesSnapshot | null {
   for (let index = activities.length - 1; index >= 0; index -= 1) {
     const activity = activities[index];
     if (!activity || activity.kind !== "session.resources.updated") continue;
-    const decoded = decodeOrchestrationSessionActivity(activity);
+    const decoded = decodeProviderPresentation(activity);
     if (Option.isNone(decoded) || decoded.value.kind !== "session.resources.updated") continue;
     if (decoded.value.payload.providerInstanceId !== providerInstanceId) continue;
     return { ...decoded.value.payload, updatedAt: activity.createdAt };
@@ -30,7 +29,7 @@ export function deriveLatestSessionResources(
 
 /** Ignore a retained inventory captured before the current provider-session incarnation. */
 export function deriveCurrentSessionResources(
-  activities: ReadonlyArray<OrchestrationThreadActivity>,
+  activities: ReadonlyArray<ProviderPresentationActivity>,
   providerInstanceId: ProviderInstanceId,
   sessionStartedAt: string | undefined,
 ): SessionResourcesSnapshot | null {

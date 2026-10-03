@@ -1,14 +1,14 @@
 import {
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
-  ORCHESTRATION_WS_METHODS,
+  ORCHESTRATION_V2_WS_METHODS,
   CommandId,
   PreviewTabId,
   ThreadId,
   type PreviewAutomationStreamEvent,
   type PreviewSessionSnapshot,
   type ServerConfig,
-  type ClientOrchestrationCommand,
+  type OrchestrationV2Command,
   type RelayClientInstallProgressEvent,
   type ServerConfigStreamEvent,
   type ServerLifecycleStreamEvent,
@@ -106,10 +106,10 @@ describe("environment RPC", () => {
     Effect.gen(function* () {
       let bDispatches = 0;
       const clientA = {
-        [ORCHESTRATION_WS_METHODS.dispatchCommand]: () => Effect.succeed({ sequence: 1 }),
+        [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: () => Effect.succeed({ sequence: 1 }),
       } as unknown as WsRpcProtocolClient;
       const clientB = {
-        [ORCHESTRATION_WS_METHODS.dispatchCommand]: () => {
+        [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: () => {
           bDispatches += 1;
           return Effect.succeed({ sequence: 1 });
         },
@@ -135,7 +135,7 @@ describe("environment RPC", () => {
         concurrency,
         execute: () =>
           request(
-            ORCHESTRATION_WS_METHODS.dispatchCommand,
+            ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
             {
               type: "thread.unarchive",
               commandId: CommandId.make("undo-queued-under-A"),
@@ -409,23 +409,21 @@ describe("environment RPC", () => {
       const { activeSession, supervisor } = yield* makeHarness();
       const ready = yield* Deferred.make<void>();
       const command = {
-        type: "thread.turn.start",
-        message: {
-          attachments: [
-            {
-              type: "file",
-              id: "paste-1",
-              name: "paste.txt",
-              mimeType: "text/plain",
-              sizeBytes: 4,
-              source: { _tag: "pasted-text" },
-            },
-          ],
-        },
-      } as unknown as ClientOrchestrationCommand;
+        type: "message.dispatch",
+        attachments: [
+          {
+            type: "file",
+            id: "paste-1",
+            name: "paste.txt",
+            mimeType: "text/plain",
+            sizeBytes: 4,
+            source: { _tag: "pasted-text" },
+          },
+        ],
+      } as unknown as OrchestrationV2Command;
       const receiver = (label: string, supported: boolean) => ({
         ...session({
-          [ORCHESTRATION_WS_METHODS.dispatchCommand]: () =>
+          [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: () =>
             Effect.sync(() => {
               calls.push(label);
               return { status: "accepted" };
@@ -437,7 +435,7 @@ describe("environment RPC", () => {
       });
       yield* SubscriptionRef.set(activeSession, Option.some(receiver("new", true)));
       const queued = yield* Deferred.await(ready).pipe(
-        Effect.flatMap(() => request(ORCHESTRATION_WS_METHODS.dispatchCommand, command)),
+        Effect.flatMap(() => request(ORCHESTRATION_V2_WS_METHODS.dispatchCommand, command)),
         Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
         Effect.exit,
         Effect.forkChild,
@@ -449,7 +447,7 @@ describe("environment RPC", () => {
       expect(calls).toEqual([]);
 
       const question = {
-        type: "thread.user-input.respond",
+        type: "runtime-request.respond",
         attachmentsByQuestionId: {
           question: [
             {
@@ -462,9 +460,9 @@ describe("environment RPC", () => {
             },
           ],
         },
-      } as unknown as ClientOrchestrationCommand;
+      } as unknown as OrchestrationV2Command;
       const rejectedQuestion = yield* request(
-        ORCHESTRATION_WS_METHODS.dispatchCommand,
+        ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
         question,
       ).pipe(
         Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
@@ -474,20 +472,18 @@ describe("environment RPC", () => {
       expect(calls).toEqual([]);
 
       const ordinary = {
-        type: "thread.turn.start",
-        message: {
-          attachments: [
-            {
-              type: "file",
-              id: "normal",
-              name: "normal.txt",
-              mimeType: "text/plain",
-              sizeBytes: 4,
-            },
-          ],
-        },
-      } as unknown as ClientOrchestrationCommand;
-      const allowed = yield* request(ORCHESTRATION_WS_METHODS.dispatchCommand, ordinary).pipe(
+        type: "message.dispatch",
+        attachments: [
+          {
+            type: "file",
+            id: "normal",
+            name: "normal.txt",
+            mimeType: "text/plain",
+            sizeBytes: 4,
+          },
+        ],
+      } as unknown as OrchestrationV2Command;
+      const allowed = yield* request(ORCHESTRATION_V2_WS_METHODS.dispatchCommand, ordinary).pipe(
         Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
         Effect.exit,
       );

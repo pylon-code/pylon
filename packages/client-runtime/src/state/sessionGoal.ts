@@ -1,17 +1,18 @@
+import {
+  decodeProviderPresentation,
+  type ProviderPresentationActivity,
+  type SessionGoalPresentation,
+} from "./providerPresentation.ts";
 import * as Option from "effect/Option";
 
 import {
-  decodeOrchestrationSessionActivity,
-  type OrchestrationSessionStatus,
-  type OrchestrationThreadActivity,
   type ProviderInstanceId,
   type RuntimeMode,
   type ServerProvider,
   type SessionGoalStatus,
-  type SessionGoalUpdatedActivityPayload,
 } from "@t3tools/contracts";
 
-export type SessionGoalSnapshot = SessionGoalUpdatedActivityPayload & {
+export type SessionGoalSnapshot = SessionGoalPresentation & {
   readonly updatedAt: string;
 };
 
@@ -35,14 +36,14 @@ export function supportsSessionGoalObservation(
  * current.
  */
 export function deriveActiveSessionGoal(input: {
-  readonly activities: ReadonlyArray<OrchestrationThreadActivity>;
+  readonly activities: ReadonlyArray<ProviderPresentationActivity>;
   readonly provider:
     | Pick<ServerProvider, "featureCapabilities" | "availability">
     | null
     | undefined;
   readonly providerInstanceId: ProviderInstanceId | undefined;
   readonly runtimeMode: RuntimeMode | undefined;
-  readonly sessionStatus: OrchestrationSessionStatus | undefined;
+  readonly sessionStatus: "starting" | "ready" | "running" | "stopped" | "error" | undefined;
 }): SessionGoalSnapshot | null {
   if (
     input.providerInstanceId === undefined ||
@@ -56,7 +57,7 @@ export function deriveActiveSessionGoal(input: {
   for (let index = input.activities.length - 1; index >= 0; index -= 1) {
     const activity = input.activities[index];
     if (!activity || activity.kind !== "session.goal.updated") continue;
-    const decoded = decodeOrchestrationSessionActivity(activity);
+    const decoded = decodeProviderPresentation(activity);
     if (Option.isNone(decoded) || decoded.value.kind !== "session.goal.updated") continue;
     if (decoded.value.payload.providerInstanceId !== input.providerInstanceId) continue;
     if (!decoded.value.payload.available) return null;

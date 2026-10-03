@@ -1,7 +1,7 @@
+import type { SessionSideQuestionState } from "./sessionSideQuestion.ts";
 // @ts-expect-error -- Vite Plus provides the Vitest runner transitively to focused tests.
 import { describe, expect, it } from "vitest";
 import type {
-  OrchestrationSession,
   ProviderAskSessionSideQuestionResult,
   ProviderCancelSessionSideQuestionResult,
   ServerProvider,
@@ -33,7 +33,7 @@ const activeSession = {
   runtimeMode: "approval-required",
   status: "running",
   restored: false,
-} satisfies Pick<OrchestrationSession, "runtimeMode" | "status" | "restored">;
+} satisfies SessionSideQuestionState;
 
 type AskResultWithoutId<T = ProviderAskSessionSideQuestionResult> = T extends unknown
   ? Omit<T, "requestId">

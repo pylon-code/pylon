@@ -36,6 +36,8 @@ export type ModelPickerJumpKeybindingCommand =
 
 const THREAD_KEYBINDING_COMMANDS = [
   "thread.stop",
+  "thread.steerQueuedMessage",
+  "thread.editQueuedMessage",
   "thread.previous",
   "thread.next",
   "thread.copyReference",
@@ -64,6 +66,7 @@ export const STATIC_KEYBINDING_COMMANDS = [
   "terminal.new",
   "terminal.close",
   "rightPanel.toggle",
+  "threadPanel.toggle",
   "rightPanel.toggleMaximized",
   "rightPanel.close",
   "pullRequest.copyNumber",
@@ -82,6 +85,8 @@ export const STATIC_KEYBINDING_COMMANDS = [
   "appearance.cycle",
   "themeEditor.toggle",
   "composer.stash",
+  "composer.sendAlternate",
+  "composer.sendBackground",
   "composer.host",
   "composer.effort",
   "composer.mode",

@@ -1,9 +1,15 @@
 import type {
-  OrchestrationSession,
+  RuntimeMode,
   ProviderAskSessionSideQuestionResult,
   ProviderCancelSessionSideQuestionResult,
   ServerProvider,
 } from "@t3tools/contracts";
+
+export interface SessionSideQuestionState {
+  readonly runtimeMode: RuntimeMode;
+  readonly status: "starting" | "ready" | "running" | "stopped" | "error" | "idle" | "interrupted";
+  readonly restored?: boolean;
+}
 
 import type { SupervisorConnectionPhase } from "../connection/model.ts";
 
@@ -22,7 +28,7 @@ export function supportsSessionSideQuestions(
 export function canAskSessionSideQuestion(
   provider: Pick<ServerProvider, "featureCapabilities"> | null | undefined,
   connectionPhase: SupervisorConnectionPhase,
-  session: Pick<OrchestrationSession, "runtimeMode" | "status" | "restored"> | null | undefined,
+  session: SessionSideQuestionState | null | undefined,
 ): boolean {
   return (
     connectionPhase === "connected" &&

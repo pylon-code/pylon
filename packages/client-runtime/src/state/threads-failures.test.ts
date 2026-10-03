@@ -1,13 +1,10 @@
+import { v2Projection, v2ThreadId } from "./orchestrationV2TestFixtures.ts";
 import {
   EnvironmentId,
   EventId,
-  ORCHESTRATION_WS_METHODS,
-  ProjectId,
-  ProviderInstanceId,
-  ThreadId,
-  type OrchestrationThread,
-  type OrchestrationThreadDetailSnapshot,
-  type OrchestrationThreadStreamItem,
+  ORCHESTRATION_V2_WS_METHODS,
+  type OrchestrationV2ThreadDetailSnapshot,
+  type OrchestrationV2ThreadStreamItem,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
@@ -45,31 +42,9 @@ const TARGET = new PrimaryConnectionTarget({
   httpBaseUrl: "https://environment.example.test",
   wsBaseUrl: "wss://environment.example.test",
 });
-const THREAD_ID = ThreadId.make("thread-1");
-const THREAD: OrchestrationThread = {
-  id: THREAD_ID,
-  projectId: ProjectId.make("project-1"),
-  title: "Cached thread",
-  modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "ModelA" },
-  runtimeMode: "full-access",
-  interactionMode: "default",
-  branch: "main",
-  worktreePath: null,
-  latestTurn: null,
-  createdAt: "2026-04-01T00:00:00.000Z",
-  updatedAt: "2026-04-01T00:00:00.000Z",
-  archivedAt: null,
-  settledOverride: null,
-  settledAt: null,
-  deletedAt: null,
-  messages: [],
-  proposedPlans: [],
-  activities: [],
-  checkpoints: [],
-  pullRequests: [],
-  session: null,
-};
-const SNAPSHOT = { snapshotSequence: 7, thread: THREAD };
+const THREAD_ID = v2ThreadId;
+const THREAD = { ...v2Projection, thread: { ...v2Projection.thread, title: "Cached thread" } };
+const SNAPSHOT = { snapshotSequence: 7, projection: THREAD };
 const CONNECTED_STATE: SupervisorConnectionState = {
   ...AVAILABLE_CONNECTION_STATE,
   desired: true,
@@ -81,21 +56,21 @@ const CONNECTED_STATE: SupervisorConnectionState = {
 
 const makeHarness = Effect.fn("TestThreadFailures.makeHarness")(function* (options?: {
   readonly httpNone?: boolean;
-  readonly initialLoad?: Effect.Effect<Option.Option<OrchestrationThreadDetailSnapshot>>;
-  readonly stream?: Stream.Stream<OrchestrationThreadStreamItem, Error>;
+  readonly initialLoad?: Effect.Effect<Option.Option<OrchestrationV2ThreadDetailSnapshot>>;
+  readonly stream?: Stream.Stream<OrchestrationV2ThreadStreamItem, Error>;
 }) {
   const subscriptions = yield* Queue.unbounded<{
-    readonly events: Queue.Queue<OrchestrationThreadStreamItem, Error>;
+    readonly events: Queue.Queue<OrchestrationV2ThreadStreamItem, Error>;
     readonly closed: Deferred.Deferred<void>;
   }>();
   const opened = yield* Ref.make(0);
   const loads = yield* Ref.make(0);
   const wakeups = yield* Queue.unbounded<ConnectionWakeup>();
   const client = {
-    [ORCHESTRATION_WS_METHODS.subscribeThread]: () =>
+    [ORCHESTRATION_V2_WS_METHODS.subscribeThread]: () =>
       Stream.unwrap(
         Effect.gen(function* () {
-          const events = yield* Queue.unbounded<OrchestrationThreadStreamItem, Error>();
+          const events = yield* Queue.unbounded<OrchestrationV2ThreadStreamItem, Error>();
           const closed = yield* Deferred.make<void>();
           yield* Ref.update(opened, (n) => n + 1);
           yield* Effect.addFinalizer(() => Deferred.succeed(closed, undefined));
@@ -157,6 +132,11 @@ const makeHarness = Effect.fn("TestThreadFailures.makeHarness")(function* (optio
             options?.initialLoad ??
               Effect.succeed(options?.httpNone ? Option.none() : Option.some(SNAPSHOT)),
           ),
+          Effect.map((snapshot) =>
+            Option.isSome(snapshot)
+              ? { _tag: "present" as const, snapshot: snapshot.value }
+              : { _tag: "unavailable" as const },
+          ),
         ),
     }),
   );
@@ -185,9 +165,9 @@ const protocolError = (error: Error) =>
   });
 
 const synchronize = Effect.fn("TestThreadFailures.synchronize")(function* (
-  events: Queue.Queue<OrchestrationThreadStreamItem, Error>,
+  events: Queue.Queue<OrchestrationV2ThreadStreamItem, Error>,
 ) {
-  yield* Queue.offer(events, { kind: "snapshot", snapshot: SNAPSHOT });
+  yield* Queue.offer(events, { kind: "snapshot", ...SNAPSHOT });
   yield* Queue.offer(events, { kind: "synchronized" });
 });
 
@@ -312,45 +292,31 @@ describe("terminated thread loads", () => {
         const error = new Error(
           kind === "domain" ? "buffered domain failure" : "SYNTHETIC_PRIVATE_BUFFER_ERROR",
         );
-        const items: OrchestrationThreadStreamItem[] = [
-          { kind: "snapshot", snapshot: SNAPSHOT },
+        const items: OrchestrationV2ThreadStreamItem[] = [
+          { kind: "snapshot", ...SNAPSHOT },
           { kind: "synchronized" },
           {
             kind: "event",
+            sequence: 8,
             event: {
-              eventId: EventId.make("buffered-event"),
-              commandId: null,
-              causationEventId: null,
-              correlationId: null,
-              metadata: {},
-              sequence: 8,
-              occurredAt: THREAD.createdAt,
-              aggregateKind: "thread",
-              aggregateId: THREAD_ID,
-              type: "thread.meta-updated",
-              payload: {
-                threadId: THREAD_ID,
-                title: "Buffer drained",
-                updatedAt: THREAD.createdAt,
-              },
+              id: EventId.make("buffered-event"),
+              threadId: THREAD_ID,
+              occurredAt: THREAD.thread.createdAt,
+              type: "thread.metadata-updated",
+              payload: { ...THREAD.thread, title: "Buffer drained" },
             },
           },
         ];
         if (deleted)
           items.push({
             kind: "event",
+            sequence: 9,
             event: {
-              eventId: EventId.make("buffered-deletion"),
-              commandId: null,
-              causationEventId: null,
-              correlationId: null,
-              metadata: {},
-              sequence: 9,
-              occurredAt: THREAD.createdAt,
-              aggregateKind: "thread",
-              aggregateId: THREAD_ID,
+              id: EventId.make("buffered-deletion"),
+              threadId: THREAD_ID,
+              occurredAt: THREAD.thread.createdAt,
               type: "thread.deleted",
-              payload: { threadId: THREAD_ID, deletedAt: THREAD.createdAt },
+              payload: { ...THREAD.thread, deletedAt: THREAD.thread.createdAt },
             },
           });
         const failure =
@@ -370,7 +336,7 @@ describe("terminated thread loads", () => {
         const final = yield* h.observe((s) =>
           deleted
             ? s.status === "deleted"
-            : Option.getOrNull(s.data)?.title === "Buffer drained" && Option.isSome(s.error),
+            : Option.getOrNull(s.data)?.thread.title === "Buffer drained" && Option.isSome(s.error),
         );
         if (deleted) {
           expect(final.data).toEqual(Option.none());
