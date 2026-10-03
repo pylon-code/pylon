@@ -97,6 +97,9 @@ import { useScaledTextRole } from "../settings/appearance/useScaledTextRole";
 import type { RemoteClientConnectionState } from "../../lib/connection";
 import { resolveProviderOptionDescriptors } from "../../lib/providerOptions";
 import { ControlPillMenu } from "../../components/ControlPill";
+import { ContextWindowRing } from "../../components/ContextWindowRing";
+import { presentMobileContextWindow } from "../../lib/contextWindow";
+import type { ContextWindowSnapshot } from "@t3tools/client-runtime/state/context-window";
 import type { ActiveTurnComposerAction } from "@t3tools/client-runtime/state/composer-dispatch";
 import type { FollowUpBehavior } from "../../lib/followUpBehavior";
 import {
@@ -144,6 +147,7 @@ export const COMPOSER_EXPANDED_CHROME = 156;
 export interface ThreadComposerProps {
   readonly draftMessage: string;
   readonly draftAttachments: ReadonlyArray<DraftComposerAttachment>;
+  readonly contextWindow: ContextWindowSnapshot | null;
   readonly placeholder: string;
   readonly contentMaxWidth?: number;
   readonly bottomInset?: number;
@@ -401,6 +405,21 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     props.environmentId,
   );
   const queuedEdit = props.queuedEdit ?? null;
+  const contextWindowPresentation = presentMobileContextWindow(props.contextWindow);
+  const contextWindowMenuActions = useMemo(
+    () =>
+      contextWindowPresentation
+        ? [
+            {
+              id: "context-window:detail",
+              title: contextWindowPresentation.detailLabel,
+              image: "gauge.with.dots.needle.50percent",
+              attributes: { disabled: true } as const,
+            },
+          ]
+        : [],
+    [contextWindowPresentation],
+  );
   const composerContentDraft = useComposerDraft(
     props.draftKey ?? scopedThreadKey(props.environmentId, props.selectedThread.id),
   );
@@ -1049,6 +1068,20 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   </View>
                 ) : null}
               </View>
+            ) : null}
+            {!isExpanded && contextWindowPresentation ? (
+              <ControlPillMenu title="Context window" actions={contextWindowMenuActions}>
+                <Pressable
+                  accessibilityLabel={contextWindowPresentation.accessibilityText}
+                  accessibilityRole="button"
+                  className="size-11 shrink-0 items-center justify-center active:opacity-70"
+                >
+                  <ContextWindowRing
+                    percent={contextWindowPresentation.percent}
+                    warning={contextWindowPresentation.warning}
+                  />
+                </Pressable>
+              </ControlPillMenu>
             ) : null}
             {!isExpanded ? (
               <View className="flex-row items-center">

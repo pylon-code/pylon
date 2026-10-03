@@ -39,6 +39,7 @@ import { uuidv4 } from "../lib/uuid";
 
 import { makeQueuedMessageMetadata } from "../lib/commandMetadata";
 import { canSendToModelSelection } from "../lib/modelOptions";
+import { deriveMobileThreadContextWindow } from "../lib/contextWindow";
 import { resolveProviderInteractionMode } from "../features/threads/legacy-plan-mode";
 import {
   convertPastedImagesToAttachments,
@@ -184,6 +185,14 @@ export function useThreadComposerState() {
   } = useThreadSelection();
   const selectedThreadProjection = useSelectedThreadProjection();
   const selectedThreadVisibleTurnItems = useSelectedThreadVisibleTurnItems();
+  const contextWindow = useMemo(
+    () =>
+      deriveMobileThreadContextWindow(
+        selectedThreadProjection?.projection,
+        selectedThreadVisibleTurnItems,
+      ),
+    [selectedThreadProjection, selectedThreadVisibleTurnItems],
+  );
   const composerDrafts = useAtomValue(composerDraftsAtom);
   const acknowledgedMessages = useAtomValue(acknowledgedThreadMessagesAtom);
   const queuedMessagesByThreadKey = useThreadOutboxMessages();
@@ -1082,6 +1091,7 @@ export function useThreadComposerState() {
   );
 
   return {
+    contextWindow,
     feedbackSubmissions,
     dismissFeedback,
     selectedThreadFeed,
