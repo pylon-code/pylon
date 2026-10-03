@@ -27,7 +27,7 @@ import { withUniwind } from "uniwind";
 
 import { AppText as Text } from "../../components/AppText";
 import { SymbolView } from "../../components/AppSymbol";
-import type { FloatingWorkingStatus } from "./floating-working-status";
+import { backgroundStatusSymbol, type FloatingWorkingStatus } from "./floating-working-status";
 import { ControlPill } from "../../components/ControlPill";
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
 import { DevicePreviewButton } from "../devices/device-preview-button";
@@ -432,10 +432,8 @@ function FloatingStatusLabel(props: {
         className="gap-2"
         onLayout={props.onLayout}
       >
-        {/* A dev server can run for hours after the agent is done, so only work
-            that will wake the agent gets the bolt. */}
         <SymbolView
-          name={props.status.waiting ? { ios: "bolt", android: "bolt" } : "terminal"}
+          name={backgroundStatusSymbol(props.status.waiting)}
           size={13}
           tintColorClassName="foreground"
           type="monochrome"

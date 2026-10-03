@@ -29,6 +29,14 @@ export type FloatingWorkingStatus =
     };
 
 /**
+ * The symbol for settled background work. A dev server can run for hours after
+ * the agent is done, so only work that will wake the agent gets the bolt.
+ */
+export function backgroundStatusSymbol(waiting: boolean) {
+  return waiting ? ({ ios: "bolt", android: "bolt" } as const) : ("terminal" as const);
+}
+
+/**
  * The pill's connection variant, or null once the environment is connected and
  * the pill is free to report sync and working state instead.
  */
