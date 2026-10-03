@@ -31,6 +31,22 @@ and cached data. Explicit removal closes the scope and clears credentials,
 projections, and platform-owned state such as drafts. Cloud-account changes apply
 to relay registrations; they must not discard directly paired environments.
 
+## Updating a host too old to connect
+
+A host on an older orchestration protocol is blocked before a session opens, so
+the normal update path, which runs over the session, cannot reach it. The
+[outdated-host update](../../packages/client-runtime/src/connection/outdatedHostUpdate.ts)
+authorizes a bare socket without the protocol gate and calls only the self-update
+RPCs, whose wire shape has not changed across protocol versions. It confirms with
+the user first, with the method read from the host's descriptor: nobody at the
+host is asked, and this client cannot see the threads a restart stops.
+
+It then polls the descriptor for up to four minutes until the host reports a
+compatible protocol. Unlike the session path, it does not re-commit a desktop
+update when the app relaunches on the old version; that case fails after the
+timeout and the user retries. Mobile has no update action, so the block message
+names desktop and web as the place to start one.
+
 ## HTTP authorization
 
 RPC sessions authenticate at socket upgrade, while HTTP snapshot loaders need current

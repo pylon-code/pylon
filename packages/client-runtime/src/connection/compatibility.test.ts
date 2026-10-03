@@ -53,6 +53,20 @@ describe("orchestration protocol compatibility", () => {
     expect(error).not.toHaveProperty("serverUpdateRequired");
   });
 
+  it("tells clients without an update action where an outdated host can be updated", () => {
+    const older = descriptor(ORCHESTRATION_PROTOCOL_VERSION - 1);
+    const updatable = orchestrationProtocolCompatibilityError({
+      ...older,
+      capabilities: { repositoryIdentity: true, serverSelfUpdate: "respawn" },
+    });
+    expect(updatable?.message).toContain("Update Pylon on Build Mac to connect.");
+    expect(updatable?.message).toContain("Pylon on desktop or web can start the update");
+
+    const manual = orchestrationProtocolCompatibilityError(older);
+    expect(manual?.message).toContain("Update Pylon on Build Mac to connect.");
+    expect(manual?.message).not.toContain("desktop or web");
+  });
+
   it("offers a remote update only for an older host that can update itself", () => {
     const older = descriptor(ORCHESTRATION_PROTOCOL_VERSION - 1);
     const withCapabilities = (capabilities: ExecutionEnvironmentDescriptor["capabilities"]) =>

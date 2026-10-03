@@ -125,7 +125,6 @@ export function dedupeShellEnrichment<E, R>(
   });
 }
 
-/** Build a shell snapshot stream item for a batched enrichment completion. */
 /**
  * Projects whose repository identity just resolved, carrying the identity from
  * the resolution itself. Re-enriching the projects here would re-request every
@@ -150,6 +149,7 @@ export function projectsWithResolvedRepositoryIdentities(
   );
 }
 
+/** Build a shell snapshot stream item for a batched enrichment completion. */
 export function shellStreamItemFromEnrichmentRefresh(input: {
   readonly snapshot: OrchestrationV2ShellSnapshot;
   readonly changes: ReadonlyArray<{ readonly workspaceRoot: string }>;

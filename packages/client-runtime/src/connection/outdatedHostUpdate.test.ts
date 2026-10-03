@@ -5,7 +5,9 @@ import {
   WS_METHODS,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -17,7 +19,11 @@ import * as Socket from "effect/unstable/socket/Socket";
 import type { ConnectionCatalogEntry } from "./catalog.ts";
 import { orchestrationProtocolCompatibilityError } from "./compatibility.ts";
 import { PrimaryConnectionTarget } from "./model.ts";
-import { updateOutdatedHost } from "./outdatedHostUpdate.ts";
+import {
+  type OutdatedHostUpdatePlan,
+  outdatedHostUpdateConfirmation,
+  updateOutdatedHost,
+} from "./outdatedHostUpdate.ts";
 import * as EnvironmentRegistry from "./registry.ts";
 import * as ConnectionResolver from "./resolver.ts";
 import * as RelayEnvironmentDiscovery from "../relay/discovery.ts";
@@ -166,10 +172,17 @@ describe("updateOutdatedHost", () => {
         ),
       );
 
+      const events: Array<string> = [];
       const result = yield* updateOutdatedHost(
         TARGET.environmentId,
         { targetVersion: "0.0.46" },
-        () => Effect.void,
+        (stage) => Effect.sync(() => events.push(`stage:${stage}`)),
+        (plan) =>
+          Effect.sync(() => {
+            events.push(`confirm:${plan.method}:${plan.fromVersion}->${plan.targetVersion}`);
+            expect(sockets).toHaveLength(0);
+            return true;
+          }),
       ).pipe(
         Effect.provide(
           Layer.mergeAll(
@@ -203,6 +216,12 @@ describe("updateOutdatedHost", () => {
       ]);
       expect(result.targetVersion).toBe("0.0.46");
       expect(calls).toEqual(["compatibility:clear", "enabled:true"]);
+      // Confirmation comes before any progress or socket.
+      expect(events).toEqual([
+        "confirm:boot-service:0.0.45->0.0.46",
+        "stage:downloading",
+        "stage:resuming",
+      ]);
     }),
   );
 
@@ -214,7 +233,12 @@ describe("updateOutdatedHost", () => {
       };
       let opened = false;
       const error = yield* Effect.flip(
-        updateOutdatedHost(TARGET.environmentId, { targetVersion: "0.0.46" }, () => Effect.void),
+        updateOutdatedHost(
+          TARGET.environmentId,
+          { targetVersion: "0.0.46" },
+          () => Effect.void,
+          () => Effect.die(new Error("A host that cannot update itself is never confirmed.")),
+        ),
       ).pipe(
         Effect.provide(
           Layer.mergeAll(
@@ -274,5 +298,128 @@ describe("updateOutdatedHost", () => {
       expect(error).toMatchObject({ _tag: "OutdatedHostUpdateError" });
       expect(opened).toBe(false);
     }),
+  );
+  it.effect("asks before relaunching a desktop-managed host and sends nothing when declined", () =>
+    Effect.gen(function* () {
+      const desktopManaged = {
+        ...descriptor(undefined, "0.0.45"),
+        capabilities: {
+          repositoryIdentity: true,
+          serverSelfUpdate: "desktop-managed",
+          desktopAppUpdate: true,
+        },
+      } satisfies ExecutionEnvironmentDescriptor;
+      const plans: Array<OutdatedHostUpdatePlan> = [];
+      const stages: Array<string> = [];
+      const registryCalls: Array<string> = [];
+      let opened = false;
+      const exit = yield* Effect.exit(
+        updateOutdatedHost(
+          TARGET.environmentId,
+          { targetVersion: "0.0.46" },
+          (stage) => Effect.sync(() => stages.push(stage)),
+          (plan) =>
+            Effect.sync(() => {
+              plans.push(plan);
+              return false;
+            }),
+        ),
+      ).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            Layer.succeed(
+              EnvironmentRegistry.EnvironmentRegistry,
+              EnvironmentRegistry.EnvironmentRegistry.of({
+                entries: yield* SubscriptionRef.make<
+                  ReadonlyMap<EnvironmentId, ConnectionCatalogEntry>
+                >(
+                  new Map([
+                    [
+                      TARGET.environmentId,
+                      { target: TARGET, profile: Option.none(), enabled: false },
+                    ],
+                  ]),
+                ),
+                setCompatibility: () => Effect.sync(() => registryCalls.push("compatibility")),
+                setEnabled: () => Effect.sync(() => registryCalls.push("enabled")),
+              } as unknown as EnvironmentRegistry.EnvironmentRegistry["Service"]),
+            ),
+            Layer.succeed(
+              ConnectionResolver.ConnectionResolver,
+              ConnectionResolver.ConnectionResolver.of({
+                prepare: () => Effect.die(new Error("unused")),
+                prepareForUpdate: () =>
+                  Effect.succeed({
+                    descriptor: desktopManaged,
+                    prepared: {
+                      environmentId: TARGET.environmentId,
+                      label: TARGET.label,
+                      httpBaseUrl: TARGET.httpBaseUrl,
+                      socketUrl: "wss://build.example.test/ws",
+                      httpAuthorization: null,
+                      target: TARGET,
+                    },
+                  }),
+              }),
+            ),
+            Layer.succeed(
+              RelayEnvironmentDiscovery.RelayEnvironmentDiscovery,
+              RelayEnvironmentDiscovery.RelayEnvironmentDiscovery.of({
+                state: yield* SubscriptionRef.make(
+                  RelayEnvironmentDiscovery.EMPTY_RELAY_ENVIRONMENT_DISCOVERY_STATE,
+                ),
+                refresh: Effect.void,
+              }),
+            ),
+            Layer.succeed(
+              HttpClient.HttpClient,
+              HttpClient.make(() => Effect.die(new Error("unused"))),
+            ),
+            Layer.succeed(Socket.WebSocketConstructor, () => {
+              opened = true;
+              throw new Error("A declined update must not open a socket.");
+            }),
+          ),
+        ),
+      );
+
+      expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true);
+      expect(plans).toEqual([
+        {
+          hostLabel: "Build Mac",
+          method: "desktop-managed",
+          fromVersion: "0.0.45",
+          targetVersion: "0.0.46",
+        },
+      ]);
+      expect(stages).toEqual([]);
+      expect(registryCalls).toEqual([]);
+      expect(opened).toBe(false);
+    }),
+  );
+});
+
+describe("outdatedHostUpdateConfirmation", () => {
+  const plan = {
+    hostLabel: "Build Mac",
+    fromVersion: "0.0.45",
+    targetVersion: "0.0.46",
+  } as const;
+
+  it("names the desktop app relaunch for a desktop-managed host", () => {
+    const message = outdatedHostUpdateConfirmation({ ...plan, method: "desktop-managed" });
+    expect(message).toContain("Pylon desktop app on Build Mac");
+    expect(message).toContain("close and relaunch");
+    expect(message).toContain("agent sessions running there will stop");
+  });
+
+  it.each(["boot-service", "respawn"] as const)(
+    "warns that running sessions stop for a %s restart",
+    (method) => {
+      const message = outdatedHostUpdateConfirmation({ ...plan, method });
+      expect(message).toContain("Update Pylon on Build Mac to 0.0.46?");
+      expect(message).toContain("agent sessions running there will stop");
+      expect(message).not.toContain("desktop app");
+    },
   );
 });

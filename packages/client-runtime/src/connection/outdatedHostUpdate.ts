@@ -2,6 +2,7 @@ import {
   ORCHESTRATION_PROTOCOL_VERSION,
   type EnvironmentId,
   type ExecutionEnvironmentDescriptor,
+  type ServerSelfUpdateCapability,
   type ServerSelfUpdateInput,
   type ServerSelfUpdateResult,
   WS_METHODS,
@@ -41,6 +42,26 @@ export class OutdatedHostUpdateError extends Schema.TaggedError<OutdatedHostUpda
 
 export type OutdatedHostUpdateStage = "downloading" | "installing" | "resuming";
 
+/** What the host will do once the update starts, read from its current descriptor. */
+export interface OutdatedHostUpdatePlan {
+  readonly hostLabel: string;
+  readonly method: ServerSelfUpdateCapability;
+  readonly fromVersion: string;
+  readonly targetVersion: string;
+}
+
+/**
+ * The confirmation shown before an outdated host restarts. Nobody at the host
+ * is asked, and the client cannot see that host's threads, so the prompt names
+ * what stops: the desktop app for a desktop-managed host, and the running
+ * agent sessions in every case.
+ */
+export function outdatedHostUpdateConfirmation(plan: OutdatedHostUpdatePlan): string {
+  return plan.method === "desktop-managed"
+    ? `Update the Pylon desktop app on ${plan.hostLabel} to ${plan.targetVersion}? It will close and relaunch on that machine, and agent sessions running there will stop.`
+    : `Update Pylon on ${plan.hostLabel} to ${plan.targetVersion}? The server will restart, and agent sessions running there will stop.`;
+}
+
 /**
  * Updates a host whose orchestration protocol is too old for this client.
  *
@@ -54,6 +75,8 @@ export const updateOutdatedHost = Effect.fn("clientRuntime.connection.updateOutd
     environmentId: EnvironmentId,
     input: ServerSelfUpdateInput,
     onStage: (stage: OutdatedHostUpdateStage) => Effect.Effect<void>,
+    /** Asked once the method is known; declining interrupts before anything is sent. */
+    confirm: (plan: OutdatedHostUpdatePlan) => Effect.Effect<boolean>,
   ) {
     const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
     const resolver = yield* ConnectionResolver.ConnectionResolver;
@@ -75,6 +98,17 @@ export const updateOutdatedHost = Effect.fn("clientRuntime.connection.updateOutd
         message: `Update Pylon on ${descriptor.label} manually; it cannot update itself.`,
       });
     }
+
+    const confirmed = yield* confirm({
+      hostLabel: descriptor.label,
+      method: capabilities.serverSelfUpdate,
+      fromVersion: descriptor.serverVersion,
+      targetVersion: input.targetVersion,
+    });
+    if (!confirmed) {
+      return yield* Effect.interrupt;
+    }
+    yield* onStage("downloading");
 
     const result = yield* Effect.scoped(
       Effect.gen(function* () {

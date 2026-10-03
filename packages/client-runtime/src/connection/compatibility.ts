@@ -19,11 +19,17 @@ export function orchestrationProtocolCompatibilityError(
         reason: "unsupported",
         detail: `This client is not supported by this server. Update your app or use a compatible release to connect to ${descriptor.label}.`,
       })
-    : new ConnectionBlockedError({
-        reason: "unsupported",
-        detail: `This client requires a newer server. Update Pylon on ${descriptor.label} to connect.`,
-        ...(canSelfUpdate(descriptor) ? { serverUpdateRequired: true } : {}),
-      });
+    : canSelfUpdate(descriptor)
+      ? new ConnectionBlockedError({
+          reason: "unsupported",
+          // Mobile has no update action, so name where the update can start.
+          detail: `This client requires a newer server. Update Pylon on ${descriptor.label} to connect. Pylon on desktop or web can start the update from Settings → Connections.`,
+          serverUpdateRequired: true,
+        })
+      : new ConnectionBlockedError({
+          reason: "unsupported",
+          detail: `This client requires a newer server. Update Pylon on ${descriptor.label} to connect.`,
+        });
 }
 
 /** Whether this client can drive the host's update remotely. */

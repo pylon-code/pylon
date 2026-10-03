@@ -4,6 +4,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
+import { outdatedHostUpdateConfirmation } from "@t3tools/client-runtime/connection";
 import { CircleArrowUpIcon } from "lucide-react";
 import { type ComponentProps, useRef, useState } from "react";
 
@@ -319,6 +320,11 @@ export function OutdatedServerUpdateAction({
         environmentId,
         input: { targetVersion },
         ...(fromVersion === undefined ? {} : { fromVersion }),
+        // The host restarts without asking anyone there, and this client cannot
+        // see its threads, so this is the only confirmation in the flow. No
+        // themed host mounted (undefined) means proceed: the click was the request.
+        confirm: async (plan) =>
+          (await requestConfirmDialog(outdatedHostUpdateConfirmation(plan))) ?? true,
       });
       if (result._tag === "Failure") {
         if (isAtomCommandInterrupted(result)) return;
@@ -327,7 +333,10 @@ export function OutdatedServerUpdateAction({
       toastManager.add({
         type: "success",
         title: `${serverLabel} updated`,
-        description: `Reconnected on t3@${result.value.targetVersion}.`,
+        description:
+          result.value.method === "desktop-app"
+            ? `Desktop app relaunched on ${result.value.targetVersion}.`
+            : `Reconnected on t3@${result.value.targetVersion}.`,
       });
     } catch (error) {
       toastManager.add({
