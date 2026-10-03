@@ -11,6 +11,11 @@ import type {
  * this only stops a chatty bot looping an agent that is replying to it.
  */
 export const PULL_REQUEST_WATCH_WAKE_LIMIT = 10;
+/**
+ * Watches one environment runs at once. Each costs a detail and an activity read a minute
+ * outside the batched list polling, so a cap keeps a busy workspace inside host rate limits.
+ */
+export const MAX_ACTIVE_PULL_REQUEST_WATCHES = 10;
 const LISTED_ITEMS = 10;
 const SNIPPET_LENGTH = 200;
 

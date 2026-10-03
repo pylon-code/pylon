@@ -27,6 +27,12 @@ import { evaluatePullRequestWatch, pullRequestWatchMessage } from "./pullRequest
 
 /** Passes in a row that could not read a pull request before its watch ends (one a minute). */
 const READ_FAILURE_LIMIT = 15;
+/**
+ * Passes in a row whose wake the orchestrator refused before the watch ends quietly. A wake is
+ * refused when its thread settled or was archived during the read, which the next pass sees and
+ * waits out; one refused every pass is a thread that can no longer take messages.
+ */
+const WAKE_REFUSAL_LIMIT = 5;
 
 const logFailure =
   (message: string, fields: Record<string, unknown>) =>
@@ -81,6 +87,8 @@ export const make = Effect.gen(function* () {
 
   // Passes in a row that failed, per watch. Kept in memory: a restart only delays the stop.
   const readFailures = new Map<string, number>();
+  // Wakes in a row the orchestrator refused, per watch. In memory for the same reason.
+  const refusedWakes = new Map<string, number>();
 
   // Host-level identity, with the repository as linked, the way pull request sync reads it.
   const identityOf = (link: ThreadPullRequestLink) => ({
@@ -134,10 +142,17 @@ export const make = Effect.gen(function* () {
     if (thread.settledOverride === "settled" || thread.settledAt !== null) return;
 
     const reference = { projectId: thread.projectId, ...pullRequest };
-    // Pylon's detail cache holds an answer for seconds, well inside one pass a minute, so an
-    // ordinary read is fresh enough; a read that lags only moves the news to the next pass.
+    // A host paused by a rate limit is not read at all: the pass is skipped rather than failed,
+    // so a pause neither spends budget nor counts towards giving up, and every watch on that
+    // host does not end (and wake its agent) at once when the pause outlasts the limit.
+    const pausedUntil = () =>
+      pullRequests.rateLimitedUntil(reference).pipe(Effect.orElseSucceed(() => null));
+    if ((yield* pausedUntil()) !== null) return;
+    // The fresh read, not the display read: that one answers from the last value it held and
+    // refreshes behind it, which would report each change a pass late and hide a host that has
+    // stopped answering.
     const read = yield* Effect.exit(
-      Effect.all([pullRequests.detail(reference), pullRequests.activity(reference)], {
+      Effect.all([pullRequests.freshDetail(reference), pullRequests.activity(reference)], {
         concurrency: 2,
       }),
     );
@@ -145,6 +160,8 @@ export const make = Effect.gen(function* () {
     const key = failureKey(target);
     if (Exit.isFailure(read)) {
       if (Cause.hasInterruptsOnly(read.cause)) return yield* Effect.failCause(read.cause);
+      // A read the host refused for its rate limit records the pause; wait it out uncounted.
+      if ((yield* pausedUntil()) !== null) return;
       const failures = (readFailures.get(key) ?? 0) + 1;
       readFailures.set(key, failures);
       // The count stays until the stop lands, so a failed stop is tried again next pass.
@@ -166,17 +183,32 @@ export const make = Effect.gen(function* () {
       !activity.reviewThreads.some((reviewThread) => reviewThread.nextCommentsCursor !== undefined);
     const report = evaluatePullRequestWatch(watch, detail, degraded ? null : activity.comments);
     if (report.changes.length > 0) {
-      return yield* record(
-        target,
-        report.exhausted ? null : report.next,
-        pullRequestWatchMessage({
-          number: link.number,
-          url: link.url,
-          baseBranch: detail.baseBranch,
-          headSha: report.next.headSha,
-          report,
-        }),
+      const woken = yield* Effect.exit(
+        record(
+          target,
+          report.exhausted ? null : report.next,
+          pullRequestWatchMessage({
+            number: link.number,
+            url: link.url,
+            baseBranch: detail.baseBranch,
+            headSha: report.next.headSha,
+            report,
+          }),
+        ),
       );
+      if (Exit.isSuccess(woken)) {
+        refusedWakes.delete(key);
+        return;
+      }
+      if (Cause.hasInterruptsOnly(woken.cause)) return yield* Effect.failCause(woken.cause);
+      const refused = (refusedWakes.get(key) ?? 0) + 1;
+      refusedWakes.set(key, refused);
+      if (refused >= WAKE_REFUSAL_LIMIT) {
+        // Ending the watch carries no wake, so it is not refused for the same reason.
+        yield* record(target, null);
+        refusedWakes.delete(key);
+      }
+      return yield* Effect.failCause(woken.cause);
     }
     if (!watchesEqual(report.next, watch)) yield* record(target, report.next);
   });
@@ -190,6 +222,7 @@ export const make = Effect.gen(function* () {
     );
     const keys = new Set(targets.map(failureKey));
     for (const key of readFailures.keys()) if (!keys.has(key)) readFailures.delete(key);
+    for (const key of refusedWakes.keys()) if (!keys.has(key)) refusedWakes.delete(key);
     yield* Effect.forEach(
       targets,
       (target) =>

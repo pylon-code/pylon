@@ -17,6 +17,8 @@ import * as Stream from "effect/Stream";
 import type { Tool } from "effect/unstable/ai";
 
 import * as Orchestrator from "../../../orchestration-v2/Orchestrator.ts";
+import * as ProjectionStore from "../../../orchestration-v2/ProjectionStore.ts";
+import { MAX_ACTIVE_PULL_REQUEST_WATCHES } from "../../../orchestration-v2/pullRequestWatch.ts";
 import {
   type PullRequestTestThread,
   v2PullRequestThread,
@@ -128,6 +130,8 @@ interface HarnessOptions {
   readonly project?: OrchestrationProjectShell | null;
   readonly disappearOnDispatch?: boolean;
   readonly reject?: (command: OrchestrationCommand) => string | null;
+  /** Other threads in the environment, as the projection lists them for the watch cap. */
+  readonly otherThreads?: ReadonlyArray<ProjectionStore.ProjectionThreadPullRequests>;
 }
 
 const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
@@ -157,6 +161,23 @@ const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
       getThreadShell: (id) =>
         Effect.succeed(id === THREAD_ID && thread ? v2PullRequestThread(thread) : null),
       dispatch,
+    }),
+    Layer.mock(ProjectionStore.ProjectionStoreV2)({
+      getThreadsWithPullRequests: () =>
+        Effect.succeed([
+          ...(thread === null
+            ? []
+            : [
+                {
+                  id: THREAD_ID,
+                  projectId: PROJECT_ID,
+                  settledOverride: null,
+                  settledAt: null,
+                  pullRequests: thread.pullRequests,
+                },
+              ]),
+          ...(options.otherThreads ?? []),
+        ]),
     }),
     Layer.succeed(Crypto.Crypto, testCrypto),
   );
@@ -271,6 +292,49 @@ describe("pull request toolkit handlers", () => {
       ).toMatchObject({ wasWatching: true });
       expect(yield* Ref.get(harness.commands)).toMatchObject([
         { type: "thread.pull-request.watch", number: 3, watching: false },
+      ]);
+    }),
+  );
+
+  it.effect("refuses a new watch past the environment's cap, but re-watching is free", () =>
+    Effect.gen(function* () {
+      const watch = {
+        startedAt: "2026-08-20T00:00:00.000Z",
+        headSha: null,
+        failedChecks: [],
+        passed: false,
+        remarksThrough: "2026-08-20T00:00:00.000Z",
+        remarkIds: [],
+        conflicting: false,
+        wakes: 0,
+      };
+      const harness = yield* makeHarness({
+        thread: makeThread([makeLink(3, { headBranch: "watched", watch })]),
+        otherThreads: [
+          {
+            id: ThreadId.make("thread-elsewhere"),
+            projectId: PROJECT_ID,
+            settledOverride: null,
+            settledAt: null,
+            pullRequests: Array.from({ length: MAX_ACTIVE_PULL_REQUEST_WATCHES - 1 }, (_, index) =>
+              makeLink(100 + index, { headBranch: `other-${index}`, watch }),
+            ),
+          },
+        ],
+      });
+      const error = yield* harness
+        .call("watch_pull_request", { url: "https://github.com/t3tools/t3code/pull/9" })
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({
+        _tag: "PullRequestWatchLimitError",
+        limit: MAX_ACTIVE_PULL_REQUEST_WATCHES,
+      });
+      expect(error.message).toContain("unwatch_pull_request");
+      expect(
+        yield* harness.call("watch_pull_request", { repository: "t3tools/t3code", number: 3 }),
+      ).toMatchObject({ wasWatching: true });
+      expect(yield* Ref.get(harness.commands)).toMatchObject([
+        { type: "thread.pull-request.watch", number: 3, watching: true },
       ]);
     }),
   );

@@ -126,6 +126,15 @@ export class PullRequestNotOpenError extends Schema.TaggedError<PullRequestNotOp
   }
 }
 
+export class PullRequestWatchLimitError extends Schema.TaggedError<PullRequestWatchLimitError>()(
+  "PullRequestWatchLimitError",
+  { limit: Schema.Number },
+) {
+  override get message(): string {
+    return `Pylon already watches ${this.limit} pull requests in this environment, its limit. Unwatch one you no longer need (unwatch_pull_request), or check this pull request yourself.`;
+  }
+}
+
 export class PullRequestListFailedError extends Schema.TaggedError<PullRequestListFailedError>()(
   "PullRequestListFailedError",
   { cause: Schema.Defect() },
@@ -146,6 +155,7 @@ export const PullRequestToolError = Schema.Union([
   PullRequestListFailedError,
   PullRequestWatchFailedError,
   PullRequestNotOpenError,
+  PullRequestWatchLimitError,
 ]);
 export type PullRequestToolError = typeof PullRequestToolError.Type;
 
@@ -258,7 +268,7 @@ const ListThreadPullRequestsTool = Tool.make("list_thread_pull_requests", {
 
 const WatchPullRequestTool = Tool.make("watch_pull_request", {
   description:
-    "Have Pylon watch an open pull request for this thread, linking it first if needed. Pylon checks it every minute and wakes you with a message when a check fails, the required checks pass, someone else comments or reviews, or the branch starts to conflict with its base. Use this to monitor or babysit a pull request instead of polling, sleeping, or running a watcher. Only comments posted after this call wake you, so handle the existing ones first, then end your turn. A wake is news, not a merge decision: check readiness yourself before merging. Watching ends when the pull request merges or closes, when Pylon cannot read it for 15 minutes, or when you call unwatch_pull_request.",
+    "Have Pylon watch an open pull request for this thread, linking it first if needed. Pylon checks it every minute and wakes you with a message when a check fails, the required checks pass, someone else comments or reviews, or the branch starts to conflict with its base. Use this to monitor or babysit a pull request instead of polling, sleeping, or running a watcher. Only comments posted after this call wake you, so handle the existing ones first, then end your turn. A wake is news, not a merge decision: check readiness yourself before merging. Pylon watches at most 10 pull requests per environment. Watching ends when the pull request merges or closes, when Pylon cannot read it for 15 minutes, or when you call unwatch_pull_request.",
   parameters: PullRequestTargetInput,
   success: WatchPullRequestResult,
   failure: PullRequestToolError,

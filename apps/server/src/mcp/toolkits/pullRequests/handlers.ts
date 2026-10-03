@@ -24,6 +24,8 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
 import * as Orchestrator from "../../../orchestration-v2/Orchestrator.ts";
+import * as ProjectionStore from "../../../orchestration-v2/ProjectionStore.ts";
+import { MAX_ACTIVE_PULL_REQUEST_WATCHES } from "../../../orchestration-v2/pullRequestWatch.ts";
 import * as ProjectService from "../../../project/ProjectService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import {
@@ -37,6 +39,7 @@ import {
   PullRequestNotOpenError,
   type PullRequestTargetInput,
   PullRequestWatchFailedError,
+  PullRequestWatchLimitError,
   PullRequestThreadNotFoundError,
   PullRequestsToolkit,
   type ThreadPullRequestEntry,
@@ -152,6 +155,7 @@ export function listThreadPullRequests(
 
 const make = Effect.gen(function* () {
   const engine = yield* Orchestrator.OrchestratorV2;
+  const projections = yield* ProjectionStore.ProjectionStoreV2;
 
   const projects = yield* ProjectService.ProjectService;
   const crypto = yield* Crypto.Crypto;
@@ -228,6 +232,23 @@ const make = Effect.gen(function* () {
     const state = before?.snapshot?.state;
     if (watching && state !== undefined && state !== "open") {
       return yield* new PullRequestNotOpenError({ state });
+    }
+    // A new watch must fit under the environment's cap; re-watching one already on is free.
+    if (watching && before?.watch === undefined) {
+      const threads = yield* projections
+        .getThreadsWithPullRequests()
+        .pipe(Effect.mapError((cause) => new PullRequestWatchFailedError({ cause })));
+      const active = threads.reduce(
+        (count, candidate) =>
+          count +
+          visibleThreadPullRequests(candidate.pullRequests ?? []).filter(
+            (link) => link.watch !== undefined,
+          ).length,
+        0,
+      );
+      if (active >= MAX_ACTIVE_PULL_REQUEST_WATCHES) {
+        return yield* new PullRequestWatchLimitError({ limit: MAX_ACTIVE_PULL_REQUEST_WATCHES });
+      }
     }
     yield* engine
       .dispatch({

@@ -229,13 +229,22 @@ request's author when the host does not report that account, do not wake the age
 The wake is queued as the agent's next turn, the same way delegated task results arrive, so it works
 for every provider that can use Pylon's MCP tools, including Prime Agent, which does not need active
 steering for it. A settled or archived thread is never woken: watching pauses while it is settled and
-resumes when the thread is active again.
+resumes when the thread is active again. A snoozed thread is woken, and the wake ends the snooze, the
+same as a delegated task result arriving.
 
 Watching ends when the pull request merges or closes, after 10 wakes in a row that bring only
-comments, when the server cannot read the pull request for 15 minutes (the agent is told), or when the
-agent calls `unwatch_pull_request`. To start or stop it yourself, use the row menu in the **Linked
+comments, when the server cannot read the pull request for 15 minutes (the agent is told), when the
+thread refuses 5 wakes in a row (it can no longer take messages), or when the agent calls
+`unwatch_pull_request`. To start or stop it yourself, use the row menu in the **Linked
 pull requests** panel; a watched pull request shows an eye icon there and **Watching** in the mobile
 Git sheet. Servers from before this feature do not offer the menu item.
+
+Each watched pull request costs a few host requests a minute, outside the batched polling that keeps
+linked pull requests current. An agent can start at most 10 watches per environment (counting watches
+on settled threads); `watch_pull_request` refuses an eleventh and asks the agent to unwatch one first.
+Watches you start from the panel are not capped. While a host is paused by its rate limit, watches on
+it skip their checks without counting towards the 15-minute limit, and pick up the news once the pause
+ends.
 
 Watching works on every host Pylon reads pull requests from (GitHub, GitLab, Forgejo, Bitbucket, and
 Azure DevOps). Two limits differ by host: Pylon does not read which checks branch protection requires,

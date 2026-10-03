@@ -2289,7 +2289,8 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
           Layer.mergeAll(
             NodeServices.layer,
             Layer.mock(PullRequestService.PullRequestService)({
-              detail: () => Effect.die("host unreachable"),
+              rateLimitedUntil: () => Effect.succeed(null),
+              freshDetail: () => Effect.die("host unreachable"),
               activity: () => Effect.die("host unreachable"),
             }),
           ),
@@ -2403,7 +2404,8 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
           Layer.mergeAll(
             NodeServices.layer,
             Layer.mock(PullRequestService.PullRequestService)({
-              detail: () => Effect.succeed(detail),
+              rateLimitedUntil: () => Effect.succeed(null),
+              freshDetail: () => Effect.succeed(detail),
               activity: () =>
                 Effect.succeed({
                   comments: [
@@ -2450,7 +2452,8 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
           Layer.mergeAll(
             NodeServices.layer,
             Layer.mock(PullRequestService.PullRequestService)({
-              detail: () => Effect.succeed(detail),
+              rateLimitedUntil: () => Effect.succeed(null),
+              freshDetail: () => Effect.succeed(detail),
               activity: () =>
                 Effect.succeed({
                   comments: [],
@@ -2473,7 +2476,8 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
           Layer.mergeAll(
             NodeServices.layer,
             Layer.mock(PullRequestService.PullRequestService)({
-              detail: () => Effect.succeed({ ...detail, state: "closed", closedAt: at }),
+              rateLimitedUntil: () => Effect.succeed(null),
+              freshDetail: () => Effect.succeed({ ...detail, state: "closed", closedAt: at }),
               activity: () =>
                 Effect.succeed({
                   comments: [],
@@ -2569,7 +2573,8 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
           Layer.mergeAll(
             NodeServices.layer,
             Layer.mock(PullRequestService.PullRequestService)({
-              detail: unexpectedRead,
+              rateLimitedUntil: () => Effect.succeed(null),
+              freshDetail: unexpectedRead,
               activity: unexpectedRead,
             }),
           ),
@@ -2617,6 +2622,183 @@ it.layer(TestLayer)("OrchestrationV2LayerLive lifecycle", (it) => {
         [],
       );
     }),
+  );
+
+  it.effect(
+    "waits out a rate-limit pause without giving up, and ends a watch whose wakes are refused",
+    () =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const projectId = ProjectId.make("pr-watch-limits-project");
+        yield* seedProject({
+          projectId,
+          title: "Watch limits",
+          workspaceRoot: "/workspace/watch-limits",
+          defaultModelSelection: null,
+          createdAt: "2026-10-01T00:00:00.000Z",
+        });
+        const key = { host: "github.com", repository: "pingdotgg/t3code", number: 12 };
+        const url = "https://github.com/pingdotgg/t3code/pull/12";
+        const threadId = ThreadId.make("runtime-pull-request-watch-limits");
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make("pr-watch-limits-create"),
+          threadId,
+          projectId,
+          title: "Watch limits",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+        });
+        yield* orchestrator.dispatch({
+          type: "thread.pull-request.watch",
+          commandId: CommandId.make("pr-watch-limits-start"),
+          threadId,
+          ...key,
+          watching: true,
+          link: { url, source: "agent" },
+        });
+        const watchOf = Effect.map(
+          orchestrator.getThreadShell(threadId),
+          (thread) => thread?.pullRequests?.[0]?.watch,
+        );
+        const messageCount = Effect.map(
+          orchestrator.getThreadRecords(threadId, ["messages"]),
+          ({ messages }) => messages.length,
+        );
+
+        // Paused before the pass: nothing is read. Paused by the read itself: not counted. Either
+        // way the watch outlives far more passes than the read-failure limit.
+        let hostReads = 0;
+        let pausedBeforeRead = true;
+        let pausedByRead = false;
+        const paused = yield* PullRequestWatchReactor.make.pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              NodeServices.layer,
+              Layer.mock(PullRequestService.PullRequestService)({
+                rateLimitedUntil: () =>
+                  Effect.sync(() => {
+                    const until = pausedBeforeRead || pausedByRead ? 10 * 60_000 : null;
+                    pausedByRead = false;
+                    return until;
+                  }),
+                freshDetail: () =>
+                  Effect.suspend(() => {
+                    hostReads += 1;
+                    pausedByRead = true;
+                    return Effect.die("rate limited");
+                  }),
+                activity: () => Effect.die("rate limited"),
+              }),
+            ),
+          ),
+        );
+        for (let pass = 0; pass < 20; pass += 1) yield* paused.sweep;
+        assert.equal(hostReads, 0);
+        pausedBeforeRead = false;
+        for (let pass = 0; pass < 20; pass += 1) yield* paused.sweep;
+        assert.equal(hostReads, 20);
+        assert.isDefined(yield* watchOf);
+        assert.equal(yield* messageCount, 0);
+
+        // A wake the orchestrator refuses every pass ends the watch quietly after a few passes.
+        const at = "2026-10-02T12:00:00.000Z";
+        const conflicting: PullRequestDetail = {
+          provider: "github",
+          capabilities: {
+            diff: true,
+            comment: true,
+            actions: [],
+            mergeMethods: [],
+            search: false,
+            review: { inlineComment: false, reply: false, resolve: false, verdicts: [] },
+            reviewers: { request: false, listCandidates: false },
+          },
+          viewerPermissions: {
+            actions: [],
+            comment: true,
+            resolve: true,
+            verdicts: [],
+            requestReviewers: false,
+          },
+          projectId,
+          projectTitle: "Watch limits",
+          workspaceRoot: "/workspace/watch-limits",
+          repository: key.repository,
+          number: key.number,
+          title: "Watched pull request",
+          body: "",
+          url,
+          author: { login: "agent-user", name: null, avatarUrl: null },
+          state: "open",
+          isDraft: false,
+          mergeability: "conflicting",
+          additions: 1,
+          deletions: 0,
+          changedFiles: 1,
+          headBranch: "feature",
+          headSha: "abc1234def",
+          baseBranch: "main",
+          createdAt: at,
+          updatedAt: at,
+          mergedAt: null,
+          closedAt: null,
+          reviewers: [],
+          labels: [],
+          checks: [],
+          mergeCapabilities: { merge: true, squash: true, rebase: true },
+          viewer: "agent-user",
+        };
+        let refusedWakes = 0;
+        const refusing = yield* PullRequestWatchReactor.make.pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              NodeServices.layer,
+              Layer.succeed(Orchestrator.OrchestratorV2, {
+                ...orchestrator,
+                dispatch: (command) =>
+                  command.type === "thread.pull-request-watch.sync" && command.wake !== undefined
+                    ? Effect.suspend(() => {
+                        refusedWakes += 1;
+                        return Effect.fail(
+                          new Orchestrator.OrchestratorDispatchError({
+                            commandId: command.commandId,
+                            commandType: command.type,
+                            cause: "refused",
+                          }),
+                        );
+                      })
+                    : orchestrator.dispatch(command),
+              }),
+              Layer.mock(PullRequestService.PullRequestService)({
+                rateLimitedUntil: () => Effect.succeed(null),
+                freshDetail: () => Effect.succeed(conflicting),
+                activity: () =>
+                  Effect.succeed({
+                    comments: [],
+                    commentCount: 0,
+                    commentsTruncated: false,
+                    reviewThreads: [],
+                    commits: [],
+                  }),
+              }),
+            ),
+          ),
+        );
+        for (let pass = 0; pass < 4; pass += 1) yield* refusing.sweep;
+        assert.isDefined(yield* watchOf);
+        yield* refusing.sweep;
+        assert.equal(refusedWakes, 5);
+        assert.isUndefined(yield* watchOf);
+        yield* refusing.sweep;
+        assert.equal(refusedWakes, 5);
+        assert.equal(yield* messageCount, 0);
+      }),
   );
 
   it.effect("persists rejected command receipts across retries", () =>
