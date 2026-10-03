@@ -19,6 +19,12 @@ turned on, working, delegating, and monitoring threads keep these colors and
 counts inside the collapsed **Working** section. Approval, input, plan-ready,
 failed, and unread completed threads stay in the active list.
 
+A thread whose turn ended while subagents or monitors it started are still
+running shows as **Waiting**, because that work will wake the agent again.
+Commands the agent left running, such as a dev server, do not hold the thread:
+it shows as completed and unread, and the composer lists the command as running
+rather than waited on.
+
 Connection indicators use green for connected, amber for connecting or
 reconnecting, red for an error, and muted grey while offline. Connecting or
 reconnecting environments use an amber halo. Connected client sessions use a
