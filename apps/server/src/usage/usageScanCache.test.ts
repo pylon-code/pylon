@@ -24,7 +24,7 @@ function record(overrides: Partial<UsageRecord> = {}): UsageRecord {
       reasoningTokens: 0,
     },
     reportedCostUsd: null,
-    fast: false,
+    speed: "standard",
     dedupeKey: "msg_1:",
     ...overrides,
   };
@@ -61,7 +61,7 @@ describe("scan cache round trip", () => {
       [
         "/a.jsonl",
         100,
-        [record(), record({ dedupeKey: "msg_2:", model: "claude-opus-5-5", fast: true })],
+        [record(), record({ dedupeKey: "msg_2:", model: "claude-opus-5-5", speed: "fast" })],
       ],
       ["/b.jsonl", 200, [record({ sessionId: "session-b", reportedCostUsd: 1.5 })]],
     ]);
@@ -79,11 +79,14 @@ describe("scan cache round trip", () => {
       size: 80,
       mtimeMs: 400,
       provider: "codex",
-      records: [record({ provider: "codex", model: "gpt-5.2-codex", dedupeKey: null })],
+      records: [
+        record({ provider: "codex", model: "gpt-6-astra", dedupeKey: null, speed: "ultrafast" }),
+      ],
       tailRecords: [],
       position: position({
         codexState: {
-          model: "gpt-5.2-codex",
+          model: "gpt-6-astra",
+          speed: "ultrafast",
           sessionId: "session-c",
           lastUsageSignature: '{"input_tokens":1}',
           sawSessionMeta: true,
@@ -128,8 +131,8 @@ describe("scan cache round trip", () => {
     expect(decodeScanCache(JSON.parse(JSON.stringify(poisoned))).has("/a.jsonl")).toBe(false);
   });
 
-  it("drops an entry whose fast flag is not 0 or 1", () => {
-    const encoded = encodeScanCache(cacheWith([["/a.jsonl", 100, [record({ fast: true })]]]));
+  it("drops an entry whose speed is not a known index", () => {
+    const encoded = encodeScanCache(cacheWith([["/a.jsonl", 100, [record({ speed: "fast" })]]]));
     const row = encoded.files["/a.jsonl"]!.r[0]!;
     const poisoned = {
       ...encoded,
@@ -140,16 +143,16 @@ describe("scan cache round trip", () => {
   });
 
   it("migrates v3 rows and keeps Claude rescan pending across persistence", () => {
-    const original = cacheWith([["/deleted.jsonl", 100, [record({ fast: true })]]]);
+    const original = cacheWith([["/deleted.jsonl", 100, [record({ speed: "fast" })]]]);
     original.set("/codex.jsonl", {
       ...original.get("/deleted.jsonl")!,
       provider: "codex",
-      records: [record({ provider: "codex", fast: false })],
+      records: [record({ provider: "codex", speed: "standard" })],
     });
     original.set("/deleted.db", {
       ...original.get("/deleted.jsonl")!,
       provider: "antigravity",
-      records: [record({ provider: "antigravity", fast: false })],
+      records: [record({ provider: "antigravity", speed: "standard" })],
     });
     const encoded = encodeScanCache(original);
     const files = Object.fromEntries(
@@ -164,12 +167,42 @@ describe("scan cache round trip", () => {
     );
     const migrated = decodeScanCache({ ...encoded, version: 3, files });
 
-    expect(migrated.get("/deleted.jsonl")?.records[0]?.fast).toBe(false);
+    expect(migrated.get("/deleted.jsonl")?.records[0]?.speed).toBe("standard");
     expect(migrated.get("/deleted.jsonl")?.needsFastRescan).toBe(true);
     expect(migrated.get("/codex.jsonl")?.records).toEqual(original.get("/codex.jsonl")?.records);
-    expect(migrated.get("/codex.jsonl")?.needsFastRescan).toBeUndefined();
+    // v3 Codex rows predate service tiers: kept, but re-parsed when live.
+    expect(migrated.get("/codex.jsonl")?.needsFastRescan).toBe(true);
+    expect(migrated.get("/deleted.db")?.needsFastRescan).toBeUndefined();
     expect(migrated.get("/deleted.db")?.records).toEqual(original.get("/deleted.db")?.records);
     expect(decodeScanCache(encodeScanCache(migrated)).get("/deleted.jsonl")?.needsFastRescan).toBe(
+      true,
+    );
+  });
+
+  it("migrates v4 rows, keeping fast speed and rescanning Codex rollouts", () => {
+    const original = cacheWith([["/claude.jsonl", 100, [record({ speed: "fast" })]]]);
+    original.set("/codex.jsonl", {
+      ...original.get("/claude.jsonl")!,
+      provider: "codex",
+      records: [record({ provider: "codex", speed: "standard", dedupeKey: null })],
+      position: {
+        resumeOffset: 100,
+        guardLength: 0,
+        guardHash: 0,
+        codexState: null,
+      },
+    });
+    const migrated = decodeScanCache(
+      JSON.parse(JSON.stringify({ ...encodeScanCache(original), version: 4 })),
+    );
+
+    expect(migrated.get("/claude.jsonl")?.records[0]?.speed).toBe("fast");
+    expect(migrated.get("/claude.jsonl")?.needsFastRescan).toBeUndefined();
+    expect(migrated.get("/codex.jsonl")?.records).toEqual(original.get("/codex.jsonl")?.records);
+    expect(migrated.get("/codex.jsonl")?.needsFastRescan).toBe(true);
+    expect(migrated.get("/codex.jsonl")?.position.resumeOffset).toBe(0);
+    // The pending rescan survives a round trip through the current version.
+    expect(decodeScanCache(encodeScanCache(migrated)).get("/codex.jsonl")?.needsFastRescan).toBe(
       true,
     );
   });
