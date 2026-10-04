@@ -184,6 +184,11 @@ interface ClaudeQuerySetModelFrame {
   readonly model: string;
 }
 
+interface ClaudeQuerySetPermissionModeFrame {
+  readonly type: "query.set_permission_mode";
+  readonly mode: string;
+}
+
 interface ClaudeQueryInterruptFrame {
   readonly type: "query.interrupt";
 }
@@ -239,6 +244,7 @@ type ClaudeOutboundFrame =
   | ClaudeQueryOpenFrame
   | ClaudePromptOfferFrame
   | ClaudeQuerySetModelFrame
+  | ClaudeQuerySetPermissionModeFrame
   | ClaudeQueryInterruptFrame
   | ClaudePermissionResponseFrame
   | ClaudeSessionForkFrame
@@ -811,6 +817,13 @@ function makeReplayQueryRunner(
               model,
             });
           }),
+        setPermissionMode: (mode) =>
+          replayEffect(() => {
+            assertNextOutboundFrame({
+              type: "query.set_permission_mode",
+              mode,
+            });
+          }),
         interrupt: replayEffect(() => {
           assertNextOutboundFrame({ type: "query.interrupt" });
         }),
@@ -1115,6 +1128,11 @@ function sanitizeSdkMessageForReplay(input: {
       uuid: message.uuid,
       session_id: message.session_id,
     };
+  }
+  // Like init's slash_commands, the recording account's commands and skills
+  // are local configuration, not protocol.
+  if (message.type === "system" && message.subtype === "commands_changed") {
+    return { ...message, commands: [] };
   }
   if (message.type === "rate_limit_event") {
     return {
