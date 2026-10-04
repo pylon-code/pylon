@@ -186,6 +186,18 @@ export class PullRequestService extends Context.Service<
     readonly subscribeRefreshes: Stream.Stream<number>;
     readonly refreshAfterTurn: (projectId: ProjectId) => Effect.Effect<void>;
     readonly detail: (input: PullRequestRef) => Effect.Effect<PullRequestDetail, PullRequestError>;
+    /**
+     * A detail read that never answers from the held last-good value: at most the detail cache's
+     * own short window old, and failing when the host read fails. For background readers that
+     * act on what changed (the pull request watch) rather than display it.
+     */
+    readonly freshDetail: (
+      input: PullRequestRef,
+    ) => Effect.Effect<PullRequestDetail, PullRequestError>;
+    /** When the host behind `input` is paused by a rate limit, the time reads resume; else null. */
+    readonly rateLimitedUntil: (
+      input: PullRequestRef,
+    ) => Effect.Effect<number | null, PullRequestError>;
     readonly checks: (
       input: PullRequestRef,
     ) => Effect.Effect<PullRequestChecks | null, PullRequestError>;
@@ -1598,6 +1610,7 @@ export const make = Effect.gen(function* () {
             ...(changeRequest.headRepositoryNameWithOwner === undefined
               ? {}
               : { headRepositoryNameWithOwner: changeRequest.headRepositoryNameWithOwner }),
+            ...(changeRequest.headSha ? { headSha: changeRequest.headSha } : {}),
             baseBranch: changeRequest.baseBranch,
             createdAt: changeRequest.createdAt,
             updatedAt: changeRequest.updatedAt,
@@ -2862,6 +2875,33 @@ export const make = Effect.gen(function* () {
     );
   };
 
+  const freshDetail: PullRequestService["Service"]["freshDetail"] = (input) => {
+    const key = refCacheKey(input);
+    return Cache.get(detailCache, key).pipe(
+      Effect.tap((value) => {
+        const summary = summaryFromDetail(value, lastGoodSummary.peek(key));
+        return Effect.andThen(
+          lastGoodDetail.record(key, value),
+          shouldReplaceHeldSummary(key, summary)
+            ? lastGoodSummary.record(key, summary)
+            : Effect.void,
+        );
+      }),
+    );
+  };
+
+  const rateLimitedUntil: PullRequestService["Service"]["rateLimitedUntil"] = (input) =>
+    requireProject(input).pipe(
+      Effect.flatMap((project) =>
+        rateLimits.check({ provider: project.api.kind, host: project.host }).pipe(
+          Effect.as(null),
+          Effect.catchTag("SourceControlRateLimitPausedError", (paused) =>
+            Effect.succeed(paused.retryAt),
+          ),
+        ),
+      ),
+    );
+
   const activityCache = yield* Cache.makeWith(
     (key: string) => {
       return activityUncached(refOfCacheKey(key));
@@ -3104,6 +3144,8 @@ export const make = Effect.gen(function* () {
     ),
     refreshAfterTurn,
     detail: canonicalCached(detail),
+    freshDetail: canonicalCached(freshDetail),
+    rateLimitedUntil: canonicalCached(rateLimitedUntil),
     checks: canonicalCached((input) => Cache.get(checksCache, refCacheKey(input))),
     activity: canonicalCached(activity),
     threadComments,

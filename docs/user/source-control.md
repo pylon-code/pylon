@@ -216,6 +216,44 @@ closed reviews refresh periodically so reopening one on the host is detected. Me
 when requested. With **Auto-settle merged threads** enabled, a thread can settle after every linked
 review is terminal. An open or unsynced link keeps it active.
 
+### Watch a pull request
+
+Ask the agent to watch, monitor, or babysit a pull request and it calls `watch_pull_request`, linking
+the pull request first if needed. While the thread is active, the server checks the pull request about
+once a minute and wakes the agent with a message when a check fails, all checks pass, someone else
+comments or reviews (including a **changes requested** review), or the branch starts to conflict with
+its base. Each change is reported once; the watch survives a server restart without repeating news
+the agent already had. Comments written by the account the server uses on the host, or by the pull
+request's author when the host does not report that account, do not wake the agent.
+
+The wake is queued as the agent's next turn, the same way delegated task results arrive, so it works
+for every provider that can use Pylon's MCP tools, including Prime Agent, which does not need active
+steering for it. A settled or archived thread is never woken: watching pauses while it is settled and
+resumes when the thread is active again. A snoozed thread is woken, and the wake ends the snooze, the
+same as a delegated task result arriving.
+
+Watching ends when the pull request merges or closes (on a settled thread, as soon as Pylon's pull
+request sync sees it closed), after 10 wakes in a row that bring only comments, when the server cannot
+read the pull request or record what it read for 15 minutes in a row (the agent is told), when the
+thread refuses 5 wakes in a row because it can no longer take messages (the panel then shows
+**Stopped watching**, and mobile says so too), or when the agent calls `unwatch_pull_request`. To start or stop it yourself, use the row menu in the **Linked
+pull requests** panel; a watched pull request shows an eye icon there and **Watching** in the mobile
+Git sheet. Servers from before this feature do not offer the menu item.
+
+Each watched pull request costs a few host requests a minute, outside the batched polling that keeps
+linked pull requests current. An agent can start at most 10 watches per environment, counting watches
+on settled threads but not those on pull requests already seen merged or closed; `watch_pull_request`
+refuses an eleventh and asks the agent to unwatch one first. Concurrent requests cannot exceed it.
+Watches you start from the panel are not capped. While a host is paused by its rate limit, watches on
+it skip their checks without counting towards the 15-minute limit, and pick up the news once the pause
+ends.
+
+Watching works on every host Pylon reads pull requests from (GitHub, GitLab, Forgejo, Bitbucket, and
+Azure DevOps). Two limits differ by host: Pylon does not read which checks branch protection requires,
+so "checks passed" means every reported check passed; and GitLab, Bitbucket, and Azure DevOps reviews
+do not report the head commit to the watch, so a new push is noticed through its check results rather
+than as a new commit.
+
 Cross-repository links use a project on the same host. Azure DevOps reviews require a project checked
 out from the matching organization and repository.
 

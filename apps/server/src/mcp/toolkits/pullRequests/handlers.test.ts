@@ -17,6 +17,8 @@ import * as Stream from "effect/Stream";
 import type { Tool } from "effect/unstable/ai";
 
 import * as Orchestrator from "../../../orchestration-v2/Orchestrator.ts";
+import * as ProjectionStore from "../../../orchestration-v2/ProjectionStore.ts";
+import { MAX_ACTIVE_PULL_REQUEST_WATCHES } from "../../../orchestration-v2/pullRequestWatch.ts";
 import {
   type PullRequestTestThread,
   v2PullRequestThread,
@@ -128,6 +130,9 @@ interface HarnessOptions {
   readonly project?: OrchestrationProjectShell | null;
   readonly disappearOnDispatch?: boolean;
   readonly reject?: (command: OrchestrationCommand) => string | null;
+  readonly rejectWith?: (command: OrchestrationCommand) => Orchestrator.OrchestratorV2Error;
+  /** Other threads in the environment, as the projection lists them for the watch cap. */
+  readonly otherThreads?: ReadonlyArray<ProjectionStore.ProjectionThreadPullRequests>;
 }
 
 const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
@@ -139,6 +144,7 @@ const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
   const dispatch: Orchestrator.OrchestratorV2Shape["dispatch"] = (command) =>
     Effect.gen(function* () {
       if (options.disappearOnDispatch) thread = null;
+      if (options.rejectWith) return yield* options.rejectWith(command);
       const rejection = options.reject?.(command) ?? null;
       if (rejection !== null)
         return yield* new Orchestrator.OrchestratorDispatchError({
@@ -157,6 +163,23 @@ const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
       getThreadShell: (id) =>
         Effect.succeed(id === THREAD_ID && thread ? v2PullRequestThread(thread) : null),
       dispatch,
+    }),
+    Layer.mock(ProjectionStore.ProjectionStoreV2)({
+      getThreadsWithPullRequests: () =>
+        Effect.succeed([
+          ...(thread === null
+            ? []
+            : [
+                {
+                  id: THREAD_ID,
+                  projectId: PROJECT_ID,
+                  settledOverride: null,
+                  settledAt: null,
+                  pullRequests: thread.pullRequests,
+                },
+              ]),
+          ...(options.otherThreads ?? []),
+        ]),
     }),
     Layer.succeed(Crypto.Crypto, testCrypto),
   );
@@ -220,6 +243,164 @@ describe("pull request toolkit handlers", () => {
           source: "agent",
         },
       ]);
+    }),
+  );
+
+  it.effect("watching an unlinked pull request links it first", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      const result = yield* harness.call("watch_pull_request", {
+        url: "https://github.com/t3tools/t3code/pull/9",
+      });
+      // The harness thread never changes, so the result reports what it still holds.
+      expect(result).toMatchObject({ number: 9, watching: false, wasWatching: false });
+      expect(yield* Ref.get(harness.commands)).toMatchObject([
+        {
+          type: "thread.pull-request.watch",
+          number: 9,
+          watching: true,
+          link: { url: "https://github.com/t3tools/t3code/pull/9", source: "agent" },
+        },
+      ]);
+    }),
+  );
+
+  it.effect("refuses to watch a merged pull request and stops an existing watch", () =>
+    Effect.gen(function* () {
+      const watch = {
+        startedAt: "2026-08-20T00:00:00.000Z",
+        headSha: null,
+        failedChecks: [],
+        passed: false,
+        remarksThrough: "2026-08-20T00:00:00.000Z",
+        remarkIds: [],
+        conflicting: false,
+        wakes: 0,
+      };
+      const merged = makeLink(1, { headBranch: "done" });
+      const harness = yield* makeHarness({
+        thread: makeThread([
+          { ...merged, snapshot: merged.snapshot && { ...merged.snapshot, state: "merged" } },
+          makeLink(2, { headBranch: "idle" }),
+          makeLink(3, { headBranch: "watched", watch }),
+        ]),
+      });
+      const error = yield* harness
+        .call("watch_pull_request", { repository: "t3tools/t3code", number: 1 })
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({ _tag: "PullRequestNotOpenError", state: "merged" });
+      expect(
+        yield* harness.call("unwatch_pull_request", { repository: "t3tools/t3code", number: 3 }),
+      ).toMatchObject({ wasWatching: true });
+      expect(yield* Ref.get(harness.commands)).toMatchObject([
+        { type: "thread.pull-request.watch", number: 3, watching: false },
+      ]);
+    }),
+  );
+
+  it.effect("refuses a new watch past the environment's cap, but re-watching is free", () =>
+    Effect.gen(function* () {
+      const watch = {
+        startedAt: "2026-08-20T00:00:00.000Z",
+        headSha: null,
+        failedChecks: [],
+        passed: false,
+        remarksThrough: "2026-08-20T00:00:00.000Z",
+        remarkIds: [],
+        conflicting: false,
+        wakes: 0,
+      };
+      const harness = yield* makeHarness({
+        thread: makeThread([makeLink(3, { headBranch: "watched", watch })]),
+        otherThreads: [
+          {
+            id: ThreadId.make("thread-elsewhere"),
+            projectId: PROJECT_ID,
+            settledOverride: null,
+            settledAt: null,
+            pullRequests: Array.from({ length: MAX_ACTIVE_PULL_REQUEST_WATCHES - 1 }, (_, index) =>
+              makeLink(100 + index, { headBranch: `other-${index}`, watch }),
+            ),
+          },
+        ],
+      });
+      const error = yield* harness
+        .call("watch_pull_request", { url: "https://github.com/t3tools/t3code/pull/9" })
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({
+        _tag: "PullRequestWatchLimitError",
+        limit: MAX_ACTIVE_PULL_REQUEST_WATCHES,
+      });
+      expect(error.message).toContain("unwatch_pull_request");
+      expect(
+        yield* harness.call("watch_pull_request", { repository: "t3tools/t3code", number: 3 }),
+      ).toMatchObject({ wasWatching: true });
+      expect(yield* Ref.get(harness.commands)).toMatchObject([
+        { type: "thread.pull-request.watch", number: 3, watching: true },
+      ]);
+    }),
+  );
+
+  it.effect("does not count watches on closed or merged pull requests towards the cap", () =>
+    Effect.gen(function* () {
+      const watch = {
+        startedAt: "2026-08-20T00:00:00.000Z",
+        headSha: null,
+        failedChecks: [],
+        passed: false,
+        remarksThrough: "2026-08-20T00:00:00.000Z",
+        remarkIds: [],
+        conflicting: false,
+        wakes: 0,
+      };
+      const ending = (index: number) => {
+        const link = makeLink(200 + index, { headBranch: `ending-${index}`, watch });
+        return {
+          ...link,
+          snapshot: link.snapshot && {
+            ...link.snapshot,
+            state: index % 2 === 0 ? ("closed" as const) : ("merged" as const),
+          },
+        };
+      };
+      const harness = yield* makeHarness({
+        otherThreads: [
+          {
+            id: ThreadId.make("thread-settled-elsewhere"),
+            projectId: PROJECT_ID,
+            settledOverride: "settled",
+            settledAt: null,
+            pullRequests: Array.from({ length: MAX_ACTIVE_PULL_REQUEST_WATCHES }, (_, index) =>
+              ending(index),
+            ),
+          },
+        ],
+      });
+      yield* harness.call("watch_pull_request", {
+        url: "https://github.com/t3tools/t3code/pull/9",
+      });
+      expect(yield* Ref.get(harness.commands)).toMatchObject([
+        { type: "thread.pull-request.watch", number: 9, watching: true },
+      ]);
+    }),
+  );
+
+  it.effect("reports the orchestrator's cap refusal as the tool's limit error", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        rejectWith: (command) =>
+          new Orchestrator.OrchestratorPullRequestWatchLimitError({
+            commandId: command.commandId,
+            limit: MAX_ACTIVE_PULL_REQUEST_WATCHES,
+          }),
+      });
+      const error = yield* harness
+        .call("watch_pull_request", { url: "https://github.com/t3tools/t3code/pull/9" })
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({
+        _tag: "PullRequestWatchLimitError",
+        limit: MAX_ACTIVE_PULL_REQUEST_WATCHES,
+      });
     }),
   );
 
@@ -438,6 +619,7 @@ describe("pull request toolkit handlers", () => {
         number: 3,
         url: "https://github.com/t3tools/t3code/pull/3",
         source: "agent",
+        watching: false,
         state: "open",
         title: "PR 3",
         headBranch: "feat-c",

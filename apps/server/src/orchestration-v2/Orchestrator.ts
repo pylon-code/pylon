@@ -19,6 +19,8 @@ import {
   OrchestrationV2Command,
   type OrchestrationV2InternalCommand,
   type OrchestrationV2ServerCommand,
+  type ThreadPullRequestLink,
+  type ThreadPullRequestWatch,
   type OrchestrationV2AppThread,
   type OrchestrationV2ContextHandoff,
   type OrchestrationV2ContextSourcePoint,
@@ -54,6 +56,7 @@ import {
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Semaphore from "effect/Semaphore";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Layer from "effect/Layer";
@@ -62,6 +65,10 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
+import {
+  countActivePullRequestWatches,
+  MAX_ACTIVE_PULL_REQUEST_WATCHES,
+} from "./pullRequestWatch.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import {
   isCheckpointRestoreIsolated,
@@ -181,6 +188,26 @@ export class OrchestratorSubagentThreadReadOnlyError extends Schema.TaggedError<
   }
 }
 
+/** An agent asked to start a pull request watch while the environment is at its cap. */
+export class OrchestratorPullRequestWatchLimitError extends Schema.TaggedError<OrchestratorPullRequestWatchLimitError>()(
+  "OrchestratorPullRequestWatchLimitError",
+  { commandId: CommandId, limit: Schema.Number },
+) {
+  override get message(): string {
+    return `This environment already watches ${this.limit} pull requests, its limit for agents.`;
+  }
+}
+
+/** A pull request watch's wake reached a thread that takes no messages now (settled, archived). */
+export class OrchestratorPullRequestWatchWakeRefusedError extends Schema.TaggedError<OrchestratorPullRequestWatchWakeRefusedError>()(
+  "OrchestratorPullRequestWatchWakeRefusedError",
+  { commandId: CommandId, threadId: ThreadId },
+) {
+  override get message(): string {
+    return "The thread settled or stopped taking messages while its pull request was read.";
+  }
+}
+
 export class OrchestratorCommandPreviouslyRejectedError extends Schema.TaggedError<OrchestratorCommandPreviouslyRejectedError>()(
   "OrchestratorCommandPreviouslyRejectedError",
   {
@@ -230,6 +257,8 @@ export const OrchestratorV2Error = Schema.Union([
   OrchestratorCommandPreviouslyRejectedError,
   OrchestratorCommandIdConflictError,
   OrchestratorSubagentThreadReadOnlyError,
+  OrchestratorPullRequestWatchLimitError,
+  OrchestratorPullRequestWatchWakeRefusedError,
 ]);
 export type OrchestratorV2Error = typeof OrchestratorV2Error.Type;
 
@@ -371,6 +400,8 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.pull-request.link":
     case "thread.pull-request.unlink":
     case "thread.pull-request-link.sync":
+    case "thread.pull-request.watch":
+    case "thread.pull-request-watch.sync":
     case "thread.pull-request.sync":
     case "thread.title.regeneration.complete":
     case "thread.runtime-mode.set":
@@ -441,6 +472,52 @@ function isBlockingRun(run: OrchestrationV2Run): boolean {
 function hasLiveRun(projection: Pick<OrchestrationV2ThreadProjection, "runs">): boolean {
   return projection.runs.some(
     (run) => run.status === "preparing" || run.status === "starting" || run.status === "running",
+  );
+}
+
+/** The link with its watch replaced, or removed when `watch` is undefined. */
+function withPullRequestWatch(
+  link: ThreadPullRequestLink,
+  watch: ThreadPullRequestWatch | undefined,
+): ThreadPullRequestLink {
+  const { watch: _previous, ...rest } = link;
+  return watch === undefined ? rest : { ...rest, watch };
+}
+
+/** A legacy single-PR link as a link entry. Re-linking a pull request keeps its watch. */
+function legacyPullRequestLink(
+  thread: OrchestrationV2AppThread,
+  linked: ThreadLinkedPullRequest,
+  now: DateTime.Utc,
+): ThreadPullRequestLink {
+  const key = legacyThreadPullRequestKey(linked);
+  return withPullRequestWatch(
+    {
+      ...key,
+      url: linked.url,
+      source: "manual",
+      linkedAt: DateTime.formatIso(now),
+      snapshot: null,
+      stack: null,
+    },
+    threadPullRequestsOf(thread).find((link) => threadPullRequestKeysEqual(link, key))?.watch,
+  );
+}
+
+/**
+ * An agent starting a watch: the pull requests toolkit is the only caller that links as
+ * "agent" in the same command. Watches a user starts from a client are not capped.
+ */
+function isCappedPullRequestWatchStart(
+  command: OrchestrationV2ServerCommand,
+): command is Extract<
+  OrchestrationV2ServerCommand,
+  { readonly type: "thread.pull-request.watch" }
+> {
+  return (
+    command.type === "thread.pull-request.watch" &&
+    command.watching &&
+    command.link?.source === "agent"
   );
 }
 
@@ -710,6 +787,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const runtimePolicy = yield* RuntimePolicyV2;
   const threadForkService = yield* ThreadForkServiceV2;
   const threadDispatch = yield* ThreadCommandExecutor;
+  // Serializes agent pull request watch starts across threads, through their commit, so the
+  // environment-wide cap is counted against committed state no other start can race.
+  const pullRequestWatchCapLock = yield* Semaphore.make(1);
 
   const mapDispatchError =
     (command: OrchestrationV2ServerCommand) =>
@@ -2188,9 +2268,72 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     });
   });
 
+  // Checked under the thread lock: the watch or the thread can change while the host is read.
+  // The watch is recorded first so the wake's own thread events carry it.
+  const dispatchPullRequestWatchSync = Effect.fn("orchestrationV2.dispatch.pullRequestWatchSync")(
+    function* (
+      command: Extract<
+        OrchestrationV2ServerCommand,
+        { readonly type: "thread.pull-request-watch.sync" }
+      >,
+      events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+      effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+    ) {
+      const thread = yield* projectionStore
+        .getThread(command.threadId)
+        .pipe(
+          Effect.mapError(
+            (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+          ),
+        );
+      const key = normalizeThreadPullRequestKey(command);
+      const link = threadPullRequestsOf(thread).find(
+        (candidate) =>
+          candidate.source !== "stack-dismissed" && threadPullRequestKeysEqual(candidate, key),
+      );
+      // Same rule as a direct message.dispatch: a provider-native subagent takes no messages.
+      const inactive =
+        thread.archivedAt !== null ||
+        thread.settledOverride === "settled" ||
+        thread.settledAt !== null ||
+        isProviderNativeSubagentThread(thread);
+      if (link?.watch?.startedAt !== command.startedAt) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "The pull request watch ended while it was read.",
+        });
+      }
+      if (command.wake && inactive) {
+        return yield* new OrchestratorPullRequestWatchWakeRefusedError({
+          commandId: command.commandId,
+          threadId: command.threadId,
+        });
+      }
+      yield* dispatchThreadMutation(command, events, effects);
+      if (command.wake === undefined) return;
+      yield* dispatchMessage(
+        {
+          type: "message.dispatch",
+          commandId: command.commandId,
+          threadId: command.threadId,
+          messageId: command.wake.messageId,
+          text: command.wake.text,
+          notification: command.wake.notification,
+          attachments: [],
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: "agent",
+          creationSource: "server",
+        },
+        events,
+        effects,
+      );
+    },
+  );
+
   const dispatchThreadMutation = Effect.fn("orchestrationV2.dispatch.threadMutation")(function* (
     command: Extract<
-      OrchestrationV2Command,
+      OrchestrationV2ServerCommand,
       {
         readonly type:
           | "thread.archive"
@@ -2209,6 +2352,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           | "thread.pull-request.link"
           | "thread.pull-request.unlink"
           | "thread.pull-request-link.sync"
+          | "thread.pull-request.watch"
+          | "thread.pull-request-watch.sync"
           | "thread.pull-request.sync"
           | "thread.title.regeneration.complete"
           | "thread.runtime-mode.set"
@@ -2235,6 +2380,42 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         commandType: command.type,
         cause: `Thread ${command.threadId} is deleted.`,
       });
+    }
+    if (
+      command.type === "thread.pull-request.watch" &&
+      command.watching &&
+      isProviderNativeSubagentThread(thread)
+    ) {
+      return yield* new OrchestratorSubagentThreadReadOnlyError({
+        commandId: command.commandId,
+        threadId: command.threadId,
+      });
+    }
+    // Checked here, with every agent watch start serialized by `pullRequestWatchCapLock` through
+    // its commit, so two agents racing for the last slot cannot both get it.
+    if (isCappedPullRequestWatchStart(command)) {
+      const key = normalizeThreadPullRequestKey(command);
+      const alreadyWatched = threadPullRequestsOf(thread).some(
+        (link) =>
+          link.source !== "stack-dismissed" &&
+          link.watch !== undefined &&
+          threadPullRequestKeysEqual(link, key),
+      );
+      if (!alreadyWatched) {
+        const threads = yield* projectionStore
+          .getThreadsWithPullRequests()
+          .pipe(
+            Effect.mapError(
+              (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+            ),
+          );
+        if (countActivePullRequestWatches(threads) >= MAX_ACTIVE_PULL_REQUEST_WATCHES) {
+          return yield* new OrchestratorPullRequestWatchLimitError({
+            commandId: command.commandId,
+            limit: MAX_ACTIVE_PULL_REQUEST_WATCHES,
+          });
+        }
+      }
     }
     if (
       command.type === "thread.metadata.update" &&
@@ -2719,16 +2900,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                         ),
                     ),
                     ...(command.linkedPullRequest
-                      ? [
-                          {
-                            ...legacyThreadPullRequestKey(command.linkedPullRequest),
-                            url: command.linkedPullRequest.url,
-                            source: "manual" as const,
-                            linkedAt: DateTime.formatIso(now),
-                            snapshot: null,
-                            stack: null,
-                          },
-                        ]
+                      ? [legacyPullRequestLink(thread, command.linkedPullRequest, now)]
                       : []),
                   ],
                 }),
@@ -2801,7 +2973,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               );
             pullRequests = belongsToStack
               ? links.map((link) =>
-                  link === existing ? { ...link, source: "stack-dismissed" as const } : link,
+                  link === existing
+                    ? {
+                        ...withPullRequestWatch(link, undefined),
+                        source: "stack-dismissed" as const,
+                      }
+                    : link,
                 )
               : links.filter((link) => link !== existing);
           } else {
@@ -2828,6 +3005,78 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 ? thread.linkedPullRequest
                 : null,
             updatedAt: command.type === "thread.pull-request-link.sync" ? thread.updatedAt : now,
+          };
+        }
+        case "thread.pull-request.watch":
+        case "thread.pull-request-watch.sync": {
+          const key = normalizeThreadPullRequestKey(command);
+          const startedAt = DateTime.formatIso(now);
+          const linked = threadPullRequestsOf(thread);
+          const visible = (link: ThreadPullRequestLink) =>
+            link.source !== "stack-dismissed" && threadPullRequestKeysEqual(link, key);
+          // A watch started on an unlinked (or dismissed) pull request links it in the same step.
+          const links =
+            command.type === "thread.pull-request.watch" &&
+            command.watching &&
+            command.link !== undefined &&
+            !linked.some(visible)
+              ? [
+                  ...linked.filter((link) => !threadPullRequestKeysEqual(link, key)),
+                  {
+                    ...key,
+                    url: command.link.url,
+                    source: command.link.source,
+                    linkedAt: startedAt,
+                    snapshot: null,
+                    stack: null,
+                  },
+                ]
+              : linked;
+          const existing = links.find(visible);
+          if (existing === undefined) return thread;
+          const watch =
+            command.type === "thread.pull-request-watch.sync"
+              ? // Progress read before a stop or restart must not bring the old watch back.
+                existing.watch?.startedAt === command.startedAt
+                ? (command.watch ?? undefined)
+                : existing.watch
+              : !command.watching
+                ? undefined
+                : (existing.watch ?? {
+                    startedAt,
+                    headSha: null,
+                    failedChecks: [],
+                    passed: false,
+                    remarksThrough: startedAt,
+                    remarkIds: [],
+                    conflicting: false,
+                    wakes: 0,
+                  });
+          // A watch that starts clears why the last one ended; one the server ends on its own
+          // records why, for clients to show.
+          const ended =
+            command.type === "thread.pull-request-watch.sync" &&
+            command.ended !== undefined &&
+            watch === undefined &&
+            existing.watch?.startedAt === command.startedAt
+              ? { endedAt: DateTime.formatIso(now), reason: command.ended }
+              : undefined;
+          const clearsEnded = watch !== undefined && existing.watchEnded !== undefined;
+          if (watch === existing.watch && links === linked && ended === undefined && !clearsEnded) {
+            return thread;
+          }
+          return {
+            ...thread,
+            pullRequests: links.map((link) => {
+              if (link !== existing) return link;
+              const watched = withPullRequestWatch(link, watch);
+              if (ended !== undefined) return { ...watched, watchEnded: ended };
+              if (!clearsEnded) return watched;
+              const { watchEnded: _cleared, ...rest } = watched;
+              return rest;
+            }),
+            // A user or agent starting or stopping a watch is activity; recorded progress is not.
+            updatedAt: command.type === "thread.pull-request.watch" ? now : thread.updatedAt,
           };
         }
         case "thread.pull-request.sync":
@@ -2857,16 +3106,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                         ),
                     ),
                     ...(command.linkedPullRequest
-                      ? [
-                          {
-                            ...legacyThreadPullRequestKey(command.linkedPullRequest),
-                            url: command.linkedPullRequest.url,
-                            source: "manual" as const,
-                            linkedAt: DateTime.formatIso(now),
-                            snapshot: null,
-                            stack: null,
-                          },
-                        ]
+                      ? [legacyPullRequestLink(thread, command.linkedPullRequest, now)]
                       : []),
                   ],
                 }),
@@ -2927,6 +3167,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         case "thread.pull-request.link":
         case "thread.pull-request.unlink":
         case "thread.pull-request-link.sync":
+        case "thread.pull-request.watch":
+        case "thread.pull-request-watch.sync":
         case "thread.pull-request.sync":
           return "thread.pull-request-synced" as const;
         case "thread.runtime-mode.set":
@@ -9130,6 +9372,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.pull-request.link":
       case "thread.pull-request.unlink":
       case "thread.pull-request-link.sync":
+      case "thread.pull-request.watch":
       case "thread.pull-request.sync":
       case "thread.title.regeneration.complete":
       case "thread.runtime-mode.set":
@@ -9137,6 +9380,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.model-selection.set":
       case "provider.switch":
         yield* dispatchThreadMutation(command, events, effects);
+        break;
+      case "thread.pull-request-watch.sync":
+        yield* dispatchPullRequestWatchSync(command, events, effects);
         break;
       case "provider-session.detach":
         yield* dispatchProviderSessionDetach(command, events, effects);
@@ -9477,7 +9723,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   });
 
   const dispatchWithReceipt = (command: OrchestrationV2ServerCommand) =>
-    threadDispatch.withLock(commandThreadId(command), dispatchWithReceiptEffect(command));
+    threadDispatch.withLock(
+      commandThreadId(command),
+      isCappedPullRequestWatchStart(command)
+        ? pullRequestWatchCapLock.withPermits(1)(dispatchWithReceiptEffect(command))
+        : dispatchWithReceiptEffect(command),
+    );
 
   const handleTerminalRun = (stored: OrchestrationV2StoredEvent) =>
     Effect.gen(function* () {

@@ -272,6 +272,8 @@ existing thread still works normally.
 The initial v2 integration cannot append steering to an active Prime run or manage Prime's native
 input queue. A v2 steering action interrupts the current run and starts another instead. Native
 **Queue follow-up**, **Session inputs**, delivery-mode, and queue-clearing controls are unavailable.
+Pylon-owned wakes, such as delegated task results and [pull request watch](source-control.md#watch-a-pull-request)
+updates, still reach Prime threads: they wait for the current run to finish and start the next one.
 
 Blocking native select, confirm, and input dialogs use Pylon's structured user-input requests in the
 thread. Prime editor-replacement dialogs remain cancelled because their prefills cannot be stored

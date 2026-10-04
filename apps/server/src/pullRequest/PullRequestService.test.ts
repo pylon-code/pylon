@@ -4558,6 +4558,59 @@ it.effect("keeps recent detail on a transient refresh failure but not after inva
   }),
 );
 
+it.effect("reads fresh detail past the held value, failing with the host", () =>
+  Effect.gen(function* () {
+    let body = "first body";
+    let failure: "failed" | "rate-limited" | null = null;
+    const reference = { projectId: "p1" as ProjectId, repository: "acme/web", number: 1 };
+    const service = yield* makeService({
+      projects: [project({ id: "p1", title: "web", workspaceRoot: "/a", repository: "acme/web" })],
+      providers: [
+        fakeProvider("github", {
+          getChangeRequest: () =>
+            failure !== null
+              ? Effect.fail(
+                  new PullRequestProviderError({
+                    provider: "github",
+                    operation: "getChangeRequest",
+                    reason: failure,
+                    detail: failure === "failed" ? "spawn gh EAGAIN" : "API rate limit exceeded",
+                    ...(failure === "rate-limited" ? { retryAt: 10 * 60_000 } : {}),
+                  }),
+                )
+              : Effect.succeed(hostedChangeRequest(body, 4)),
+        }),
+      ],
+    });
+
+    assert.strictEqual((yield* service.detail(reference)).body, "first body");
+    assert.isNull(yield* service.rateLimitedUntil(reference));
+
+    // The display read answers from what it holds and refreshes behind it; the fresh read waits
+    // for the host once the detail cache window has passed.
+    body = "second body";
+    yield* TestClock.adjust("16 seconds");
+    assert.strictEqual((yield* service.detail(reference)).body, "first body");
+    yield* TestClock.adjust("16 seconds");
+    body = "third body";
+    assert.strictEqual((yield* service.freshDetail(reference)).body, "third body");
+
+    // A host that stops answering fails the fresh read, where the display read keeps its value.
+    failure = "failed";
+    yield* TestClock.adjust("16 seconds");
+    assert.strictEqual((yield* service.detail(reference)).body, "third body");
+    yield* TestClock.adjust("16 seconds");
+    const failed = yield* Effect.flip(service.freshDetail(reference));
+    assert.strictEqual(failed._tag, "PullRequestOperationError");
+
+    // A rate-limited read pauses the host, which the watch can tell from a failure.
+    failure = "rate-limited";
+    yield* TestClock.adjust("16 seconds");
+    yield* Effect.flip(service.freshDetail(reference));
+    assert.strictEqual(yield* service.rateLimitedUntil(reference), 10 * 60_000);
+  }),
+);
+
 it.effect("carries an armed auto-merge through to the detail, and silence as silence", () =>
   Effect.gen(function* () {
     const detailWith = (autoMergeEnabled: boolean | undefined) =>
