@@ -5427,51 +5427,55 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
-  it.effect("interruptTurn still closes the process when Claude's interrupt fails", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const idAllocator = yield* IdAllocator.IdAllocatorV2;
-        let closes = 0;
-        const harness = yield* makeWakeHarnessWithOptions({
-          interrupt: () =>
-            Effect.fail(
-              new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
-                cause: new Error("control channel closed"),
-                method: "interrupt",
-              }),
-            ),
-          close: (sdkMessages) =>
-            Effect.sync(() => {
-              closes++;
-            }).pipe(Effect.andThen(Queue.shutdown(sdkMessages))),
-        });
-        const now = yield* DateTime.now;
-        const attemptId = RunAttemptId.make("attempt-claude-interrupt-grace-failure");
-        const providerTurnId = idAllocator.derive.providerTurn({
-          driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
-          nativeTurnId: `turn:${attemptId}`,
-        });
-        yield* harness.runtime.startTurn(
-          makeClaudeTestTurnInput({
-            threadId: harness.threadId,
+  it.effect.each(["fails", "defects"] as const)(
+    "interruptTurn still closes the process when Claude's interrupt %s",
+    (outcome) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const idAllocator = yield* IdAllocator.IdAllocatorV2;
+          let closes = 0;
+          const harness = yield* makeWakeHarnessWithOptions({
+            interrupt: () =>
+              outcome === "fails"
+                ? Effect.fail(
+                    new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
+                      cause: new Error("control channel closed"),
+                      method: "interrupt",
+                    }),
+                  )
+                : Effect.die(new Error("interrupt defect")),
+            close: (sdkMessages) =>
+              Effect.sync(() => {
+                closes++;
+              }).pipe(Effect.andThen(Queue.shutdown(sdkMessages))),
+          });
+          const now = yield* DateTime.now;
+          const attemptId = RunAttemptId.make(`attempt-claude-interrupt-grace-${outcome}`);
+          const providerTurnId = idAllocator.derive.providerTurn({
+            driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+            nativeTurnId: `turn:${attemptId}`,
+          });
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId,
+              text: "hello",
+              attachments: [],
+            }),
+          );
+
+          yield* harness.runtime.interruptTurn({
             providerThread: harness.providerThread,
-            now,
-            attemptId,
-            text: "hello",
-            attachments: [],
-          }),
-        );
+            providerTurnId,
+          });
 
-        yield* harness.runtime.interruptTurn({
-          providerThread: harness.providerThread,
-          providerTurnId,
-        });
-
-        assert.equal(closes, 1);
-        yield* awaitUntil(() => harness.terminalEvents().length === 1, "interrupted terminal");
-        assert.equal(harness.terminalEvents()[0]?.status, "interrupted");
-      }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
-    ),
+          assert.equal(closes, 1);
+          yield* awaitUntil(() => harness.terminalEvents().length === 1, "interrupted terminal");
+          assert.equal(harness.terminalEvents()[0]?.status, "interrupted");
+        }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+      ),
   );
 
   it.effect("fails a positive task-notification error result", () =>

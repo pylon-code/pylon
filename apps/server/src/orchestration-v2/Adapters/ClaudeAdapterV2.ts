@@ -7294,12 +7294,12 @@ export function makeClaudeAdapterV2(
             // closes the process, so the prompt reaches the transcript.
             // Closing a first turn before Claude writes it leaves a resume
             // cursor for a session Claude never saved, and every later
-            // message fails with "No conversation found". A failed or hung
-            // interrupt must not keep Stop from closing the process.
+            // message fails with "No conversation found". A failed, defecting
+            // or hung interrupt must not keep Stop from closing the process.
             yield* existing.query.interrupt.pipe(
               Effect.andThen(Deferred.await(currentTurn.settled)),
               Effect.timeoutOption(CLAUDE_INTERRUPT_GRACE),
-              Effect.catch((cause) =>
+              Effect.catchCause((cause) =>
                 Effect.logWarning("orchestration-v2.claude-query-interrupt-failed", {
                   providerSessionId: input.providerSessionId,
                   providerTurnId: turnInput.providerTurnId,
