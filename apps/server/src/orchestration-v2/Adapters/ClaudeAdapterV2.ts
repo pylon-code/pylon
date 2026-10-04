@@ -75,6 +75,7 @@ import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
@@ -2673,6 +2674,8 @@ interface ActiveClaudeTurnContext {
   // Root frames seen before the echo; held only when the CLI echoes early.
   gatedFramesBeforeEcho: number;
   readonly heldRootFrames: Array<SDKMessage>;
+  // Resolved by finalizeActiveTurn; Stop waits on it before closing the CLI.
+  readonly settled: Deferred.Deferred<void>;
 }
 
 interface ActiveClaudeProviderRetry {
@@ -2751,6 +2754,8 @@ interface PendingClaudeSubagentLaunch {
 }
 
 const PENDING_CLAUDE_SUBAGENT_CAP = 64;
+/** How long Stop waits for Claude to abort a turn before closing the process. */
+export const CLAUDE_INTERRUPT_GRACE = Duration.seconds(3);
 // Per-subagent bound on frames held while waiting for task_started.
 const PENDING_CLAUDE_SUBAGENT_FRAME_CAP = 256;
 
@@ -4967,6 +4972,7 @@ export function makeClaudeAdapterV2(
             next.delete(input.context.providerTurnId);
             return next;
           });
+          yield* Deferred.succeed(input.context.settled, undefined);
         });
 
         const emitAssistantTextArtifacts = Effect.fnUntraced(function* (input: {
@@ -7121,6 +7127,7 @@ export function makeClaudeAdapterV2(
               promptEcho: isClaudeProviderContinuationTurn(turnInput) ? "confirmed" : "pending",
               gatedFramesBeforeEcho: 0,
               heldRootFrames: [],
+              settled: yield* Deferred.make<void>(),
             };
             // Continuation turns attach to the wake output the CLI already
             // produced instead of prompting it again: drain the buffered wake
@@ -7283,7 +7290,23 @@ export function makeClaudeAdapterV2(
               next.add(turnInput.providerTurnId);
               return next;
             });
-            yield* existing.query.interrupt;
+            // Let Claude abort the turn through its own path before Stop
+            // closes the process, so the prompt reaches the transcript.
+            // Closing a first turn before Claude writes it leaves a resume
+            // cursor for a session Claude never saved, and every later
+            // message fails with "No conversation found". A failed, defecting
+            // or hung interrupt must not keep Stop from closing the process.
+            yield* existing.query.interrupt.pipe(
+              Effect.andThen(Deferred.await(currentTurn.settled)),
+              Effect.timeoutOption(CLAUDE_INTERRUPT_GRACE),
+              Effect.catchCause((cause) =>
+                Effect.logWarning("orchestration-v2.claude-query-interrupt-failed", {
+                  providerSessionId: input.providerSessionId,
+                  providerTurnId: turnInput.providerTurnId,
+                  cause,
+                }),
+              ),
+            );
             yield* existing.query.close.pipe(Effect.ignore);
             const closed = yield* Deferred.await(existing.closed).pipe(
               Effect.timeoutOption("10 seconds"),

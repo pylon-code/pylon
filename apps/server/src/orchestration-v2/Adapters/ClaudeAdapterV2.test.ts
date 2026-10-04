@@ -43,6 +43,7 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import { Tool } from "effect/unstable/ai";
 import { formatClaudeResumeCompactionQuestion } from "@t3tools/shared/claudeCompaction";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
@@ -2047,7 +2048,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
 
   const makeWakeHarnessWithOptions = (options?: {
     readonly close?: (sdkMessages: Queue.Queue<SDKMessage>) => Effect.Effect<void>;
-    readonly interrupt?: Effect.Effect<void>;
+    readonly interrupt?: (
+      sdkMessages: Queue.Queue<SDKMessage>,
+    ) => Effect.Effect<void, ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError>;
     readonly environment?: NodeJS.ProcessEnv;
   }) =>
     Effect.gen(function* () {
@@ -2118,7 +2121,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   Effect.sync(() => {
                     permissionModeChanges.push(mode);
                   }),
-                interrupt: options?.interrupt ?? Effect.void,
+                interrupt: options?.interrupt?.(sdkMessages) ?? Effect.void,
                 close: options?.close?.(sdkMessages) ?? Effect.void,
               };
             }),
@@ -5210,7 +5213,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           const harness = yield* makeWakeHarnessWithOptions({
             close: (sdkMessages) =>
               Deferred.await(closeGate).pipe(Effect.andThen(Queue.shutdown(sdkMessages))),
-            interrupt: Deferred.succeed(interruptStarted, undefined),
+            interrupt: () => Deferred.succeed(interruptStarted, undefined),
           });
           const idAllocator = yield* IdAllocator.IdAllocatorV2;
           const now = yield* DateTime.now;
@@ -5267,7 +5270,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         const harness = yield* makeWakeHarnessWithOptions({
           close: (sdkMessages) =>
             Deferred.await(closeGate).pipe(Effect.andThen(Queue.shutdown(sdkMessages))),
-          interrupt: Deferred.succeed(interruptStarted, undefined),
+          interrupt: () => Deferred.succeed(interruptStarted, undefined),
         });
         const idAllocator = yield* IdAllocator.IdAllocatorV2;
         const now = yield* DateTime.now;
@@ -5303,6 +5306,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         );
         let debrisYields = 0;
         yield* awaitUntil(() => debrisYields++ >= 50, "zero-turn debris consumed");
+        // Debris does not settle the turn, so Stop closes after the grace.
+        yield* TestClock.adjust(ClaudeAdapterV2.CLAUDE_INTERRUPT_GRACE);
         yield* Deferred.succeed(closeGate, undefined);
         yield* awaitUntil(() => harness.terminalEvents().length === 1, "interrupted terminal");
         assert.lengthOf(harness.terminalEvents(), 1);
@@ -5314,6 +5319,163 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         );
       }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
     ),
+  );
+
+  // Closing a first turn before Claude writes it to its transcript leaves a
+  // resume cursor for a session Claude never saved; every later message then
+  // fails with "No conversation found". Stop lets Claude abort first.
+  it.effect("interruptTurn lets Claude abort the turn before closing the process", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const interruptAcked = yield* Deferred.make<void>();
+        let closes = 0;
+        const harness = yield* makeWakeHarnessWithOptions({
+          interrupt: () => Deferred.succeed(interruptAcked, undefined),
+          close: (sdkMessages) =>
+            Effect.sync(() => {
+              closes++;
+            }).pipe(Effect.andThen(Queue.shutdown(sdkMessages))),
+        });
+        const now = yield* DateTime.now;
+        const attemptId = RunAttemptId.make("attempt-claude-interrupt-grace-abort");
+        const providerTurnId = idAllocator.derive.providerTurn({
+          driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+          nativeTurnId: `turn:${attemptId}`,
+        });
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId,
+            text: "hello",
+            attachments: [],
+          }),
+        );
+
+        // The TestClock never advances here, so Stop can only return because
+        // Claude's own abort settled the turn within the grace.
+        const interruptFiber = yield* harness.runtime
+          .interruptTurn({ providerThread: harness.providerThread, providerTurnId })
+          .pipe(Effect.forkScoped);
+        yield* Deferred.await(interruptAcked);
+        let graceYields = 0;
+        yield* awaitUntil(() => graceYields++ >= 50, "Stop waiting on the turn");
+        assert.equal(closes, 0, "Stop must not close before Claude aborts the turn");
+
+        yield* harness.offerAndWait(
+          makeResultFrame({
+            uuid: "00000000-0000-4000-8000-000000000117",
+            result: "",
+            subtype: "error_during_execution",
+            errors: ["Error: Request was aborted."],
+          }),
+        );
+        yield* Fiber.join(interruptFiber);
+
+        assert.equal(closes, 1);
+        yield* awaitUntil(() => harness.terminalEvents().length === 1, "interrupted terminal");
+        assert.equal(harness.terminalEvents()[0]?.status, "interrupted");
+      }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    ),
+  );
+
+  it.effect("interruptTurn closes the process when Claude never aborts the turn", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const interruptStarted = yield* Deferred.make<void>();
+        let closes = 0;
+        const harness = yield* makeWakeHarnessWithOptions({
+          interrupt: () =>
+            Deferred.succeed(interruptStarted, undefined).pipe(Effect.andThen(Effect.never)),
+          close: (sdkMessages) =>
+            Effect.sync(() => {
+              closes++;
+            }).pipe(Effect.andThen(Queue.shutdown(sdkMessages))),
+        });
+        const now = yield* DateTime.now;
+        const attemptId = RunAttemptId.make("attempt-claude-interrupt-grace-timeout");
+        const providerTurnId = idAllocator.derive.providerTurn({
+          driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+          nativeTurnId: `turn:${attemptId}`,
+        });
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId,
+            text: "hello",
+            attachments: [],
+          }),
+        );
+
+        const interruptFiber = yield* harness.runtime
+          .interruptTurn({ providerThread: harness.providerThread, providerTurnId })
+          .pipe(Effect.forkScoped);
+        yield* Deferred.await(interruptStarted);
+        assert.equal(closes, 0, "Stop must give Claude the grace before closing");
+        yield* TestClock.adjust(ClaudeAdapterV2.CLAUDE_INTERRUPT_GRACE);
+        yield* Fiber.join(interruptFiber);
+
+        assert.equal(closes, 1);
+        yield* awaitUntil(() => harness.terminalEvents().length === 1, "interrupted terminal");
+        assert.equal(harness.terminalEvents()[0]?.status, "interrupted");
+      }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    ),
+  );
+
+  it.effect.each(["fails", "defects"] as const)(
+    "interruptTurn still closes the process when Claude's interrupt %s",
+    (outcome) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const idAllocator = yield* IdAllocator.IdAllocatorV2;
+          let closes = 0;
+          const harness = yield* makeWakeHarnessWithOptions({
+            interrupt: () =>
+              outcome === "fails"
+                ? Effect.fail(
+                    new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
+                      cause: new Error("control channel closed"),
+                      method: "interrupt",
+                    }),
+                  )
+                : Effect.die(new Error("interrupt defect")),
+            close: (sdkMessages) =>
+              Effect.sync(() => {
+                closes++;
+              }).pipe(Effect.andThen(Queue.shutdown(sdkMessages))),
+          });
+          const now = yield* DateTime.now;
+          const attemptId = RunAttemptId.make(`attempt-claude-interrupt-grace-${outcome}`);
+          const providerTurnId = idAllocator.derive.providerTurn({
+            driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+            nativeTurnId: `turn:${attemptId}`,
+          });
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId,
+              text: "hello",
+              attachments: [],
+            }),
+          );
+
+          yield* harness.runtime.interruptTurn({
+            providerThread: harness.providerThread,
+            providerTurnId,
+          });
+
+          assert.equal(closes, 1);
+          yield* awaitUntil(() => harness.terminalEvents().length === 1, "interrupted terminal");
+          assert.equal(harness.terminalEvents()[0]?.status, "interrupted");
+        }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+      ),
   );
 
   it.effect("fails a positive task-notification error result", () =>
