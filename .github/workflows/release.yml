@@ -232,8 +232,10 @@ jobs:
     # runner the job lands around fifteen minutes (the Test step alone was
     # still running at 7m44s when a 10-minute ceiling cut it on 2026-08-26,
     # cancelling the first nightly after the runner migration), so give it
-    # 2x headroom. Blacksmith's 8 vCPU did the Test step in 3m16s.
-    timeout-minutes: 30
+    # 2x headroom. Blacksmith's 8 vCPU did the Test step in 3m16s. By
+    # 2026-10-03 the Test step alone took 20-26 minutes and two nightlies
+    # timed out at 30 with tests still passing, so the ceiling is now 60.
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v6
