@@ -117,13 +117,14 @@ jobs:
           set -euo pipefail
           cp /tmp/pylon-model-manifests/model-manifest.json public/model-manifest.json
           cp /tmp/pylon-model-manifests/model-catalog.json public/model-catalog.json
+          cp /tmp/pylon-model-manifests/model-catalog-v2.json public/model-catalog-v2.json
           cd public
-          if [[ -z "$(git status --porcelain -- model-manifest.json model-catalog.json)" ]]; then
+          if [[ -z "$(git status --porcelain -- model-manifest.json model-catalog.json model-catalog-v2.json)" ]]; then
             echo "The public manifest is already current."
             exit 0
           fi
           git config user.name "pylon-release-bot"
           git config user.email "release-bot@users.noreply.github.com"
-          git add model-manifest.json model-catalog.json
+          git add model-manifest.json model-catalog.json model-catalog-v2.json
           git commit -m "chore: update model manifest"
           git push origin HEAD:main

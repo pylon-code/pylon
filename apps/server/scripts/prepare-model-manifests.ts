@@ -20,7 +20,7 @@ Effect.gen(function* () {
   );
   const source = yield* fileSystem.readFileString(sourcePath);
   // Reuse runtime validation, including driver bounds and provider adapter metadata,
-  // before either public file is written.
+  // before any public file is written.
   const manifest = yield* decodeManifestJson(source);
   const files = serializeModelManifestPublication(manifest);
   yield* fileSystem.makeDirectory(destination, { recursive: true });

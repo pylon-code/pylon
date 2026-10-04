@@ -1,16 +1,30 @@
 import { MODEL_MANIFEST_MAX_BYTES, type ModelManifestData } from "./ModelManifest.ts";
 
-/** Publish the validated catalog alongside the classification feed older servers accept. */
+/**
+ * Publish the validated catalog alongside the feeds older servers accept.
+ *
+ * Readers of the two older feeds decode strictly, so each keeps the shape its
+ * readers shipped with: `model-manifest.json` for pre-catalog releases and
+ * `model-catalog.json` for catalog releases that predate `updatedAt` and
+ * provider compatibility policies. `model-catalog-v2.json` readers ignore
+ * unknown top-level fields, so new fields can be added to it.
+ */
 export function serializeModelManifestPublication(manifest: ModelManifestData) {
   const classification = {
     version: manifest.version,
     currentModels: manifest.currentModels,
   };
+  const catalog = {
+    ...classification,
+    ...(manifest.providers ? { providers: manifest.providers } : {}),
+  };
   const files = {
     "model-manifest.json": classification,
-    "model-catalog.json": {
-      ...classification,
-      ...(manifest.providers ? { providers: manifest.providers } : {}),
+    "model-catalog.json": catalog,
+    "model-catalog-v2.json": {
+      ...catalog,
+      ...(manifest.updatedAt !== undefined ? { updatedAt: manifest.updatedAt } : {}),
+      ...(manifest.compatibility ? { compatibility: manifest.compatibility } : {}),
     },
   };
 

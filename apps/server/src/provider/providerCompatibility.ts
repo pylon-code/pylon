@@ -7,9 +7,10 @@ import {
 } from "@t3tools/contracts";
 import { satisfiesSemverRange } from "@t3tools/shared/semver";
 import * as Schema from "effect/Schema";
-// Compatibility policies describe the adopted T3 provider integration, whose
-// release line is independent from Pylon's product version. de34391427 uses 0.0.45.
-const UPSTREAM_PROVIDER_COMPATIBILITY_VERSION = "0.0.45";
+import packageJson from "../../package.json" with { type: "json" };
+
+// `t3CodeRange` keeps its upstream wire name, but Pylon policies match Pylon's own
+// server version: release builds stamp it, and range matching drops prerelease tags.
 
 // Deliberately uses the shared CLI gate syntax: comparator groups joined by ||.
 // Prereleases and unrecognized release tags remain unknown.
@@ -62,7 +63,7 @@ export function resolveProviderCompatibility(
   policies: ReadonlyArray<ProviderCompatibilityPolicy> | undefined,
   driver: ProviderDriverKind,
   version: string | null,
-  t3CodeVersion = UPSTREAM_PROVIDER_COMPATIBILITY_VERSION,
+  t3CodeVersion = packageJson.version,
 ): ServerProviderCompatibilityAdvisory | undefined {
   const policy = policies?.find(
     (entry) => entry.driver === driver && satisfiesSemverRange(t3CodeVersion, entry.t3CodeRange),
